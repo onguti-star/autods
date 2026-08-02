@@ -46,7 +46,8 @@ ASSISTANT_KEYWORDS = {
 }
 
 CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
-    "add", "boolean", "column", "convert", "create", "delete", "drop",
+    "add", "boolean", "column", "convert", "create", "delete", "discard", "drop",
+    "erase",
     "duplicates", "emails", "extract", "fill", "first", "float", "greater",
     "integer", "keep", "lowercase", "missing", "multiply", "numbers",
     "outliers", "punctuation", "rename", "replace", "reset", "rows",

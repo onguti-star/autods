@@ -97,6 +97,10 @@ _TYPE_ALIASES = {
     "boolean": {"boolean", "bool", "true/false", "yes/no"},
 }
 
+REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|get\s+rid\s+of)"
+RENAME_VERB_RE = r"(?:rename|call)"
+NAME_JOINER_RE = r"(?:to|into|as)"
+
 
 def _normalize_type_phrase(raw: str) -> str | None:
     """Match a free-form type phrase (e.g. 'Date / time', 'decimal', 'int') to one of
@@ -161,6 +165,12 @@ def _convert_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFra
     return out, note
 
 
+def _clean_new_column_name(raw: str) -> str:
+    text = raw.strip(" '\"?.,:;-")
+    text = re.sub(r"^(?:the\s+)?(?:column\s+)?(?:called\s+|named\s+)?", "", text, flags=re.IGNORECASE)
+    return text.strip(" '\"?.,:;-")
+
+
 def _fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:,.3f}".rstrip("0").rstrip(".")
@@ -199,8 +209,8 @@ HELP_TEXT = (
     "• replace yes with 1 in discount_applied\n"
     "• remove duplicates\n"
     "• remove duplicates of column age\n"
-    "• drop column notes\n"
-    "• rename column dob to date_of_birth\n"
+    "• drop column notes  (also: remove / delete / discard / erase column notes)\n"
+    "• rename column dob to date_of_birth  (also: rename dob into date_of_birth / rename dob as date_of_birth)\n"
     "• fill missing values in income with median  (mean / mode / zero / a specific value)\n"
     "• remove rows where email is missing\n"
     "• strip whitespace in name\n"
@@ -263,8 +273,9 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         return new_df, f"Removed {removed:,} exact duplicate row(s)."
 
     # ---- drop column ----
-    m = re.search(r"\b(?:drop|remove|delete)\s+(?:the\s+)?column\s+(.+)", ql) or \
-        re.search(r"\b(?:drop|remove|delete)\s+(.+?)\s+column\b", ql)
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?column\s+(.+)", ql) or \
+        re.search(rf"\b{REMOVE_VERB_RE}\s+(.+?)\s+column\b", ql) or \
+        re.search(rf"column\s+(.+?)\s+{REMOVE_VERB_RE}\b", ql)
     if m:
         col = _match_col(m.group(1), columns) or _match_col(q, columns)
         if not col:
@@ -272,10 +283,11 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         return df.drop(columns=[col]), f"Dropped column '{col}'."
 
     # ---- rename column ----
-    m = re.search(r"\brename\s+(?:column\s+)?(.+?)\s+to\s+(.+)", ql)
+    m = re.search(rf"\b{RENAME_VERB_RE}\s+(?:the\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql) or \
+        re.search(rf"change\s+(?:the\s+)?(?:name\s+of\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql)
     if m:
         old_col = _match_col(m.group(1), columns)
-        new_name = m.group(2).strip(" '\"?.,:;-")
+        new_name = _clean_new_column_name(m.group(2))
         if not old_col:
             return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
         if not new_name:

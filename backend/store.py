@@ -25,6 +25,7 @@ class Session:
         self.models: Dict[str, Any] = {}        # name -> fitted pipeline
         self.leaderboard: list = []              # list of dicts (sorted)
         self.best_model_name: Optional[str] = None
+        self.feature_importance: list = []        # latest best-model feature importance rows
         self.feature_columns: list = []
         self.label_encoder = None                # for classification target encoding
         self.cleaning_log: list = []
@@ -35,6 +36,7 @@ class Session:
         self.saved_runs: dict = {}                # run_id -> saved training snapshot (see main.py /api/train_runs)
         self.saved_predictions: dict = {}         # prediction_id -> prediction result snapshot
         self.unsupervised_results: dict = {}       # latest unsupervised analysis snapshots for reports
+        self.pca_result: dict = {}                 # latest PCA analysis snapshot for reports
         self.progress_messages: list = []          # progress messages for long-running operations
 
     def snapshot_before_change(self):
@@ -64,8 +66,10 @@ class Session:
         self.models = {}
         self.leaderboard = []
         self.best_model_name = None
+        self.feature_importance = []
         self.feature_columns = []
         self.label_encoder = None
+        self.pca_result = {}
         self.progress_messages = []
 
 

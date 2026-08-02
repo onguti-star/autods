@@ -5,8 +5,10 @@ from datetime import datetime
 
 import pandas as pd
 
+from . import automl
 from . import eda
 from . import narrate
+from . import pca_analysis
 
 
 def _fmt_report_value(value) -> str:
@@ -53,6 +55,35 @@ def _compact_unsupervised_result(result: dict) -> dict:
 
 def _has_cleaning_history(session) -> bool:
     return bool(session.cleaning_log or session.chat_clean_log)
+
+
+def _report_pca_result(session) -> dict:
+    result = getattr(session, "pca_result", {}) or {}
+    if result:
+        return result
+    if len(session.df) <= 50_000:
+        try:
+            result = pca_analysis.analyse(session.df)
+            session.pca_result = result
+            return result
+        except Exception:
+            return {}
+    return {}
+
+
+def _report_feature_importance(session) -> list:
+    importance = getattr(session, "feature_importance", []) or []
+    if importance:
+        return importance
+    try:
+        if session.best_model_name and session.best_model_name in session.models and session.target in session.df.columns:
+            X = session.df.drop(columns=[session.target])
+            importance = automl.feature_importance(session.models[session.best_model_name], X)
+            session.feature_importance = importance
+            return importance
+    except Exception:
+        return []
+    return []
 
 
 def _build_html_report(session, extra_charts=None) -> str:
@@ -296,6 +327,23 @@ def _build_html_report(session, extra_charts=None) -> str:
             color: #6c757d;
             font-size: 0.9em;
             margin-top: 4px;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin: 15px 0;
+        }
+        .importance-bar {
+            height: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            min-width: 120px;
+        }
+        .importance-fill {
+            height: 100%;
+            background-color: #ffc107;
         }
         .narrative-text {
             color: #495057;
@@ -557,6 +605,54 @@ def _build_html_report(session, extra_charts=None) -> str:
             <span><strong>{a}</strong> ↔ <strong>{b}</strong></span>
             <span class="correlation-value" style="color: {color};">{val:+.3f}</span>
         </div>""")
+
+    pca_result = _report_pca_result(session)
+    if pca_result:
+        html_parts.append("""        <h2 class="section-title" id="pca">Principal Component Analysis (PCA)</h2>""")
+        if not pca_result.get("feasible"):
+            reason = html.escape(str(pca_result.get("reason") or "PCA was not feasible for this dataset."))
+            html_parts.append(f"""        <div class="analysis-item">{reason}</div>""")
+        else:
+            verdict = html.escape(str(pca_result.get("verdict", "unknown")).title())
+            recommendation = html.escape(str(pca_result.get("recommendation", "")))
+            html_parts.append(f"""        <div class="analysis-item">
+            <strong>PCA verdict:</strong> {verdict}
+            <div class="analysis-meta">{recommendation}</div>
+        </div>
+        <div class="metric-grid">
+            <div class="stat-box"><div class="stat-value">{pca_result.get("n_numeric", 0)}</div><div class="stat-label">numeric columns</div></div>
+            <div class="stat-box"><div class="stat-value">{pca_result.get("components_for_80", "?")}</div><div class="stat-label">components for 80% variance</div></div>
+            <div class="stat-box"><div class="stat-value">{pca_result.get("components_for_90", "?")}</div><div class="stat-label">components for 90% variance</div></div>
+            <div class="stat-box"><div class="stat-value">{pca_result.get("top2_variance", "?")}%</div><div class="stat-label">variance in PC1 and PC2</div></div>
+        </div>""")
+
+            explained = pca_result.get("explained_variance") or []
+            cumulative = pca_result.get("cumulative_variance") or []
+            if explained:
+                html_parts.append("""        <h3 class="subsection-title">Variance Explained</h3>
+        <table class="table">
+            <thead><tr><th>Component</th><th>Explains</th><th>Cumulative</th></tr></thead>
+            <tbody>""")
+                for index, value in enumerate(explained[:10]):
+                    cum = cumulative[index] if index < len(cumulative) else ""
+                    html_parts.append(f"""                <tr><td>PC{index + 1}</td><td>{_fmt_report_value(value)}%</td><td>{_fmt_report_value(cum)}%</td></tr>""")
+                html_parts.append("""            </tbody>
+        </table>""")
+
+            loadings = pca_result.get("loadings") or []
+            if loadings:
+                html_parts.append("""        <h3 class="subsection-title">Column Loadings</h3>
+        <table class="table">
+            <thead><tr><th>Column</th><th>PC1 loading</th><th>PC2 loading</th></tr></thead>
+            <tbody>""")
+                for loading in loadings[:20]:
+                    html_parts.append(f"""                <tr>
+                    <td>{html.escape(str(loading.get("column", "")))}</td>
+                    <td>{_fmt_report_value(loading.get("pc1"))}</td>
+                    <td>{_fmt_report_value(loading.get("pc2"))}</td>
+                </tr>""")
+                html_parts.append("""            </tbody>
+        </table>""")
     
     if charts:
         html_parts.append("""        <h2 class="section-title" id="visualizations">📊 Visualizations Created</h2>
@@ -621,6 +717,36 @@ def _build_html_report(session, extra_charts=None) -> str:
         
         html_parts.append("""            </tbody>
         </table>""")
+
+        importance = _report_feature_importance(session)
+        if importance:
+            max_importance = max(abs(float(item.get("importance", 0) or 0)) for item in importance) or 1.0
+            html_parts.append("""        <h3 class="subsection-title">Feature Importance (Best Model)</h3>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Feature</th>
+                    <th>Importance</th>
+                    <th>Relative strength</th>
+                </tr>
+            </thead>
+            <tbody>""")
+            for item in importance[:15]:
+                feature = html.escape(str(item.get("feature", "")).split("__")[-1])
+                value = float(item.get("importance", 0) or 0)
+                width = min(abs(value) / max_importance * 100, 100)
+                html_parts.append(f"""                <tr>
+                    <td><strong>{feature}</strong></td>
+                    <td>{_fmt_report_value(value)}</td>
+                    <td><div class="importance-bar"><div class="importance-fill" style="width:{width:.1f}%"></div></div></td>
+                </tr>""")
+            html_parts.append("""            </tbody>
+        </table>""")
+        else:
+            html_parts.append("""        <div class="analysis-item">
+            <strong>Feature Importance (Best Model)</strong>
+            <div class="analysis-meta">Not available for this best model type.</div>
+        </div>""")
 
     if session.saved_predictions:
         html_parts.append("""        <h2 class="section-title" id="predictions">🎯 Saved Predictions</h2>""")

@@ -170,6 +170,29 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .ds-tab:hover{color:var(--ink);}
 .ds-tab.active{color:var(--accent);border-color:var(--panel-border);border-bottom-color:var(--bg);background:var(--bg);}
 .ds-tab.add-btn{color:var(--cyan);}
+/* dataset tab close button */
+.ds-tab-inner{display:flex;align-items:center;gap:6px;}
+.ds-tab-close{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:2px;font-size:12px;line-height:1;color:var(--ink-dim);background:transparent;border:none;padding:0;cursor:pointer;transition:color .12s,background .12s;margin-left:2px;font-family:'IBM Plex Mono',monospace;font-weight:700;}
+.ds-tab-close:hover{color:var(--bad);background:rgba(239,111,111,0.15);}
+.ds-tab.active .ds-tab-close{color:var(--ink-dim);}
+
+/* auto-save indicator */
+.autosave-badge{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--good);opacity:0;transition:opacity .4s;margin-left:8px;}
+.autosave-badge.show{opacity:1;}
+
+/* close confirmation modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;}
+.modal-box{background:var(--panel);border:1px solid var(--panel-border);padding:28px 32px;max-width:400px;width:90%;position:relative;}
+.modal-box::before{content:"";position:absolute;width:9px;height:9px;border-top:2px solid var(--accent-dim);border-left:2px solid var(--accent-dim);top:-1px;left:-1px;}
+.modal-box::after{content:"";position:absolute;width:9px;height:9px;border-bottom:2px solid var(--accent-dim);border-right:2px solid var(--accent-dim);bottom:-1px;right:-1px;}
+.modal-title{font-family:'IBM Plex Mono',monospace;font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--bad);margin:0 0 10px;}
+.modal-body{font-size:13px;color:var(--ink-dim);margin-bottom:20px;line-height:1.6;}
+.modal-body strong{color:var(--ink);}
+.modal-step{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px;}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;}
+.modal-actions button.danger{background:var(--bad);color:#fff;}
+.modal-actions button.danger:hover{filter:brightness(1.1);}
+
 /* upload source tabs */
 .src-tabs{display:flex;gap:4px;margin-bottom:14px;}
 .src-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:5px 12px;border:1px solid var(--panel-border);cursor:pointer;color:var(--ink-dim);background:transparent;}
@@ -197,7 +220,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 <body>
 <header>
   <div class="brand"><span class="dot"></span>AUTODS <small>/ automated data science console</small></div>
-  <div class="session-tag" id="sessionTag">no dataset loaded</div>
+  <div style="display:flex;align-items:center;">
+    <div class="session-tag" id="sessionTag">no dataset loaded</div>
+    <span class="autosave-badge" id="autosaveBadge">✓ saved</span>
+  </div>
 </header>
 <main>
 <div class="ds-tabs" id="dsTabs">
@@ -688,6 +714,33 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   </section>
 </main>
 
+<!-- Close dataset confirmation modal (two-step) -->
+<div class="modal-overlay hidden" id="closeModal">
+  <div class="modal-box">
+    <div class="modal-title">⚠ Close dataset</div>
+    <div class="modal-body">
+      You are about to close <strong id="closeModalName">this dataset</strong>.<br>
+      Any unsaved server-side session data will be lost.<br><br>
+      Your locally saved state will be cleared for this tab only.
+    </div>
+    <div id="closeStep1">
+      <div class="modal-step">Step 1 of 2 — confirm you want to close</div>
+      <div class="modal-actions">
+        <button class="sec" onclick="dismissCloseModal()">Cancel</button>
+        <button onclick="closeModalStep2()">Yes, close it</button>
+      </div>
+    </div>
+    <div id="closeStep2" class="hidden">
+      <div class="modal-step">Step 2 of 2 — final confirmation</div>
+      <div class="modal-body" style="margin-bottom:14px;">This cannot be undone. Are you sure?</div>
+      <div class="modal-actions">
+        <button class="sec" onclick="dismissCloseModal()">No, keep it</button>
+        <button class="danger" onclick="confirmCloseDataset()">Yes, remove this dataset</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = "/api";
 
@@ -699,8 +752,138 @@ let activeDs = null;    // currently selected dataset id
 const dsState = {};
 
 function getState(){ return dsState[activeDs] || {}; }
-function setState(patch){ dsState[activeDs] = {...(dsState[activeDs]||{}), ...patch}; }
-function setDatasetState(id, patch){ dsState[id] = {...(dsState[id]||{}), ...patch}; }
+function setState(patch){ dsState[activeDs] = {...(dsState[activeDs]||{}), ...patch}; autoSave(); }
+function setDatasetState(id, patch){ dsState[id] = {...(dsState[id]||{}), ...patch}; autoSave(); }
+
+// ============================
+// AUTO-SAVE  (localStorage)
+// ============================
+const STORAGE_KEY = "autods_session_v1";
+let _autoSaveTimer = null;
+let _autosaveBadgeTimer = null;
+
+function autoSave(){
+  // Debounce: batch rapid state changes into one write
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(_doAutoSave, 600);
+}
+
+function _doAutoSave(){
+  try{
+    // We only save the parts of dsState that are JSON-serialisable.
+    // Chart data and canvas contexts are NOT saved — they'll be rebuilt
+    // by re-calling the existing restore / loadEDA logic.
+    const saveable = {};
+    Object.entries(dsState).forEach(([id, st]) => {
+      saveable[id] = {
+        sessionId:        st.sessionId        || null,
+        allColumns:       st.allColumns        || [],
+        profile:          st.profile           || null,
+        lastProfile:      st.lastProfile       || null,
+        cleanLog:         st.cleanLog          || null,
+        training:         st.training          || null,
+        savedRuns:        st.savedRuns         || [],
+        savedPredictions: st.savedPredictions  || [],
+      };
+    });
+    const payload = {
+      datasets,   // [{id, name}]
+      activeDs,
+      dsState: saveable,
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    _flashSaveBadge();
+  }catch(e){
+    // quota exceeded or private browsing — fail silently
+    console.warn("AutoDS auto-save failed:", e);
+  }
+}
+
+function _flashSaveBadge(){
+  const badge = document.getElementById("autosaveBadge");
+  if(!badge) return;
+  badge.classList.add("show");
+  clearTimeout(_autosaveBadgeTimer);
+  _autosaveBadgeTimer = setTimeout(() => badge.classList.remove("show"), 2000);
+}
+
+// ============================
+// AUTO-RESTORE (on page load)
+// ============================
+function tryRestoreSession(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return false;
+    const saved = JSON.parse(raw);
+    if(!saved || !saved.datasets || !saved.datasets.length) return false;
+
+    // Reload the datasets array and state maps
+    datasets.length = 0;
+    saved.datasets.forEach(d => datasets.push(d));
+    Object.assign(dsState, saved.dsState || {});
+    activeDs = saved.activeDs || datasets[0]?.id || null;
+    return true;
+  }catch(e){
+    console.warn("AutoDS restore failed:", e);
+    return false;
+  }
+}
+
+// ============================
+// CLOSE MODAL  (two-step)
+// ============================
+let _pendingCloseId = null;
+
+function openCloseModal(dsId){
+  _pendingCloseId = dsId;
+  const ds = datasets.find(d => d.id === dsId);
+  document.getElementById("closeModalName").textContent = ds ? `"${ds.name}"` : "this dataset";
+  // Reset to step 1
+  document.getElementById("closeStep1").classList.remove("hidden");
+  document.getElementById("closeStep2").classList.add("hidden");
+  document.getElementById("closeModal").classList.remove("hidden");
+}
+
+function dismissCloseModal(){
+  _pendingCloseId = null;
+  document.getElementById("closeModal").classList.add("hidden");
+}
+
+function closeModalStep2(){
+  document.getElementById("closeStep1").classList.add("hidden");
+  document.getElementById("closeStep2").classList.remove("hidden");
+}
+
+function confirmCloseDataset(){
+  const id = _pendingCloseId;
+  dismissCloseModal();
+  if(!id) return;
+  _removeDataset(id);
+}
+
+function _removeDataset(id){
+  const idx = datasets.findIndex(d => d.id === id);
+  if(idx === -1) return;
+  datasets.splice(idx, 1);
+  delete dsState[id];
+
+  if(!datasets.length){
+    // No datasets left — add a fresh empty one
+    const newId = "ds_" + Date.now();
+    datasets.push({id: newId, name: "New dataset", sessionId: null});
+    activeDs = newId;
+    dsState[newId] = {};
+  } else {
+    // Switch to the nearest remaining tab
+    activeDs = datasets[Math.min(idx, datasets.length - 1)].id;
+  }
+
+  renderDsTabs();
+  const st = dsState[activeDs] || {};
+  if(st.sessionId){ restoreDataset(st); } else { resetPanels(); }
+  autoSave();
+}
 function escapeHtml(value){
   return String(value ?? "").replace(/[&<>"']/g, ch => ({
     "&":"&amp;",
@@ -790,6 +973,7 @@ function addDataset(){
   activeDs = id;
   dsState[id] = {};
   renderDsTabs();
+  autoSave();
   // Only scroll if page is already loaded (not during init)
   if(document.readyState === "complete") scrollPanel("panelUpload");
 }
@@ -815,7 +999,24 @@ function renderDsTabs(){
   datasets.forEach(ds => {
     const t = document.createElement("div");
     t.className = "ds-tab" + (ds.id === activeDs ? " active" : "");
-    t.textContent = ds.name;
+
+    // Inner wrapper: name + close button
+    const inner = document.createElement("span");
+    inner.className = "ds-tab-inner";
+
+    const label = document.createElement("span");
+    label.textContent = ds.name;
+    label.onclick = () => switchDataset(ds.id);
+    inner.appendChild(label);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "ds-tab-close";
+    closeBtn.title = "Close this dataset";
+    closeBtn.textContent = "×";
+    closeBtn.onclick = (e) => { e.stopPropagation(); openCloseModal(ds.id); };
+    inner.appendChild(closeBtn);
+
+    t.appendChild(inner);
     t.onclick = () => switchDataset(ds.id);
     tabsEl.insertBefore(t, addBtn);
   });
@@ -972,6 +1173,7 @@ function _onUploaded(data){
   ["panelClean","panelViz","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
   datasets.find(d => d.id === activeDs).name = name;
   setState({sessionId: data.session_id, allColumns: data.columns, savedRuns: [], savedPredictions: [], training: null, profile: null, cleanLog: null});
+  autoSave(); // capture dataset name change (datasets array is not watched by setState)
   clearPredictionsUI();
   $("sessionTag").textContent = `${name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
   $("uploadStatus").innerHTML = loadedMessage;
@@ -3249,12 +3451,33 @@ function addMsg(text, role){
 
 // Run after DOM + all listeners are fully set up
 document.addEventListener("DOMContentLoaded", () => {
-  // Create the first empty dataset slot without any scrolling
-  const id = "ds_" + Date.now();
-  datasets.push({id, name:"New dataset", sessionId:null});
-  activeDs = id;
-  dsState[id] = {};
-  renderDsTabs();
+  const restored = tryRestoreSession();
+
+  if(restored && datasets.length){
+    renderDsTabs();
+    // Re-hydrate the active dataset's UI
+    const st = dsState[activeDs] || {};
+    if(st.sessionId){
+      restoreDataset(st);
+      // Update the session tag
+      const ds = datasets.find(d => d.id === activeDs);
+      const prof = st.lastProfile || st.profile;
+      if(ds && prof){
+        $("sessionTag").textContent = `${ds.name} · ${(prof.n_rows||0).toLocaleString()}×${(prof.columns||[]).length}`;
+      } else if(ds){
+        $("sessionTag").textContent = ds.name;
+      }
+    } else {
+      resetPanels();
+    }
+  } else {
+    // Fresh start — create the first empty dataset slot
+    const id = "ds_" + Date.now();
+    datasets.push({id, name:"New dataset", sessionId:null});
+    activeDs = id;
+    dsState[id] = {};
+    renderDsTabs();
+  }
 });
 </script>
 </body>

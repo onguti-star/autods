@@ -32,6 +32,10 @@ _TYPE_ALIASES = {
     "boolean": {"boolean", "bool", "true/false", "yes/no"},
 }
 
+REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|get\s+rid\s+of)"
+RENAME_VERB_RE = r"(?:rename|call)"
+NAME_JOINER_RE = r"(?:to|into|as)"
+
 
 def _normalize_type_phrase(raw: str) -> str | None:
     """Match a free-form type phrase (e.g. 'Date / time', 'decimal', 'int') to one of
@@ -94,6 +98,12 @@ def _convert_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFra
     if introduced > 0:
         note += f" {introduced:,} value(s) could not be converted and became missing."
     return out, note
+
+
+def _clean_new_column_name(raw: str) -> str:
+    text = raw.strip(" '\"?.,:;-")
+    text = re.sub(r"^(?:the\s+)?(?:column\s+)?(?:called\s+|named\s+)?", "", text, flags=re.IGNORECASE)
+    return text.strip(" '\"?.,:;-")
 
 
 def _fmt(value) -> str:
@@ -320,8 +330,8 @@ HELP_TEXT = (
     "I understand plain-English cleaning commands. Try things like:\n"
     "• remove duplicates\n"
     "• remove duplicates of column age\n"
-    "• drop column notes\n"
-    "• rename column dob to date_of_birth\n"
+    "• drop column notes  (also: remove / delete / discard / erase column notes)\n"
+    "• rename column dob to date_of_birth  (also: rename dob into date_of_birth / rename dob as date_of_birth)\n"
     "• create column total as price * quantity  (math operations)\n"
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
@@ -496,9 +506,9 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, f"Removed {removed:,} exact duplicate row(s)."
 
     # ---- drop column ----
-    m = re.search(r"\b(?:drop|remove|delete|discard|get\s+rid\s+of)\s+(?:the\s+)?column\s+(.+)", ql) or \
-        re.search(r"\b(?:drop|remove|delete|discard)\s+(.+?)\s+column\b", ql) or \
-        re.search(r"column\s+(.+?)\s+(?:drop|remove|delete|discard)\b", ql)
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?column\s+(.+)", ql) or \
+        re.search(rf"\b{REMOVE_VERB_RE}\s+(.+?)\s+column\b", ql) or \
+        re.search(rf"column\s+(.+?)\s+{REMOVE_VERB_RE}\b", ql)
     if m:
         col = _match_col(m.group(1), columns) or _match_col(q, columns)
         if not col:
@@ -506,11 +516,11 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return df.drop(columns=[col]), f"Dropped column '{col}'."
 
     # ---- rename column ----
-    m = re.search(r"\brename\s+(?:column\s+)?(.+?)\s+to\s+(.+)", ql) or \
-        re.search(r"change\s+(?:the\s+)?(?:name\s+of\s+)?(?:column\s+)?(.+?)\s+(?:to|into)\s+(.+)", ql)
+    m = re.search(rf"\b{RENAME_VERB_RE}\s+(?:the\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql) or \
+        re.search(rf"change\s+(?:the\s+)?(?:name\s+of\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql)
     if m:
         old_col = _match_col(m.group(1), columns)
-        new_name = m.group(2).strip(" '\"?.,:;-")
+        new_name = _clean_new_column_name(m.group(2))
         if not old_col:
             return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
         if not new_name:
@@ -545,8 +555,8 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, f"Filled {n_missing:,} missing value(s) in '{col}' with {_fmt(val)}."
 
     # ---- drop rows where col is missing ----
-    m = re.search(r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+is\s+(?:missing|null|na|empty)\b", ql) or \
-        re.search(r"\b(?:remove|drop|delete)\s+(?:rows?\s+with\s+)?(?:missing|null|empty)\s+(?:values?\s+in\s+)?(.+)", ql) or \
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+is\s+(?:missing|null|na|empty)\b", ql) or \
+        re.search(rf"\b{REMOVE_VERB_RE}\s+(?:rows?\s+with\s+)?(?:missing|null|empty)\s+(?:values?\s+in\s+)?(.+)", ql) or \
         re.search(r"delete\s+(?:rows?\s+)?where\s+(.+?)\s+(?:is\s+)?(?:missing|null|na|empty)", ql)
     if m:
         col = _match_col(m.group(1), columns)
@@ -635,20 +645,20 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
     # IMPORTANT: This comes BEFORE "remove exact text" to avoid conflicts
     comparison_patterns = [
         # Pattern: "remove rows where col < value" or "remove rows where col is less than value"
-        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than|<)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than|<)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
         # Pattern: "remove rows in col where values is less than value"
-        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:less\s+than|<)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:less\s+than|<)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
         # Pattern: "remove less than 0 in quantity" or "remove greater than 100 from price"
-        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+?)\s+(?:in|from)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+?)\s+(?:in|from)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than|<)\s+(.+?)\s+(?:in|from)\s+(.+)",
-        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than|>)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than|<)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        rf"\b{REMOVE_VERB_RE}\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than|>)\s+(.+?)\s+(?:in|from)\s+(.+)",
     ]
     
     for pattern in comparison_patterns:
@@ -777,7 +787,7 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             return new_df, f"Kept {kept:,} row(s) where '{col}' is {op_text} {value}; removed the rest."
 
     # ---- remove exact text from a column ----
-    m = re.search(r"\bremove\s+(.+?)\s+(?:in|from)\s+(.+)", q, flags=re.IGNORECASE)
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+(.+?)\s+(?:in|from)\s+(.+)", q, flags=re.IGNORECASE)
     if m:
         text_to_remove = m.group(1).strip(" '\"")
         col = _match_col(m.group(2), columns)
@@ -807,7 +817,7 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
                 return new_df, f"Removed '{text_to_remove}' from {changed:,} value(s) in '{col}'."
 
     # ---- remove outliers (drop the rows, not cap them) ----
-    m = re.search(r"\b(?:remove|caps?|delete|drop)\s+outliers?\s*(?:in\s+|from\s+)?(.+)", ql) or \
+    m = re.search(rf"\b(?:{REMOVE_VERB_RE}|caps?)\s+outliers?\s*(?:in\s+|from\s+)?(.+)", ql) or \
         re.search(r"outliers?\s+(?:in\s+|from\s+)?(.+)", ql)
     if m:
         col = _match_col(m.group(1), columns)
@@ -875,9 +885,9 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, f"Replaced {count:,} occurrence(s) of '{old_val_raw}' → '{new_val_raw}' in '{col}'."
 
     # ---- filter rows by value (remove / keep only) ----
-    m = re.search(r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
         re.search(r"delete\s+(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
-        re.search(r"(?:delete|remove)\s+all\s+(?:the\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql)
+        re.search(rf"{REMOVE_VERB_RE}\s+all\s+(?:the\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql)
     if m:
         col = _match_col(m.group(1), columns)
         value = _parse_value_token(m.group(2))
