@@ -220,9 +220,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 <body>
 <header>
   <div class="brand"><span class="dot"></span>AUTODS <small>/ automated data science console</small></div>
-  <div style="display:flex;align-items:center;">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
     <div class="session-tag" id="sessionTag">no dataset loaded</div>
     <span class="autosave-badge" id="autosaveBadge">✓ saved</span>
+    <button class="sec" id="clearReloadBtn" title="Wipe saved session and reload — use this after making code changes" onclick="clearAndReload()" style="font-size:10px;padding:5px 11px;border-color:var(--ink-dim);color:var(--ink-dim);">↺ fresh reload</button>
   </div>
 </header>
 <main>
@@ -828,6 +829,14 @@ function tryRestoreSession(){
     console.warn("AutoDS restore failed:", e);
     return false;
   }
+}
+
+// ============================
+// FRESH RELOAD (dev helper)
+// ============================
+function clearAndReload(){
+  try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
+  location.reload();
 }
 
 // ============================
