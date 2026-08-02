@@ -22,8 +22,8 @@ importance, then make live predictions or download the trained model.
 Data and models live in server memory per session (a UUID) — fine for local/single-user use. For
 multi-user production you'd swap that for a database + object storage (see Roadmap).
 
-Current guardrails: uploads and remote URL datasets are capped at 50 MB, loaded datasets are capped
-at 250,000 rows and 500 columns, and URL ingestion only accepts public HTTP/HTTPS addresses.
+Current guardrails: uploads and remote URL datasets are capped at 200 MB, loaded datasets are capped
+at 5,500,000 rows and 1,000 columns, and URL ingestion only accepts public HTTP/HTTPS addresses.
 
 ## Run it locally
 
@@ -39,13 +39,20 @@ so there's nothing else to start.
 
 ## Try it
 
-1. Drop in any CSV (e.g. a customer churn dataset, housing prices, anything with a target column).
+1. Drop in any CSV (e.g. a customer churn dataset, housing prices, fraud/risk data, or anything with a target column).
 2. Review the auto-generated profile: missing values, distributions, correlations.
 3. Pick a target column and click "Run AutoML" — it figures out whether it's classification or
    regression and trains/ranks models automatically.
 4. Enter feature values in the Predict panel to get a live prediction, or download the best model
    as a `.pkl` to use elsewhere (`pickle.load()` gives you a dict with `pipeline`, `label_encoder`,
    `feature_columns`, `target`, `problem_type`).
+
+### Churn example
+
+Churn is a strong showcase use case for AutoDS. If your dataset has a target column named
+`churn`, `churned`, `attrition`, `cancelled`, or similar, AutoDS will treat it as a likely
+classification target. Choose that column in the Train tab to model which customers are likely
+to leave, then use the Predict panel to score new customer records.
 
 ## Roadmap — turning this into the full platform
 

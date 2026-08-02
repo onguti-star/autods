@@ -108,6 +108,10 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .late-clean .late-clean-row{display:flex;gap:8px;align-items:center;margin-top:9px;}
 .late-clean input{flex:1;min-width:180px;}
 .late-clean-status{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-dim);margin-top:8px;min-height:14px;}
+.use-case-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:10px 0 16px;}
+.use-case{border:1px solid var(--panel-border);padding:10px 12px;background:rgba(95,212,214,0.035);}
+.use-case .uc-title{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--accent);margin-bottom:4px;}
+.use-case .uc-copy{font-size:11px;color:var(--ink-dim);line-height:1.45;}
 .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px;}
 .hidden{display:none!important;}
 .viz-grid{display:grid;grid-template-columns:1fr;gap:20px;margin-bottom:16px;}
@@ -497,6 +501,20 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="subhead">Supervised AutoML</div>
     <p class="hint">Pick the column to predict — AutoDS detects classification vs regression and trains a stronger panel of model types.</p>
+    <div class="use-case-strip">
+      <div class="use-case">
+        <div class="uc-title">Churn prediction</div>
+        <div class="uc-copy">Use a target like churn, churned, attrition, or cancelled to predict customers likely to leave.</div>
+      </div>
+      <div class="use-case">
+        <div class="uc-title">Risk and fraud</div>
+        <div class="uc-copy">Train on targets such as fraud, risk, default, approved, or status.</div>
+      </div>
+      <div class="use-case">
+        <div class="uc-title">Revenue outcomes</div>
+        <div class="uc-copy">Predict numeric targets like sales, revenue, profit, price, amount, or income.</div>
+      </div>
+    </div>
     
     <div class="subhead">Dimensionality Reduction (PCA)</div>
     <p class="hint">Run PCA to compress numeric features before training. This can speed up training and reduce overfitting when columns are highly correlated.</p>
