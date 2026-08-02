@@ -167,14 +167,34 @@ def _dense_model(model):
     ])
 
 
-def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors):
+def _compute_sample_weights(y_train):
+    """Compute per-sample weights that up-weight the minority class.
+    Used for models that do not natively support class_weight (e.g. GradientBoosting)."""
+    classes, counts = np.unique(y_train, return_counts=True)
+    total = len(y_train)
+    n_classes = len(classes)
+    weight_map = {cls: total / (n_classes * cnt) for cls, cnt in zip(classes, counts)}
+    return np.array([weight_map[c] for c in y_train])
+
+
+def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors, class_ratio=1.0):
     """Train a single model and return results."""
     try:
         candidate_model = clone(model)
         if name == "K-Nearest Neighbors":
             candidate_model.set_params(n_neighbors=n_neighbors)
         pipe = Pipeline(steps=[("prep", clone(preprocessor)), ("model", candidate_model)])
-        pipe.fit(X_train, y_train)
+
+        # GradientBoostingClassifier does not accept class_weight; use sample_weight instead
+        fit_params = {}
+        if (
+            problem_type == "classification"
+            and class_ratio > 3.0
+            and name == "Gradient Boosting"
+        ):
+            fit_params["model__sample_weight"] = _compute_sample_weights(y_train)
+
+        pipe.fit(X_train, y_train, **fit_params)
         preds = pipe.predict(X_test)
 
         if problem_type == "classification":
@@ -199,17 +219,30 @@ def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_t
         return {"model": name, "error": str(e)}
 
 
-def _classification_models(n_classes: int) -> dict:
+def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
+    """Build classification models with imbalance-aware settings.
+
+    class_ratio: majority_count / minority_count.  A ratio > 3 is considered
+    imbalanced; models that support class weighting receive balanced weights so
+    that minority classes (e.g. churned customers) are not drowned out.
+    """
+    imbalanced = class_ratio > 3.0
+    cw = "balanced" if imbalanced else None
+
     models = {
-        "Logistic Regression": LogisticRegression(max_iter=1000),
-        "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1),
-        "Extra Trees": ExtraTreesClassifier(n_estimators=400, random_state=42, n_jobs=-1),
+        "Logistic Regression": LogisticRegression(max_iter=1000, class_weight=cw),
+        "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1, class_weight=cw),
+        "Extra Trees": ExtraTreesClassifier(n_estimators=400, random_state=42, n_jobs=-1, class_weight=cw),
+        # GradientBoostingClassifier does not support class_weight natively;
+        # imbalance is handled via sample_weight inside _train_single_model.
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-        "Histogram Gradient Boosting": _dense_model(HistGradientBoostingClassifier(random_state=42)),
+        "Histogram Gradient Boosting": _dense_model(HistGradientBoostingClassifier(random_state=42, class_weight=cw)),
         "K-Nearest Neighbors": KNeighborsClassifier(),
     }
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
+        # scale_pos_weight tells XGBoost how much to up-weight the minority class
+        spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
         models["XGBoost"] = XGBClassifier(
             n_estimators=350,
             max_depth=4,
@@ -218,6 +251,7 @@ def _classification_models(n_classes: int) -> dict:
             colsample_bytree=0.9,
             objective=objective,
             eval_metric="logloss",
+            scale_pos_weight=spw,
             random_state=42,
             n_jobs=-1,
         )
@@ -247,8 +281,11 @@ def _regression_models() -> dict:
     return models
 
 
-def _fast_classification_models(n_classes: int) -> dict:
-    """Fast models optimized for large datasets (>100k rows)."""
+def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
+    """Fast models optimized for large datasets (>100k rows), with imbalance awareness."""
+    imbalanced = class_ratio > 3.0
+    cw = "balanced" if imbalanced else None
+
     models = {
         "Linear Classifier (Fast)": SGDClassifier(
             loss="log_loss",
@@ -256,12 +293,14 @@ def _fast_classification_models(n_classes: int) -> dict:
             tol=1e-3,
             early_stopping=True,
             validation_fraction=0.1,
+            class_weight=cw,
             n_jobs=-1,
             random_state=42,
         ),
     }
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
+        spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
         models["XGBoost (Fast)"] = XGBClassifier(
             n_estimators=50,
             max_depth=3,
@@ -271,6 +310,7 @@ def _fast_classification_models(n_classes: int) -> dict:
             tree_method="hist",
             objective=objective,
             eval_metric="logloss",
+            scale_pos_weight=spw,
             random_state=42,
             n_jobs=-1,
             verbosity=0,
@@ -327,6 +367,10 @@ def train_all(
 
     problem_type = infer_problem_type(y_raw)
 
+    # Imbalance ratio: used later to configure class-weighted models
+    class_ratio = 1.0
+    is_imbalanced = False
+
     label_encoder = None
     if problem_type == "classification":
         class_counts = y_raw.astype(str).value_counts()
@@ -334,6 +378,11 @@ def train_all(
             raise ValueError(f"Target column '{target}' has only one class. Choose a target with at least two values.")
         label_encoder = LabelEncoder()
         y = label_encoder.fit_transform(y_raw.astype(str))
+        # Compute majority / minority ratio for imbalance handling
+        majority = int(class_counts.iloc[0])
+        minority = int(class_counts.iloc[-1])
+        class_ratio = majority / max(minority, 1)
+        is_imbalanced = class_ratio > 3.0
     else:
         if pd.to_numeric(y_raw, errors="coerce").isna().any():
             raise ValueError(f"Target column '{target}' contains non-numeric values, so it cannot be used for regression.")
@@ -407,16 +456,26 @@ def train_all(
     # OPTIMIZATION: Use faster models for large datasets
     if is_large_dataset:
         candidates = (
-            _fast_classification_models(len(np.unique(y)))
+            _fast_classification_models(len(np.unique(y)), class_ratio=class_ratio)
             if problem_type == "classification"
             else _fast_regression_models()
         )
     else:
         candidates = (
-            _classification_models(len(np.unique(y)))
+            _classification_models(len(np.unique(y)), class_ratio=class_ratio)
             if problem_type == "classification"
             else _regression_models()
         )
+
+    # For imbalanced datasets notify via progress callback
+    if is_imbalanced and progress_callback:
+        try:
+            progress_callback(
+                f"Class imbalance detected (ratio {class_ratio:.1f}:1). "
+                f"Applying balanced class weights to handle minority class…"
+            )
+        except Exception:
+            pass
 
     n_neighbors = min(5, len(X_train))
     
@@ -430,7 +489,8 @@ def train_all(
             except Exception:
                 pass  # never let a progress-reporting hiccup break training
         result = _train_single_model(
-            name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors
+            name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors,
+            class_ratio=class_ratio,
         )
         results.append(result)
 
