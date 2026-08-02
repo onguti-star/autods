@@ -1,0 +1,6 @@
+PRODUCT_NAME,price,rating,sales,cost,revenue,profit,category,in_stock
+Product_A,49.87,4.50,997.04,30.00,49703.62,20039.33,Electronics,1
+Product_B,75.67,4.20,792.49,45.00,59980.84,24538.61,Clothing,1
+Product_C,100.46,4.80,1205.92,60.00,121190.85,48983.54,Food,0
+Product_D,25.54,3.93,2001.70,15.00,51058.43,21148.57,Electronics,1
+Product_E,150.24,4.61,608.64,90.00,91410.94,36743.77,Clothing,1

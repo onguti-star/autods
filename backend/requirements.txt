@@ -1,0 +1,16 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+pandas>=2.2.3
+numpy>=1.26.4
+openpyxl>=3.1.5
+scikit-learn>=1.5.1
+python-multipart>=0.0.9
+scipy>=1.13.1
+joblib>=1.4.2
+pyarrow>=16.1.0
+sqlalchemy>=2.0.32
+psycopg2-binary>=2.9.9
+pymysql>=1.1.1
+mlxtend>=0.25.0
+# Optional: for better model performance
+xgboost>=2.0.0

@@ -1,0 +1,13 @@
+"mcpServers": [
+  {
+    "name": "Web Search",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@tavily/mcp"
+    ],
+    "env": {
+      "TAVILY_API_KEY": "YOUR_API_KEY_HERE"
+    }
+  }
+]

@@ -1,0 +1,3243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AutoDS — Automated Data Science</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--bg:#0d1b2e;--bg-grid:#16273f;--panel:#112239;--panel-border:#24405f;--ink:#e9eef5;--ink-dim:#8fa3bc;--accent:#ffb627;--accent-dim:#c98f1c;--cyan:#5fd4d6;--good:#5fd98c;--bad:#ef6f6f;}
+*{box-sizing:border-box;}html,body{margin:0;padding:0;}
+body{background-color:var(--bg);background-image:linear-gradient(var(--bg-grid) 1px,transparent 1px),linear-gradient(90deg,var(--bg-grid) 1px,transparent 1px);background-size:28px 28px;color:var(--ink);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;font-size:14px;}
+::selection{background:var(--accent);color:#1a1300;}
+header{padding:20px 34px 14px;border-bottom:1px solid var(--panel-border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+.brand{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:19px;display:flex;align-items:center;gap:9px;}
+.brand .dot{width:8px;height:8px;background:var(--accent);border-radius:50%;box-shadow:0 0 8px var(--accent);}
+.brand small{color:var(--ink-dim);font-weight:400;font-size:11px;}
+.session-tag{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-dim);}
+main{width:100%;max-width:none;margin:0;padding:26px 34px 100px;}
+.stepper{display:flex;gap:3px;margin-bottom:24px;flex-wrap:wrap;}
+.step{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-dim);padding:5px 11px;border:1px solid var(--panel-border);background:var(--panel);display:flex;align-items:center;gap:5px;cursor:pointer;transition:border-color .15s;}
+.step:hover{border-color:var(--ink-dim);}
+.step.active{color:var(--accent);border-color:var(--accent-dim);}
+.step.done{color:var(--good);border-color:#2a5a3a;}
+.step .n{font-weight:700;}
+.panel{position:relative;background:var(--panel);border:1px solid var(--panel-border);padding:22px;margin-bottom:20px;width:100%;box-sizing:border-box;}
+.panel::before{content:"";position:absolute;width:9px;height:9px;border-top:2px solid var(--accent-dim);border-left:2px solid var(--accent-dim);top:-1px;left:-1px;}
+.panel::after{content:"";position:absolute;width:9px;height:9px;border-bottom:2px solid var(--accent-dim);border-right:2px solid var(--accent-dim);bottom:-1px;right:-1px;}
+.panel h2{font-family:'IBM Plex Mono',monospace;font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:0 0 14px;display:flex;align-items:center;gap:8px;}
+.panel h2 .idx{color:var(--accent);}
+.subhead{font-family:'IBM Plex Mono',monospace;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--ink-dim);margin:18px 0 10px;}
+.hint{color:var(--ink-dim);font-size:13px;margin-top:-6px;margin-bottom:14px;}
+.dropzone{border:1.5px dashed var(--panel-border);padding:40px 20px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s;}
+.dropzone:hover,.dropzone.drag{border-color:var(--accent);background:rgba(255,182,39,0.05);}
+.dropzone .big{font-size:15px;margin-bottom:5px;}
+.dropzone .small{font-size:11px;color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;}
+input[type=file]{display:none;}
+button{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;background:var(--accent);color:#1a1300;border:none;padding:9px 16px;cursor:pointer;letter-spacing:.3px;transition:filter .12s,transform .05s;}
+button:hover{filter:brightness(1.1);}button:active{transform:translateY(1px);}
+button:disabled{background:#3a4357;color:var(--ink-dim);cursor:not-allowed;}
+button.sec{background:transparent;color:var(--cyan);border:1px solid var(--panel-border);}
+button.sec:hover{border-color:var(--cyan);}
+button.dl{background:transparent;color:var(--good);border:1px solid var(--good);}
+button.dl:hover{background:rgba(95,217,140,0.08);}
+select,input[type=text],input[type=number]{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--ink);border:1px solid var(--panel-border);padding:7px 10px;font-size:12px;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--panel-border);}
+th{font-family:'IBM Plex Mono',monospace;color:var(--ink-dim);font-weight:500;text-transform:uppercase;font-size:10px;letter-spacing:.5px;}
+tr.best td{color:var(--good);}tr.best td:first-child::before{content:"★ ";}
+td.mono{font-family:'IBM Plex Mono',monospace;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+@media(max-width:860px){.grid2{grid-template-columns:1fr;}}
+.stat-row{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;}
+.stat{font-family:'IBM Plex Mono',monospace;}
+.stat .v{font-size:23px;color:var(--accent);}
+.stat .l{font-size:10px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.5px;}
+.col-list{max-height:360px;overflow-y:auto;padding-right:3px;}
+.col-card{border:1px solid var(--panel-border);padding:9px 11px;margin-bottom:7px;}
+.col-card .head{display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:12px;margin-bottom:3px;}
+.col-card .type{color:var(--cyan);font-size:9px;text-transform:uppercase;}
+.col-card .meta{color:var(--ink-dim);font-size:11px;font-family:'IBM Plex Mono',monospace;}
+.bar-mini{display:flex;gap:2px;align-items:flex-end;height:22px;margin-top:5px;}
+.bar-mini div{background:var(--cyan);flex:1;opacity:.7;}
+.pred-row{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end;}
+.pred-field{display:flex;flex-direction:column;gap:3px;min-width:120px;}
+.pred-field label{font-size:9px;color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;text-transform:uppercase;}
+.result-box{margin-top:14px;padding:14px;border:1px solid var(--good);background:rgba(95,217,140,0.06);font-family:'IBM Plex Mono',monospace;font-size:14px;}
+.error-box{margin-top:10px;padding:10px;border:1px solid var(--bad);background:rgba(239,111,111,0.08);color:var(--bad);font-family:'IBM Plex Mono',monospace;font-size:11px;}
+.loading{color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;font-size:11px;}
+.loading::after{content:"▌";animation:blink 1s steps(1) infinite;}
+@keyframes blink{50%{opacity:0;}}
+.narrative{background:rgba(95,212,214,0.06);border-left:3px solid var(--cyan);padding:11px 15px;margin:12px 0 4px;font-size:12px;line-height:1.65;}
+.narrative .nlabel{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;}
+.narrative p{margin:0 0 6px;}.narrative p:last-child{margin-bottom:0;}
+.saved-run-row{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;margin-bottom:5px;background:rgba(95,212,214,0.05);border-left:2px solid var(--cyan);font-size:12px;}
+.srr-main{flex:1;min-width:0;}
+.srr-dim{color:var(--ink-dim);font-size:10px;margin-left:6px;}
+.saved-pred-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:7px;background:rgba(255,182,39,0.05);border-left:2px solid var(--accent);font-size:12px;}
+.spr-main{flex:1;min-width:0;}
+.spr-pred{font-family:'IBM Plex Mono',monospace;color:var(--good);margin-bottom:4px;}
+.spr-inputs{color:var(--ink-dim);font-size:10px;line-height:1.5;word-break:break-word;}
+.spr-meta{color:var(--ink-dim);font-size:10px;margin-top:4px;}
+.clean-log{padding:11px 15px;margin:12px 0;font-size:12px;line-height:1.65;}
+.clean-log .nlabel{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--good);text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;}
+.clean-log p{margin:0 0 5px;padding-left:13px;position:relative;}
+.clean-log p::before{content:"✓";position:absolute;left:0;color:var(--good);}
+.clean-log p:first-of-type::before{content:"→";}
+.clean-chat-log{max-height:260px;overflow-y:auto;border:1px solid var(--panel-border);padding:10px 12px;margin-bottom:10px;background:rgba(255,255,255,0.015);}
+.clean-chat-log:empty{display:none;}
+.clean-chat-msg{margin-bottom:10px;font-size:13px;line-height:1.55;}
+.clean-chat-msg:last-child{margin-bottom:0;}
+.clean-chat-msg .cc-you{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;}
+.clean-chat-msg .cc-you-text{color:var(--ink);padding-left:13px;position:relative;}
+.clean-chat-msg .cc-you-text::before{content:"›";position:absolute;left:0;color:var(--accent);}
+.clean-chat-msg .cc-reply{color:var(--ink-dim);padding-left:13px;margin-top:4px;position:relative;}
+.clean-chat-msg .cc-reply::before{content:"✓";position:absolute;left:0;color:var(--good);}
+.clean-chat-msg.cc-error .cc-reply::before{content:"!";color:var(--bad);}
+.clean-chat-msg.cc-error .cc-reply{color:var(--bad);}
+.clean-chat-input-row{display:flex;gap:8px;margin-bottom:14px;}
+.clean-chat-input-row input{flex:1;background:var(--panel-bg,transparent);border:1px solid var(--panel-border);color:var(--ink);padding:9px 12px;font-family:inherit;font-size:13px;}
+.clean-chat-input-row input:focus{outline:none;border-color:var(--accent);}
+.clean-chat-input-row button{white-space:nowrap;}
+.late-clean{border:1px solid var(--panel-border);padding:11px 13px;margin-bottom:18px;background:rgba(95,212,214,0.035);}
+.late-clean .late-clean-head{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--cyan);margin-bottom:4px;}
+.late-clean .late-clean-row{display:flex;gap:8px;align-items:center;margin-top:9px;}
+.late-clean input{flex:1;min-width:180px;}
+.late-clean-status{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-dim);margin-top:8px;min-height:14px;}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px;}
+.hidden{display:none!important;}
+.viz-grid{display:grid;grid-template-columns:1fr;gap:20px;margin-bottom:16px;}
+.viz-card{border:1px solid var(--panel-border);padding:13px;}
+.viz-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:3px;}
+.viz-card .vc-title{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--accent);}
+.viz-card .vc-reason{font-size:10px;color:var(--ink-dim);margin-bottom:10px;}
+.chart-gallery{display:grid;grid-template-columns:1fr;gap:20px;margin-top:10px;}
+.chart-panel{border:1px solid var(--panel-border);padding:12px;position:relative;}
+.chart-box{position:relative;width:100%;height:70vh;min-height:340px;}
+.chart-box canvas{width:100%!important;height:100%!important;}
+.wordcloud-wrap{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px 16px;width:100%;height:100%;overflow-y:auto;padding:20px;box-sizing:border-box;}
+.wordcloud-wrap span{font-family:'IBM Plex Mono',monospace;font-weight:600;line-height:1;cursor:default;}
+.pca-controls{display:flex;gap:12px;align-items:flex-end;margin-bottom:14px;flex-wrap:wrap;}
+.pca-verdict{display:inline-block;padding:4px 12px;border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;}
+.pca-verdict.excellent{background:rgba(95,217,140,0.15);color:var(--good);}
+.pca-verdict.good{background:rgba(95,212,214,0.15);color:var(--cyan);}
+.pca-verdict.moderate{background:rgba(255,182,39,0.15);color:var(--accent);}
+.pca-verdict.poor{background:rgba(231,76,60,0.12);color:var(--bad);}
+.pca-stat-row{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;}
+.pca-stat{background:rgba(255,255,255,0.04);padding:10px 16px;border-left:2px solid var(--accent);font-size:12px;}
+.pca-stat .v{font-size:22px;font-family:'IBM Plex Mono',monospace;color:var(--ink);font-weight:700;}
+.pca-stat .l{font-size:10px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;}
+.pca-variance-bar{height:8px;background:var(--panel-border);border-radius:2px;margin:3px 0 10px;overflow:hidden;}
+.pca-variance-bar div{height:100%;background:var(--cyan);border-radius:2px;}
+.pca-loadings-table{font-size:11px;width:100%;border-collapse:collapse;margin-top:8px;}
+.pca-loadings-table th{text-align:left;color:var(--ink-dim);font-weight:600;padding:4px 8px;border-bottom:1px solid var(--panel-border);}
+.pca-loadings-table td{padding:4px 8px;border-bottom:1px solid rgba(255,255,255,0.04);}
+.chart-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+.chart-panel-title{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--accent);}
+.chart-panel-actions{display:flex;align-items:center;gap:6px;}
+.chart-explain{font-size:11px;color:var(--ink-dim);line-height:1.45;margin-top:9px;border-left:2px solid var(--cyan);padding-left:9px;}
+.icon-btn{background:transparent;color:var(--ink-dim);border:1px solid var(--panel-border);padding:4px 8px;line-height:1;}
+.icon-btn:hover{color:var(--cyan);border-color:var(--cyan);}
+.icon-btn.close:hover{color:var(--bad);border-color:var(--bad);}
+.chart-type-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:7px;margin-bottom:14px;}
+.ct-btn{border:1px solid var(--panel-border);padding:8px 10px;cursor:pointer;text-align:left;background:var(--panel);transition:border-color .12s,background .12s;}
+.ct-btn:hover{border-color:var(--cyan);}
+.ct-btn.selected{border-color:var(--accent);background:rgba(255,182,39,0.08);}
+.ct-btn .ct-name{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:var(--ink);}
+.ct-btn .ct-desc{font-size:10px;color:var(--ink-dim);margin-top:2px;}
+.chat-wrap{max-height:300px;overflow-y:auto;padding-right:3px;margin-bottom:10px;}
+.chat-msg{padding:8px 12px;margin-bottom:7px;font-size:13px;line-height:1.55;}
+.chat-msg.user{background:rgba(255,182,39,0.07);border-left:2px solid var(--accent);font-family:'IBM Plex Mono',monospace;font-size:12px;}
+.chat-msg.bot{background:rgba(95,212,214,0.06);border-left:2px solid var(--cyan);}
+.chat-msg pre{margin:9px 0 0;padding:12px;overflow:auto;background:#081421;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.55;color:var(--ink);}
+.chat-msg code{font-family:'IBM Plex Mono',monospace;}
+.chat-msg .code-lang{display:block;margin-bottom:6px;color:var(--accent);font-size:9px;text-transform:uppercase;letter-spacing:.6px;}
+.chat-table-wrap{overflow-x:auto;margin-top:9px;max-height:320px;overflow-y:auto;}
+.chat-table-wrap .preview-table{font-size:10px;}
+.chat-input-row{display:flex;gap:7px;}
+.chat-input-row input{flex:1;}
+/* dataset tabs */
+.ds-tabs{display:flex;gap:0;border-bottom:1px solid var(--panel-border);flex-wrap:wrap;margin-bottom:18px;}
+.ds-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:7px 14px;cursor:pointer;color:var(--ink-dim);border:1px solid transparent;border-bottom:none;margin-bottom:-1px;}
+.ds-tab:hover{color:var(--ink);}
+.ds-tab.active{color:var(--accent);border-color:var(--panel-border);border-bottom-color:var(--bg);background:var(--bg);}
+.ds-tab.add-btn{color:var(--cyan);}
+/* upload source tabs */
+.src-tabs{display:flex;gap:4px;margin-bottom:14px;}
+.src-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:5px 12px;border:1px solid var(--panel-border);cursor:pointer;color:var(--ink-dim);background:transparent;}
+.src-tab.active{color:var(--accent);border-color:var(--accent-dim);}
+.src-panel{display:none;}.src-panel.active{display:block;}
+textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--ink);border:1px solid var(--panel-border);padding:8px 10px;font-size:11px;width:100%;resize:vertical;}
+.clean-options{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:14px;}
+.clean-option{display:flex;align-items:flex-start;gap:7px;padding:8px 10px;border:1px solid var(--panel-border);}
+.clean-option input[type=checkbox]{margin-top:2px;accent-color:var(--accent);flex-shrink:0;}
+.clean-option .co-label{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;color:var(--ink);}
+.clean-option .co-desc{font-size:10px;color:var(--ink-dim);margin-top:2px;}
+.inline-option{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-dim);}
+.inline-option input{accent-color:var(--accent);}
+.corr-summary{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);margin:8px 0;}
+.preview-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;}
+.preview-table th{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;padding:8px 12px;border:1px solid var(--panel-border);text-align:left;position:sticky;top:0;}
+.preview-table th .col-name{color:var(--ink);font-weight:600;}
+.preview-table th .col-type{display:block;color:var(--accent);font-size:9px;font-weight:400;margin-top:2px;text-transform:uppercase;letter-spacing:.5px;}
+.preview-table td{padding:7px 12px;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;color:var(--ink-dim);}
+.preview-table td.null-val{color:#3a4f6a;font-style:italic;}
+.preview-table tr:hover td{background:rgba(95,212,214,0.04);}
+.preview-table tr:nth-child(even) td{background:rgba(0,0,0,0.1);}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span>AUTODS <small>/ automated data science console</small></div>
+  <div class="session-tag" id="sessionTag">no dataset loaded</div>
+</header>
+<main>
+<div class="ds-tabs" id="dsTabs">
+    <div class="ds-tab add-btn" onclick="addDataset()">＋ New dataset</div>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+    <div class="stepper" style="flex:1;margin-bottom:0;">
+      <div class="step active" id="step1" onclick="scrollPanel('panelUpload')"><span class="n">01</span> Ingest</div>
+      <div class="step" id="step2" onclick="scrollPanel('panelEDA')"><span class="n">02</span> Profile</div>
+      <div class="step" id="step3" onclick="scrollPanel('panelClean')"><span class="n">03</span> Clean</div>
+      <div class="step" id="step4" onclick="scrollPanel('panelViz')"><span class="n">04</span> Visualise</div>
+      <div class="step" id="step5" onclick="scrollPanel('panelTrain')"><span class="n">05</span> Training</div>
+      <div class="step" id="step6" onclick="scrollPanel('panelPredict')"><span class="n">06</span> Predict</div>
+    </div>
+  </div>
+
+  <!-- 01 UPLOAD -->
+  <section class="panel" id="panelUpload">
+    <h2><span class="idx">01 /</span> Ingest Dataset</h2>
+
+    <div class="src-tabs">
+      <div class="src-tab active" onclick="switchSrc(this,'srcFile')">📁 File</div>
+      <div class="src-tab" onclick="switchSrc(this,'srcUrl')">🌐 URL</div>
+      <div class="src-tab" onclick="switchSrc(this,'srcPaste')">📋 Paste</div>
+      <div class="src-tab" onclick="switchSrc(this,'srcDb')">🗄 Database</div>
+    </div>
+
+    <!-- File -->
+    <div class="src-panel active" id="srcFile">
+      <p class="hint">CSV, Excel (.xlsx), JSON, TSV, Parquet, or SQLite (.db)</p>
+      <div class="dropzone" id="dropzone">
+        <div class="big">Drop a file here, or click to browse</div>
+        <div class="small">.csv · .xlsx · .json · .tsv · .parquet · .db</div>
+        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.json,.tsv,.txt,.parquet,.db,.sqlite,.sqlite3"/>
+      </div>
+    </div>
+
+    <!-- URL -->
+    <div class="src-panel" id="srcUrl">
+      <p class="hint">Any public CSV/Excel/JSON URL, a Google Sheets share link, or a GitHub file link like github.com/user/repo/blob/main/data.csv.</p>
+      <div class="pred-row">
+        <div class="pred-field" style="flex:1;min-width:300px;">
+          <label>URL</label>
+          <input type="text" id="urlInput" placeholder="https://… or Google Sheets share link">
+        </div>
+        <div class="pred-field">
+          <label>Dataset name (optional)</label>
+          <input type="text" id="urlName" placeholder="my_data">
+        </div>
+        <div class="pred-field"><button onclick="uploadUrl()" style="margin-top:13px;">Load URL</button></div>
+      </div>
+    </div>
+
+    <!-- Paste -->
+    <div class="src-panel" id="srcPaste">
+      <p class="hint">Paste CSV or TSV text directly — first row should be column headers.</p>
+      <div class="pred-row" style="margin-bottom:8px;">
+        <div class="pred-field">
+          <label>Separator</label>
+          <select id="pasteSep"><option value=",">Comma (CSV)</option><option value="tab">Tab (TSV)</option><option value=";">Semicolon</option></select>
+        </div>
+        <div class="pred-field">
+          <label>Dataset name</label>
+          <input type="text" id="pasteName" placeholder="pasted_data">
+        </div>
+      </div>
+      <textarea id="pasteText" rows="7" placeholder="col1,col2,col3&#10;1,hello,3.5&#10;2,world,7.1"></textarea>
+      <div class="actions"><button onclick="uploadPaste()">Load pasted data</button></div>
+    </div>
+
+    <!-- Database -->
+    <div class="src-panel" id="srcDb">
+      <p class="hint">Connect to PostgreSQL or MySQL. Requires the server to have <code>sqlalchemy</code> and the relevant driver installed.</p>
+      <div class="pred-row">
+        <div class="pred-field" style="flex:1;min-width:260px;">
+          <label>Connection string</label>
+          <input type="text" id="dbConn" placeholder="postgresql://user:pass@host:5432/dbname">
+        </div>
+        <div class="pred-field">
+          <label>Dataset name</label>
+          <input type="text" id="dbName" placeholder="query_result">
+        </div>
+      </div>
+      <div class="pred-field" style="margin-bottom:8px;">
+        <label>SQL query</label>
+        <textarea id="dbQuery" rows="3" placeholder="SELECT * FROM orders LIMIT 5000"></textarea>
+      </div>
+      <div class="actions"><button onclick="uploadDb()">Run query</button></div>
+    </div>
+
+    <div id="uploadStatus"></div>
+  </section>
+
+  <!-- 02 PROFILE -->
+  <section class="panel hidden" id="panelEDA">
+    <h2><span class="idx">02 /</span> Automated Profile</h2>
+    <div class="dl-bar hidden" id="dlBarEDA">
+      <span>Download the current data as-is</span>
+      <button class="dl" onclick="dlData('csv')">⬇ CSV</button>
+      <button class="dl" onclick="dlData('excel')">⬇ Excel</button>
+      <button class="sec" onclick="dlPresentation()">📊 Presentation (HTML)</button>
+      <button class="sec" onclick="dlWork()">📄 Report (.md)</button>
+      <button class="dl" onclick="dlNotebook()">📓 Notebook (.ipynb)</button>
+    </div>
+    <div style="margin-top:20px;">
+      <div class="subhead">Original data — first 15 rows (unchanged)</div>
+      <div id="previewWrap" style="overflow-x:auto;"></div>
+    </div>
+    <div class="stat-row" id="edaStats"></div>
+    <div class="narrative hidden" id="edaNarrative"></div>
+    <div class="narrative hidden" id="learningRecommendation"></div>
+    <div style="margin-top:20px;">
+      <div class="subhead">Data describe summary</div>
+      <div id="describeWrap" style="overflow-x:auto;"></div>
+    </div>
+    <div class="grid2" style="margin-top:14px;">
+      <div>
+        <div class="subhead">Column breakdown</div>
+        <div class="col-list" id="colList"></div>
+      </div>
+      <div>
+        <div class="subhead">Correlation matrix</div>
+        <div class="chart-box" style="height:70vh;min-height:340px;"><canvas id="corrCanvas"></canvas></div>
+        <div id="corrFallback" class="hint" style="margin-top:6px;"></div>
+        <div id="corrPicker" class="hidden">
+          <div class="pred-row" style="margin-top:10px;">
+            <div class="pred-field"><label>Column A</label><select id="corrColA"></select></div>
+            <div class="pred-field"><label>Column B</label><select id="corrColB"></select></div>
+            <div class="pred-field"><button id="corrPairBtn" style="margin-top:13px;">Visualize pair</button></div>
+          </div>
+          <div id="corrPairSummary" class="corr-summary"></div>
+          <div class="chart-box" style="height:65vh;min-height:300px;"><canvas id="corrPairCanvas"></canvas></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="goCleanBtn">Continue to cleaning →</button>
+    </div>
+  </section>
+
+  <!-- 03 CLEAN -->
+  <section class="panel hidden" id="panelClean">
+    <h2><span class="idx">03 /</span> Data Cleaning</h2>
+    <p class="hint">Choose operations to apply — all recommended ones are on by default.</p>
+    <div class="clean-options">
+      <label class="clean-option"><input type="checkbox" id="opt_duplicates" checked>
+        <div><div class="co-label">Remove duplicate rows</div><div class="co-desc">Delete rows that are exact copies of another row.</div></div></label>
+      <label class="clean-option"><input type="checkbox" id="opt_constant" checked>
+        <div><div class="co-label">Drop constant columns</div><div class="co-desc">Remove columns where every value is the same.</div></div></label>
+      <label class="clean-option"><input type="checkbox" id="opt_high_missing" checked>
+        <div><div class="co-label">Drop mostly-missing columns</div><div class="co-desc">Remove columns that are over 50% empty.</div></div></label>
+      <label class="clean-option"><input type="checkbox" id="opt_whitespace" checked>
+        <div><div class="co-label">Trim whitespace</div><div class="co-desc">Strip leading/trailing spaces from all text values.</div></div></label>
+      <label class="clean-option"><input type="checkbox" id="opt_mixed" checked>
+        <div><div class="co-label">Fix mixed types</div><div class="co-desc">Convert text columns that actually contain numbers.</div></div></label>
+      <label class="clean-option"><input type="checkbox" id="opt_col_names" checked>
+        <div><div class="co-label">Standardise column names</div><div class="co-desc">Lowercase + underscores (e.g. "First Name" → "first_name").</div></div></label>
+      <label class="clean-option"><input type="checkbox" id="opt_outliers" checked>
+        <div><div class="co-label">Cap outliers (3×IQR Winsorising)</div><div class="co-desc">Clip extreme numeric values at the 3×IQR fence.</div></div></label>
+    </div>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Fill missing numbers with</label>
+        <select id="opt_fill_numeric"><option value="median">Median</option><option value="mean">Mean</option><option value="zero">Zero</option><option value="none">Don't fill</option></select>
+      </div>
+      <div class="pred-field">
+        <label>Fill missing categories with</label>
+        <select id="opt_fill_cat"><option value="mode">Most common value</option><option value="unknown">The word "Unknown"</option><option value="none">Don't fill</option></select>
+      </div>
+    </div>
+    <div class="subhead">Change column data type</div>
+    <div class="pred-row">
+      <div class="pred-field"><label>Column</label><select id="typeCol"></select></div>
+      <div class="pred-field">
+        <label>Convert to</label>
+        <select id="typeTarget">
+          <option value="float">Float / decimal</option>
+          <option value="integer">Integer</option>
+          <option value="text">Text</option>
+          <option value="category">Category</option>
+          <option value="datetime">Date / time</option>
+          <option value="boolean">Boolean</option>
+        </select>
+      </div>
+      <div class="pred-field"><button class="sec" id="changeTypeBtn" style="margin-top:13px;">Change type</button></div>
+    </div>
+    <div id="cleanPreviewSection" class="hidden" style="margin-top:24px;">
+      <div class="subhead">Live data — current state <span id="cleanPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
+      <p class="hint" style="margin-top:0;">This table updates after every cleaning operation so you can see exactly what changed.</p>
+      <div id="cleanPreviewWrap" style="overflow-x:auto;"></div>
+    </div>
+    <div class="subhead">Clean it yourself — chat</div>
+    <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email" or "fill missing values in age with median". Type "help" to see everything I understand.</p>
+    <div class="clean-chat-log" id="cleanChatLog"></div>
+    <div class="clean-chat-input-row">
+      <input type="text" id="cleanChatInput" placeholder="e.g. remove rows where status is cancelled" autocomplete="off">
+      <button id="cleanChatSendBtn">Send</button>
+    </div>
+    <div class="actions">
+      <button id="cleanBtn">Clean now</button>
+      <button class="sec" id="undoCleanBtn" disabled>↶ Undo last change</button>
+      <button class="sec" id="goVizBtn">Skip to visualise →</button>
+    </div>
+    <div class="clean-log hidden" id="cleanLog"></div>
+    <div class="narrative hidden" id="cleanNarrative"></div>
+    <div class="dl-bar hidden" id="dlBarClean">
+      <span>Download the cleaned data</span>
+      <button class="dl" onclick="dlData('csv')">⬇ CSV</button>
+      <button class="dl" onclick="dlData('excel')">⬇ Excel</button>
+      <button class="sec" onclick="dlPresentation()">📊 Presentation (HTML)</button>
+      <button class="sec" onclick="dlWork()">📄 Report (.md)</button>
+    </div>
+  </section>
+
+  <!-- 04 VISUALISE -->
+  <section class="panel hidden" id="panelViz">
+    <h2><span class="idx">04 /</span> Visualise</h2>
+
+    <!-- PCA moved to Training section -->
+
+    <div class="late-clean">
+      <div class="late-clean-head">Need to fix the data?</div>
+      <p class="hint" style="margin:0;">Apply a cleaning command here, then charts and column pickers refresh on the updated dataset.</p>
+      <div class="late-clean-row">
+        <input type="text" id="vizCleanInput" placeholder="e.g. remove rows where status is cancelled" autocomplete="off">
+        <button class="sec" id="vizCleanBtn">Apply fix</button>
+        <button class="sec" id="vizReviewCleanBtn">Open cleaning tools</button>
+      </div>
+      <div class="late-clean-status" id="vizCleanStatus"></div>
+    </div>
+
+    <div class="subhead" style="margin-top:24px;">Auto-suggested charts</div>
+    <div class="viz-grid" id="vizSuggestions"><p class="loading">Analysing data</p></div>
+
+    <div class="subhead">Build a custom chart</div>
+    <p class="hint">Pick a chart type, then choose columns below.</p>
+
+    <div class="chart-type-grid" id="chartTypeGrid">
+      <div class="ct-btn selected" data-type="histogram" onclick="selectChartType(this)"><div class="ct-name">Histogram</div><div class="ct-desc">Distribution of a numeric column</div></div>
+      <div class="ct-btn" data-type="bar" onclick="selectChartType(this)"><div class="ct-name">Bar chart</div><div class="ct-desc">Value counts for a category column</div></div>
+      <div class="ct-btn" data-type="pie" onclick="selectChartType(this)"><div class="ct-name">Pie / Donut</div><div class="ct-desc">Proportion of each category</div></div>
+      <div class="ct-btn" data-type="boxplot" onclick="selectChartType(this)"><div class="ct-name">Box plot</div><div class="ct-desc">Median, quartiles and outliers</div></div>
+      <div class="ct-btn" data-type="scatter" onclick="selectChartType(this)"><div class="ct-name">Scatter</div><div class="ct-desc">Relationship between two numeric columns</div></div>
+      <div class="ct-btn" data-type="line" onclick="selectChartType(this)"><div class="ct-name">Line chart</div><div class="ct-desc">Trend of Y across X values</div></div>
+      <div class="ct-btn" data-type="bubble" onclick="selectChartType(this)"><div class="ct-name">Bubble chart</div><div class="ct-desc">Scatter where dot size = a third column</div></div>
+      <div class="ct-btn" data-type="area" onclick="selectChartType(this)"><div class="ct-name">Area chart</div><div class="ct-desc">Cumulative trend over X values</div></div>
+      <div class="ct-btn" data-type="heatmap" onclick="selectChartType(this)"><div class="ct-name">Heatmap</div><div class="ct-desc">Correlation matrix visualization</div></div>
+      <div class="ct-btn" data-type="treemap" onclick="selectChartType(this)"><div class="ct-name">Treemap</div><div class="ct-desc">Hierarchical view of categories</div></div>
+      <div class="ct-btn" data-type="radar" onclick="selectChartType(this)"><div class="ct-name">Radar chart</div><div class="ct-desc">Compare multiple numeric columns</div></div>
+      <div class="ct-btn" data-type="violin" onclick="selectChartType(this)"><div class="ct-name">Violin plot</div><div class="ct-desc">Distribution with density shape</div></div>
+      <div class="ct-btn" data-type="density" onclick="selectChartType(this)"><div class="ct-name">Density plot</div><div class="ct-desc">Smoothed distribution curve</div></div>
+      <div class="ct-btn" data-type="scatter_map" onclick="selectChartType(this)"><div class="ct-name">Scatter Map</div><div class="ct-desc">Points on an interactive map (lat/lon)</div></div>
+      <div class="ct-btn" data-type="word_frequency" onclick="selectChartType(this)"><div class="ct-name">Word frequency</div><div class="ct-desc">Most common words in a text column</div></div>
+      <div class="ct-btn" data-type="wordcloud" onclick="selectChartType(this)"><div class="ct-name">Word cloud</div><div class="ct-desc">Text column, sized by how often each word appears</div></div>
+    </div>
+
+    <div class="pred-row">
+      <div class="pred-field"><label id="xLabel">Column (X)</label><select id="vizColX"></select></div>
+      <div class="pred-field" id="yWrap"><label>Column (Y)</label><select id="vizColY"></select></div>
+      <div class="pred-field" id="groupWrap"><label id="groupLabel">Group / Size column</label><select id="vizGroup"></select></div>
+      <div class="pred-field" id="boxplotModeWrap"><label>Box plot mode</label>
+        <select id="boxplotMode">
+          <option value="simple">Normal box plot</option>
+          <option value="full">Statistical (Q1/Median/Q3)</option>
+        </select>
+      </div>
+      <div class="pred-field"><button id="vizBtn" style="margin-top:13px;">Plot it</button></div>
+      <label class="inline-option" style="margin-bottom:8px;"><input type="checkbox" id="keepCharts" checked> Keep existing charts</label>
+      <div class="pred-field"><button class="sec" id="clearChartsBtn" style="margin-top:13px;">Clear charts</button></div>
+    </div>
+    <div id="vizError" class="error-box hidden"></div>
+    <div id="vizResult" class="chart-gallery hidden"></div>
+
+    <div class="actions">
+      <button id="goTrainBtn">Continue to training →</button>
+    </div>
+  </section>
+
+  <!-- 05 TRAIN -->
+  <section class="panel hidden" id="panelTrain">
+    <h2><span class="idx">05 /</span> Training</h2>
+    <p class="hint">Choose supervised learning when you have a target column to predict, or unsupervised learning when you want to discover clusters, patterns, or unusual rows.</p>
+
+    <div class="late-clean">
+      <div class="late-clean-head">Need to fix the data?</div>
+      <p class="hint" style="margin:0;">Apply a cleaning command before training. Current training results are cleared when the data changes, while saved runs stay available.</p>
+      <div class="late-clean-row">
+        <input type="text" id="trainCleanInput" placeholder="e.g. convert order_date to date / time" autocomplete="off">
+        <button class="sec" id="trainCleanBtn">Apply fix</button>
+        <button class="sec" id="trainReviewCleanBtn">Open cleaning tools</button>
+      </div>
+      <div class="late-clean-status" id="trainCleanStatus"></div>
+    </div>
+
+    <div class="subhead">Learning Type</div>
+    <div class="pred-row" style="margin-bottom:18px;">
+      <div class="pred-field"><button id="supervisedLearningBtn">Supervised learning</button></div>
+      <div class="pred-field"><button class="sec" id="unsupervisedLearningBtn">Unsupervised learning</button></div>
+    </div>
+
+    <div class="subhead">Supervised AutoML</div>
+    <p class="hint">Pick the column to predict — AutoDS detects classification vs regression and trains a stronger panel of model types.</p>
+    
+    <div class="subhead">Dimensionality Reduction (PCA)</div>
+    <p class="hint">Run PCA to compress numeric features before training. This can speed up training and reduce overfitting when columns are highly correlated.</p>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Colour 2D plot by (optional)</label>
+        <select id="pcaColorCol"><option value="">None</option></select>
+      </div>
+      <div class="pred-field"><button class="sec" id="pcaBtn" style="margin-top:0;">Run PCA check</button></div>
+    </div>
+    <div id="pcaResult" class="hidden"></div>
+    
+    <div class="subhead" style="margin-top:20px;">Training Options</div>
+    <label class="inline-option" style="margin-bottom:8px;">
+      <input type="checkbox" id="usePcaForTraining"> 
+      <span>Use PCA for training (recommended when PCA shows "excellent" or "good" fit)</span>
+    </label>
+    
+    <div class="pred-row" style="margin-top:14px;">
+      <div class="pred-field"><label>Target column</label><select id="targetSelect"></select></div>
+      <div class="pred-field">
+        <button id="trainBtn" style="margin-top:13px;">Run AutoML</button>
+        <button id="cancelTrainBtn" class="sec" style="margin-top:13px;display:none;">Cancel</button>
+      </div>
+    </div>
+    <div id="trainStatus"></div>
+    <div class="narrative hidden" id="trainNarrative"></div>
+    <div id="leaderboardWrap" class="hidden">
+      <div class="subhead">Model leaderboard</div>
+      <table id="leaderboardTable"></table>
+      <div class="grid2" style="margin-top:16px;">
+        <div>
+          <div class="subhead">Feature importance (best model)</div>
+          <div class="chart-box" style="height:70vh;min-height:360px;"><canvas id="importanceCanvas"></canvas></div>
+          <p class="hint hidden" id="importanceHint"></p>
+        </div>
+        <div>
+          <div class="subhead">Export model</div>
+          <p class="hint">Download the best trained pipeline as a .pkl — load it anywhere with pickle and call .predict().</p>
+          <button class="sec" id="downloadModelBtn">Download best model (.pkl)</button>
+          <button class="sec" onclick="dlPresentation()" style="margin-left:7px;">📊 Presentation (HTML)</button>
+          <button class="sec" onclick="dlWork()" style="margin-left:7px;">📄 Report (.md)</button>
+        </div>
+      </div>
+      <div class="subhead" style="margin-top:20px;">Save this run</div>
+      <p class="hint">Give this training a name to keep it around — training a different target afterwards won't lose it, and you can predict with either one later.</p>
+      <div class="pred-row">
+        <div class="pred-field"><input type="text" id="saveRunName" placeholder="e.g. Sentiment v1" maxlength="100"></div>
+        <div class="pred-field"><button class="sec" id="saveRunBtn" style="margin-top:0;">💾 Save this run</button></div>
+      </div>
+      <div id="saveRunStatus"></div>
+      <div class="subhead" id="savedRunsHead" style="margin-top:14px;display:none;">Saved runs</div>
+      <div id="savedRunsList"></div>
+      <div class="actions">
+        <button id="goPredictBtn">Continue to predictions →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 PREDICT -->
+  <section class="panel hidden" id="panelPredict">
+    <h2><span class="idx">06 /</span> Predict</h2>
+    <p class="hint">Enter values for each feature and get a prediction from the best trained model.</p>
+    <div class="pred-field" id="predictSourceWrap" style="display:none;max-width:340px;margin-bottom:12px;">
+      <label>Model source</label>
+      <select id="predictSourceSelect"></select>
+    </div>
+    <div class="pred-row" id="predictFields"></div>
+    <button id="predictBtn">Predict</button>
+    <div id="predictResult"></div>
+    <div class="subhead" id="savedPredictionsHead" style="margin-top:18px;display:none;">Saved predictions</div>
+    <div id="savedPredictionsList"></div>
+  </section>
+
+  <!-- UNSUPERVISED -->
+  <section class="panel hidden" id="panelUnsupervised">
+    <h2><span class="idx">05 /</span> Unsupervised Learning</h2>
+    <p class="hint">Discover patterns without a target column — clustering, anomaly detection, dimensionality reduction, and association rules.</p>
+    <p class="hint">Numeric unsupervised methods use median imputation plus StandardScaler before distance-based analysis, so columns with large values do not dominate the result.</p>
+
+    <div class="subhead">Suggestions</div>
+    <div id="unsupervisedSuggestions" class="hint">Loading suggestions…</div>
+
+    <div class="subhead" style="margin-top:20px;">Clustering</div>
+    <p class="hint">Group similar rows together. Use the analyzer to find the best number of clusters, then run clustering.</p>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Method</label>
+        <select id="clusterMethod">
+          <option value="auto">Auto best</option>
+          <option value="kmeans">K-Means</option>
+          <option value="hierarchical">Hierarchical</option>
+          <option value="dbscan">DBSCAN</option>
+        </select>
+      </div>
+      <div class="pred-field" id="clusterKWrap">
+        <label>Number of clusters (K)</label>
+        <input type="number" id="clusterK" value="3" min="2" max="20">
+      </div>
+      <div class="pred-field"><button class="sec" id="analyzeClustersBtn" style="margin-top:13px;">🔍 Analyze best K</button></div>
+      <div class="pred-field"><button id="clusterBtn" style="margin-top:13px;">Run clustering</button></div>
+    </div>
+    <div id="clusterAnalysisResult" class="hidden"></div>
+    <div id="clusterResult" class="hidden"></div>
+
+    <div class="subhead" style="margin-top:20px;">Anomaly Detection</div>
+    <p class="hint">Find unusual rows that don't fit the normal pattern.</p>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Method</label>
+        <select id="anomalyMethod">
+          <option value="isolation_forest">Isolation Forest</option>
+          <option value="lof">Local Outlier Factor</option>
+        </select>
+      </div>
+      <div class="pred-field">
+        <label>Contamination (expected % outliers)</label>
+        <input type="number" id="anomalyContamination" value="0.1" min="0.01" max="0.5" step="0.01">
+      </div>
+      <div class="pred-field"><button id="anomalyBtn" style="margin-top:13px;">Detect anomalies</button></div>
+    </div>
+    <div id="anomalyResult" class="hidden"></div>
+
+    <div class="subhead" style="margin-top:20px;">Dimensionality Reduction</div>
+    <p class="hint">Project high-dimensional data into 2D for visualization.</p>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Method</label>
+        <select id="reduceMethod">
+          <option value="tsne">t-SNE</option>
+          <option value="pca">PCA</option>
+        </select>
+      </div>
+      <div class="pred-field">
+        <label>Components</label>
+        <input type="number" id="reduceComponents" value="2" min="2" max="5">
+      </div>
+      <div class="pred-field"><button id="reduceBtn" style="margin-top:13px;">Reduce dimensions</button></div>
+    </div>
+    <div id="reduceResult" class="hidden"></div>
+
+    <div class="subhead" style="margin-top:20px;">Association Rules</div>
+    <p class="hint">Find relationships between categorical variables (Apriori algorithm).</p>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Min support</label>
+        <input type="number" id="assocSupport" value="0.1" min="0.01" max="1" step="0.01">
+      </div>
+      <div class="pred-field">
+        <label>Min confidence</label>
+        <input type="number" id="assocConfidence" value="0.5" min="0.1" max="1" step="0.05">
+      </div>
+      <div class="pred-field"><button id="assocBtn" style="margin-top:13px;">Find rules</button></div>
+    </div>
+    <div id="assocResult" class="hidden"></div>
+
+    <div class="actions">
+      <button id="goPredictFromUnsupervisedBtn">Continue to predictions →</button>
+    </div>
+  </section>
+
+  <!-- ASSISTANT -->
+  <section class="panel hidden" id="panelAssistant">
+    <h2><span class="idx">⌘ /</span> Ask about your data</h2>
+    <p class="hint">Examples: "study this dataset" · "strongest correlations" · "describe Cluster 3" · "compare all clusters by mean values" · "code for scatter"</p>
+    <div class="chat-wrap" id="chatWrap"></div>
+    <div class="chat-input-row">
+      <input type="text" id="chatInput" placeholder="Ask a question about your data…">
+      <button id="chatBtn">Ask</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const API = "/api";
+
+// Multi-dataset state
+let datasets = [];      // [{id, name, sessionId}]
+let activeDs = null;    // currently selected dataset id
+
+// Per-dataset state (keyed by dataset id)
+const dsState = {};
+
+function getState(){ return dsState[activeDs] || {}; }
+function setState(patch){ dsState[activeDs] = {...(dsState[activeDs]||{}), ...patch}; }
+function setDatasetState(id, patch){ dsState[id] = {...(dsState[id]||{}), ...patch}; }
+function escapeHtml(value){
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    "\"":"&quot;",
+    "'":"&#39;"
+  }[ch]));
+}
+
+function renderAssistantContent(el, text){
+  el.innerHTML = "";
+  const pattern = /```(\w+)?\n([\s\S]*?)```/g;
+  let last = 0;
+  let match;
+  while((match = pattern.exec(text)) !== null){
+    const before = text.slice(last, match.index);
+    if(before){
+      const p = document.createElement("div");
+      p.textContent = before.trim();
+      el.appendChild(p);
+    }
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    const lang = match[1] || "code";
+    code.innerHTML = `<span class="code-lang">${escapeHtml(lang)}</span>${escapeHtml(match[2].trim())}`;
+    pre.appendChild(code);
+    el.appendChild(pre);
+    last = pattern.lastIndex;
+  }
+  const rest = text.slice(last).trim();
+  if(rest){
+    const p = document.createElement("div");
+    p.textContent = rest;
+    el.appendChild(p);
+  }
+  if(!el.childNodes.length) el.textContent = text;
+}
+
+const charts = {};
+const customChartSpecs = [];   // visible charts included in the downloaded report
+Chart.defaults.responsive = true;
+Chart.defaults.maintainAspectRatio = false;
+function makeChart(id, config){
+  if(charts[id]){ charts[id].destroy(); delete charts[id]; }
+  const ctx = document.getElementById(id).getContext("2d");
+  charts[id] = new Chart(ctx, config);
+  return charts[id];
+}
+function destroyChart(id){
+  if(charts[id]){ charts[id].destroy(); delete charts[id]; }
+}
+
+const $ = id => document.getElementById(id);
+const show = id => $(id).classList.remove("hidden");
+const hide = id => $(id).classList.add("hidden");
+function scrollPanel(id){ $(id).scrollIntoView({behavior:"smooth"}); }
+
+function setStep(n){
+  for(let i=1;i<=6;i++){
+    const el = $("step"+i); if(!el) continue;
+    el.classList.remove("active","done");
+    if(i < n) el.classList.add("done");
+    if(i === n) el.classList.add("active");
+  }
+}
+
+function showNarrative(id, lines){
+  if(!lines?.length){ hide(id); return; }
+  $(id).innerHTML = `<div class="nlabel">What this means</div>` + lines.map(p=>`<p>${p}</p>`).join("");
+  show(id);
+}
+
+// ---------- SOURCE TABS ----------
+function switchSrc(tab, panelId){
+  document.querySelectorAll(".src-tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".src-panel").forEach(p => p.classList.remove("active"));
+  tab.classList.add("active");
+  $(panelId).classList.add("active");
+}
+
+// ---------- DATASET TABS ----------
+function addDataset(){
+  resetPanels();
+  const id = "ds_" + Date.now();
+  datasets.push({id, name:"New dataset", sessionId:null});
+  activeDs = id;
+  dsState[id] = {};
+  renderDsTabs();
+  // Only scroll if page is already loaded (not during init)
+  if(document.readyState === "complete") scrollPanel("panelUpload");
+}
+
+function switchDataset(id){
+  activeDs = id;
+  renderDsTabs();
+  const state = dsState[id] || {};
+  if(state.sessionId){
+    // Restore the loaded state for this dataset
+    restoreDataset(state);
+  } else {
+    resetPanels();
+    scrollPanel("panelUpload");
+  }
+}
+
+function renderDsTabs(){
+  const tabsEl = $("dsTabs");
+  const addBtn = tabsEl.querySelector(".add-btn");
+  // Remove old dataset tabs
+  tabsEl.querySelectorAll(".ds-tab:not(.add-btn)").forEach(t => t.remove());
+  datasets.forEach(ds => {
+    const t = document.createElement("div");
+    t.className = "ds-tab" + (ds.id === activeDs ? " active" : "");
+    t.textContent = ds.name;
+    t.onclick = () => switchDataset(ds.id);
+    tabsEl.insertBefore(t, addBtn);
+  });
+}
+
+function clearAnalysisUI(){
+  Object.keys(charts).forEach(id => destroyChart(id));
+  currentCorrelation = null;
+  allColumns = [];
+  customChartSpecs.length = 0;
+
+  [
+    "edaStats","colList","describeWrap","previewWrap","cleanPreviewWrap",
+    "cleanLog","cleanNarrative","cleanChatLog","vizResult","vizError",
+    "trainStatus","trainNarrative","leaderboardTable","saveRunStatus",
+    "savedRunsList","predictFields","predictResult","savedPredictionsList",
+    "chatWrap","corrFallback","corrPairSummary","pcaResult",
+    "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
+    "anomalyResult","reduceResult","assocResult"
+  ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
+
+  if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
+  ["cleanPreviewSection","cleanLog","cleanNarrative","dlBarClean","dlBarEDA",
+   "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint",
+   "pcaResult","corrPicker","clusterAnalysisResult","clusterResult",
+   "anomalyResult","reduceResult","assocResult"].forEach(id => { if($(id)) hide(id); });
+
+  ["vizCleanStatus","trainCleanStatus"].forEach(id => {
+    if($(id)){
+      $(id).textContent = "";
+      $(id).style.color = "";
+    }
+  });
+  ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName"].forEach(id => {
+    if($(id)) $(id).value = "";
+  });
+  ["vizColX","vizColY","vizGroup","targetSelect","typeCol","pcaColorCol","predictSourceSelect"].forEach(id => {
+    if($(id)) $(id).innerHTML = "";
+  });
+  if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
+  if($("pcaColorCol")) $("pcaColorCol").innerHTML = `<option value="">None</option>`;
+  if($("predictSourceWrap")) $("predictSourceWrap").style.display = "none";
+  if($("savedRunsHead")) $("savedRunsHead").style.display = "none";
+  if($("savedPredictionsHead")) $("savedPredictionsHead").style.display = "none";
+  if($("undoCleanBtn")) $("undoCleanBtn").disabled = true;
+  destroyChart("importanceCanvas");
+  destroyChart("corrCanvas");
+  destroyChart("corrPairCanvas");
+}
+
+function resetPanels(){
+  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised"].forEach(hide);
+  $("uploadStatus").innerHTML = "";
+  clearAnalysisUI();
+  clearTrainingUI();
+  clearPredictionsUI();
+  setStep(1);
+}
+
+function restoreDataset(state){
+  resetPanels();
+  // Just reload EDA for the active dataset
+  show("panelEDA"); show("panelAssistant"); setStep(2);
+  if(state.profile) renderEDA(state.profile);
+  if(state.cleanLog){
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + state.cleanLog.map(p=>`<p>${p}</p>`).join("");
+    show("cleanLog"); show("panelClean");
+  }
+  if(state.training){
+    renderTrainingState(state.training);
+    show("panelTrain");
+  } else {
+    clearTrainingUI();
+  }
+  renderSavedRunsList();
+  renderPredictSourceOptions();
+  refreshSavedRuns(activeDs, state.sessionId);
+  renderSavedPredictionsList();
+  refreshSavedPredictions(activeDs, state.sessionId);
+}
+
+// Initialize with one dataset slot
+// (deferred to DOMContentLoaded so all event listeners attach before any scrolling)
+
+// ---------- DOWNLOAD DATA ----------
+function dlData(fmt){
+  const sid = getState().sessionId;
+  if(!sid) return;
+  window.open(`${API}/download_data/${sid}?fmt=${fmt}`, "_blank");
+}
+
+async function dlPresentation(){
+  const sid = getState().sessionId;
+  if(!sid) return;
+  try{
+    const res = await fetch(`${API}/download_html/${sid}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({charts: customChartSpecs})
+    });
+    if(!res.ok) throw new Error("Could not generate the report.");
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const match = cd.match(/filename=([^;]+)/);
+    const filename = match ? match[1].trim() : "autods_report.html";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }catch(err){
+    alert(err.message || "Could not generate the report.");
+  }
+}
+
+function dlWork(){
+  const sid = getState().sessionId;
+  if(!sid) return;
+  const a = document.createElement("a");
+  a.href = `${API}/download_work/${sid}`;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function dlNotebook(){
+  const sid = getState().sessionId;
+  if(!sid) return;
+  try{
+    const res = await fetch(`${API}/download_notebook/${sid}`);
+    if(!res.ok) throw new Error("Could not generate the notebook.");
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const match = cd.match(/filename="?([^";\n]+)"?/);
+    const filename = match ? match[1].trim() : "autods_notebook.ipynb";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }catch(err){
+    alert(err.message || "Could not generate the notebook.");
+  }
+}
+
+// ---------- UPLOAD HELPERS ----------
+function _onUploaded(data){
+  const name = data.filename;
+  const loadedMessage = `<p style="color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;">✓ Loaded ${data.shape.rows.toLocaleString()} rows × ${data.shape.columns} columns</p>`;
+  clearAnalysisUI();
+  ["panelClean","panelViz","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
+  datasets.find(d => d.id === activeDs).name = name;
+  setState({sessionId: data.session_id, allColumns: data.columns, savedRuns: [], savedPredictions: [], training: null, profile: null, cleanLog: null});
+  clearPredictionsUI();
+  $("sessionTag").textContent = `${name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
+  $("uploadStatus").innerHTML = loadedMessage;
+  renderDsTabs();
+  setStep(2); show("panelAssistant");
+  loadEDA(activeDs, data.session_id);
+}
+
+// ---------- UPLOAD: FILE ----------
+const dropzone = $("dropzone"), fileInput = $("fileInput");
+dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("drag"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", e => { e.preventDefault(); dropzone.classList.remove("drag"); if(e.dataTransfer.files.length) handleUpload(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", e => { if(e.target.files.length) handleUpload(e.target.files[0]); });
+
+async function handleUpload(file){
+  $("uploadStatus").innerHTML = `<p class="loading">Uploading ${file.name}</p>`;
+  const fd = new FormData(); fd.append("file", file);
+  try{
+    const res = await fetch(`${API}/upload`, {method:"POST", body:fd});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Upload failed");
+    _onUploaded(data);
+  }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// ---------- UPLOAD: URL ----------
+async function uploadUrl(){
+  const url = $("urlInput").value.trim();
+  if(!url){ alert("Please enter a URL."); return; }
+  $("uploadStatus").innerHTML = `<p class="loading">Fetching ${url}</p>`;
+  try{
+    const res = await fetch(`${API}/upload_url`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({url, name:$("urlName").value.trim()})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Failed to load URL");
+    _onUploaded(data);
+  }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// ---------- UPLOAD: PASTE ----------
+async function uploadPaste(){
+  const text = $("pasteText").value.trim();
+  if(!text){ alert("Please paste some data first."); return; }
+  $("uploadStatus").innerHTML = `<p class="loading">Parsing pasted data…</p>`;
+  try{
+    const res = await fetch(`${API}/upload_paste`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text, separator:$("pasteSep").value, name:$("pasteName").value||"pasted_data"})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Failed to parse");
+    _onUploaded(data);
+  }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// ---------- UPLOAD: DATABASE ----------
+async function uploadDb(){
+  const conn = $("dbConn").value.trim(), query = $("dbQuery").value.trim();
+  if(!conn || !query){ alert("Connection string and query are both required."); return; }
+  $("uploadStatus").innerHTML = `<p class="loading">Running query…</p>`;
+  try{
+    const res = await fetch(`${API}/upload_db`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({connection_string:conn, query, name:$("dbName").value||"db_query"})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Database error");
+    _onUploaded(data);
+  }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// Convenience getter used by downstream code
+function getSid(){ return getState().sessionId; }
+let allColumns = [];   // kept in sync for selects
+
+// ---------- EDA ----------
+let currentCorrelation = null;
+async function loadEDA(datasetId = activeDs, sid = getState().sessionId){
+  if(activeDs === datasetId) show("panelEDA");
+  if(activeDs === datasetId){
+    $("edaStats").innerHTML = `<p class="loading">Profiling uploaded data</p>`;
+    $("colList").innerHTML = "";
+    $("describeWrap").innerHTML = "";
+    $("previewWrap").innerHTML = "";
+  }
+  try{
+    const res = await fetch(`${API}/eda/${sid}`);
+    const profile = await res.json();
+    if(!res.ok) throw new Error(profile.detail || "Could not profile this dataset.");
+    setDatasetState(datasetId, {profile});
+    if(activeDs === datasetId) renderEDA(profile);
+  }catch(err){
+    if(activeDs === datasetId){
+      $("edaStats").innerHTML = `<div class="error-box">${escapeHtml(err.message || "Could not profile this dataset.")}</div>`;
+      $("colList").innerHTML = "";
+      $("describeWrap").innerHTML = "";
+      $("previewWrap").innerHTML = "";
+    }
+  }
+}
+
+function renderEDA(profile){
+  allColumns = profile.columns.map(c => c.name);
+  setState({allColumns, lastProfile: profile});
+  showNarrative("edaNarrative", profile.narrative);
+  show("dlBarEDA");
+  if("can_undo" in profile){
+    $("undoCleanBtn").disabled = !profile.can_undo;
+  }
+  $("edaStats").innerHTML = `
+    <div class="stat"><div class="v">${profile.shape.rows.toLocaleString()}</div><div class="l">rows</div></div>
+    <div class="stat"><div class="v">${profile.shape.columns}</div><div class="l">columns</div></div>
+    <div class="stat"><div class="v">${profile.duplicate_rows}</div><div class="l">duplicates</div></div>
+    <div class="stat"><div class="v">${((profile.total_missing_cells/profile.total_cells)*100).toFixed(1)}%</div><div class="l">missing</div></div>
+  `;
+  renderLearningRecommendation(profile.learning_recommendation);
+  renderDescribe(profile.describe);
+  $("colList").innerHTML = profile.columns.map(c => {
+    let extra = "";
+    let metaExtra = "";
+    if(c.type==="numeric" && c.histogram?.counts?.length){
+      const mx = Math.max(...c.histogram.counts,1);
+      extra = `<div class="bar-mini">${c.histogram.counts.map(v=>`<div style="height:${Math.max(3,(v/mx)*22)}px"></div>`).join("")}</div>`;
+    } else if(c.type==="categorical" && c.top_values?.length){
+      const mx = Math.max(...c.top_values.map(t=>t.count),1);
+      extra = `<div class="bar-mini">${c.top_values.slice(0,8).map(t=>`<div title="${t.value}: ${t.count}" style="height:${Math.max(3,(t.count/mx)*22)}px"></div>`).join("")}</div>`;
+    } else if(c.type==="text" && c.text_stats){
+      const tw = c.text_stats.top_words || [];
+      metaExtra = ` · ~${c.text_stats.avg_words} words/entry · vocab ${c.text_stats.vocab_size}`;
+      if(tw.length){
+        const mx = Math.max(...tw.map(t=>t.count),1);
+        extra = `<div class="bar-mini">${tw.slice(0,8).map(t=>`<div title="${t.word}: ${t.count}" style="height:${Math.max(3,(t.count/mx)*22)}px"></div>`).join("")}</div>`;
+      }
+    }
+    return `<div class="col-card"><div class="head"><span>${c.name}</span><span class="type">${c.type==="text" ? "TEXT" : c.dtype}</span></div><div class="meta">missing ${c.missing_pct}% · unique ${c.unique}${metaExtra}</div>${extra}</div>`;
+  }).join("");
+  drawCorrelation(profile.correlation);
+  populateSelects();
+  // Only render the original preview once — it must stay frozen as the "raw data" reference
+  if(!$("previewWrap").innerHTML){
+    renderPreview(profile.columns, profile.preview, "previewWrap");
+  }
+}
+
+function renderCleanPreview(profile){
+  if(!profile.preview || !profile.preview.length) return;
+  renderPreview(profile.columns, profile.preview, "cleanPreviewWrap");
+  const badge = $("cleanPreviewBadge");
+  if(badge) badge.textContent = `${profile.shape.rows.toLocaleString()} rows · ${profile.shape.columns} cols`;
+  show("cleanPreviewSection");
+}
+
+function clearVisualizationUIAfterDataChange(){
+  Array.from($("vizSuggestions").querySelectorAll("canvas")).forEach(c => destroyChart(c.id));
+  Array.from($("vizResult").querySelectorAll("canvas")).forEach(c => destroyChart(c.id));
+  $("vizSuggestions").innerHTML = `<p class="hint">Charts were cleared because the data changed.</p>`;
+  $("vizResult").innerHTML = "";
+  hide("vizResult");
+  customChartSpecs.length = 0;
+  hide("vizError");
+}
+
+function handleDataChanged(profile, opts = {}){
+  if(profile?.data_changed === false) return;
+  setState({training: null});
+  clearTrainingUI();
+  clearVisualizationUIAfterDataChange();
+  renderSavedRunsList();
+  renderPredictSourceOptions();
+  if(opts.reloadViz && !$("panelViz").classList.contains("hidden")){
+    loadVizSuggestions();
+  }
+}
+
+function renderLearningRecommendation(rec){
+  const box = $("learningRecommendation");
+  if(!rec){ hide("learningRecommendation"); return; }
+  const modeLabel = {
+    supervised: "Supervised learning suggested",
+    unsupervised: "Unsupervised learning suggested",
+    eda_only: "EDA / cleaning suggested"
+  }[rec.mode] || "Learning path suggestion";
+  const targetList = (rec.suggested_targets || []).map(t => {
+    const reasons = (t.reasons || []).join(", ");
+    return `<li><strong>${escapeHtml(t.column)}</strong> · ${escapeHtml(t.problem_type)} · confidence score ${t.score}${reasons ? ` · ${escapeHtml(reasons)}` : ""}</li>`;
+  }).join("");
+  box.innerHTML = `
+    <div class="nlabel">${modeLabel}</div>
+    <p>${escapeHtml(rec.summary || "")}</p>
+    <p>${escapeHtml(rec.recommended_next_step || "")}</p>
+    ${targetList ? `<ul style="margin:8px 0 0 18px;padding:0;">${targetList}</ul>` : ""}
+  `;
+  show("learningRecommendation");
+}
+
+function renderDescribe(describe){
+  const wrap = $("describeWrap");
+  if(!describe?.columns?.length || !describe?.index?.length){
+    wrap.innerHTML = `<p class="hint">No describe summary available for this dataset.</p>`;
+    return;
+  }
+  const fmt = v => {
+    if(v === null || v === undefined || Number.isNaN(v)) return "";
+    if(typeof v === "number") return Number.isInteger(v) ? v.toLocaleString() : Number(v.toFixed(4)).toLocaleString();
+    return escapeHtml(String(v));
+  };
+  let html = `<table class="preview-table"><thead><tr><th><span class="col-name">stat</span></th>` +
+    describe.columns.map(c => `<th><span class="col-name">${escapeHtml(c)}</span></th>`).join("") +
+    `</tr></thead><tbody>`;
+  describe.index.forEach((idx, r) => {
+    const values = describe.data?.[r] || [];
+    html += `<tr><td><strong>${escapeHtml(idx)}</strong></td>` +
+      describe.columns.map((_, c) => `<td>${fmt(values[c])}</td>`).join("") +
+      `</tr>`;
+  });
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
+}
+
+function renderPreview(columns, rows, targetId = "previewWrap"){
+  const wrap = $(targetId);
+  if(!wrap) return;
+  if(!rows || !rows.length){ if(targetId === "previewWrap") hide("previewWrap"); return; }
+  const typeColor = t => t.includes("int") ? "#5fd4d6" : t.includes("float") ? "#ffb627" : t.includes("bool") ? "#5fd98c" : "#a78bfa";
+  let html = `<table class="preview-table"><thead><tr>
+    <th><span class="col-name">#</span><span class="col-type">row</span></th>` +
+    columns.map(c => `<th><span class="col-name">${c.name}</span><span class="col-type" style="color:${typeColor(c.dtype)}">${c.dtype}</span></th>`).join("") +
+    `</tr></thead><tbody>`;
+  rows.forEach((row, i) => {
+    html += `<tr><td style="color:var(--ink-dim);text-align:center;">${i+1}</td>` +
+      columns.map(c => {
+        const v = row[c.name];
+        return v === null || v === undefined
+          ? `<td class="null-val">null</td>`
+          : `<td>${String(v).length > 30 ? String(v).slice(0,30)+"…" : v}</td>`;
+      }).join("") + `</tr>`;
+  });
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+}
+
+function drawCorrelation(corr){
+  currentCorrelation = corr;
+  hide("corrPicker");
+  if(!corr || corr.columns.length < 2){
+    $("corrFallback").textContent = "Not enough numeric columns.";
+    destroyChart("corrCanvas"); destroyChart("corrPairCanvas");
+    return;
+  }
+  $("corrFallback").textContent = "";
+  const L = corr.columns, pts = [];
+  for(let i=0;i<L.length;i++) for(let j=0;j<L.length;j++) pts.push({x:j,y:i,v:corr.matrix[i][j]});
+  makeChart("corrCanvas",{type:"scatter",
+    data:{datasets:[{data:pts.map(d=>({x:d.x,y:d.y})),backgroundColor:pts.map(d=>d.v>=0?`rgba(95,217,214,${Math.abs(d.v)})`:`rgba(239,111,111,${Math.abs(d.v)})`),pointRadius:11,pointStyle:'rect'}]},
+    options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${L[c.raw.y]} × ${L[c.raw.x]}: ${corr.matrix[c.raw.y][c.raw.x]}`}}},
+      scales:{x:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{color:'#1f3a5f'}},
+              y:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{color:'#1f3a5f'}}}}});
+  populateCorrelationPicker(corr);
+}
+
+function populateCorrelationPicker(corr){
+  const opts = corr.columns.map(c=>`<option value="${c}">${c}</option>`).join("");
+  $("corrColA").innerHTML = opts;
+  $("corrColB").innerHTML = opts;
+  if(corr.columns.length > 1) $("corrColB").selectedIndex = 1;
+  show("corrPicker");
+  updateCorrelationPair();
+}
+
+function correlationValue(a,b){
+  if(!currentCorrelation) return null;
+  const i = currentCorrelation.columns.indexOf(a), j = currentCorrelation.columns.indexOf(b);
+  if(i < 0 || j < 0) return null;
+  return currentCorrelation.matrix[i][j];
+}
+
+function describeCorr(v){
+  const av = Math.abs(v);
+  const strength = av >= 0.7 ? "strong" : av >= 0.4 ? "moderate" : "weak";
+  const direction = v > 0 ? "positive" : v < 0 ? "negative" : "near-zero";
+  return `${strength} ${direction} correlation (${Number(v).toFixed(3)})`;
+}
+
+async function updateCorrelationPair(){
+  const a = $("corrColA").value, b = $("corrColB").value;
+  if(!a || !b || a === b){
+    $("corrPairSummary").textContent = "Choose two different numeric columns.";
+    destroyChart("corrPairCanvas");
+    return;
+  }
+  const v = correlationValue(a,b);
+  $("corrPairSummary").textContent = v === null ? "" : `${a} × ${b}: ${describeCorr(v)}`;
+  try{
+    const url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(a)}&chart_type=scatter&y=${encodeURIComponent(b)}`;
+    const res = await fetch(url);
+    const ch = await res.json();
+    if(!res.ok) throw new Error(ch.detail || "Failed");
+    drawChart("corrPairCanvas", ch);
+  }catch(err){
+    $("corrPairSummary").textContent = err.message;
+    destroyChart("corrPairCanvas");
+  }
+}
+
+$("corrPairBtn").addEventListener("click", updateCorrelationPair);
+$("corrColA").addEventListener("change", updateCorrelationPair);
+$("corrColB").addEventListener("change", updateCorrelationPair);
+
+$("goCleanBtn").addEventListener("click", () => { show("panelClean"); setStep(3); scrollPanel("panelClean"); });
+
+// ---------- CLEAN ----------
+function showCleaningResult(data){
+  renderEDA(data);
+  renderCleanPreview(data);
+  handleDataChanged(data, {reloadViz: true});
+  if(data.cleaning_log?.length){
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + data.cleaning_log.map(p=>`<p>${p}</p>`).join("");
+    show("cleanLog");
+  }
+  showNarrative("cleanNarrative", data.narrative);
+  show("dlBarClean");
+}
+
+$("cleanBtn").addEventListener("click", async () => {
+  $("cleanBtn").disabled = true; $("cleanBtn").textContent = "Cleaning…";
+  hide("cleanLog"); hide("cleanNarrative"); hide("dlBarClean");
+  const opts = {
+    drop_duplicates:$("opt_duplicates").checked, drop_constant_cols:$("opt_constant").checked,
+    drop_high_missing_cols:$("opt_high_missing").checked, strip_whitespace:$("opt_whitespace").checked,
+    fix_mixed_types:$("opt_mixed").checked, fix_column_names:$("opt_col_names").checked,
+    remove_outliers:$("opt_outliers").checked,
+    fill_missing_numeric:$("opt_fill_numeric").value, fill_missing_categorical:$("opt_fill_cat").value,
+  };
+  try{
+    const res = await fetch(`${API}/clean/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(opts)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Cleaning failed");
+    showCleaningResult(data);
+  }catch(err){
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div><p style="color:var(--bad)">${err.message}</p>`;
+    show("cleanLog");
+  }finally{ $("cleanBtn").disabled = false; $("cleanBtn").textContent = "Clean now"; }
+});
+
+function appendChatMessage(command, message, isError){
+  const row = document.createElement("div");
+  row.className = "clean-chat-msg" + (isError ? " cc-error" : "");
+  row.innerHTML = `<div class="cc-you">You</div><div class="cc-you-text"></div><div class="cc-reply"></div>`;
+  row.querySelector(".cc-you-text").textContent = command;
+  row.querySelector(".cc-reply").textContent = message;
+  $("cleanChatLog").appendChild(row);
+  $("cleanChatLog").scrollTop = $("cleanChatLog").scrollHeight;
+}
+
+async function sendCleanChat(){
+  const input = $("cleanChatInput");
+  const command = input.value.trim();
+  if(!command) return;
+  input.value = "";
+  $("cleanChatSendBtn").disabled = true;
+  try{
+    const res = await fetch(`${API}/clean_chat/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "That command failed.");
+    appendChatMessage(command, data.chat_message, false);
+    renderEDA(data);
+    renderCleanPreview(data);
+    handleDataChanged(data, {reloadViz: true});
+    showNarrative("cleanNarrative", data.narrative);
+    show("dlBarClean");
+  }catch(err){
+    appendChatMessage(command, err.message || "That command failed.", true);
+  }finally{
+    $("cleanChatSendBtn").disabled = false;
+    input.focus();
+  }
+}
+
+$("cleanChatSendBtn").addEventListener("click", sendCleanChat);
+$("cleanChatInput").addEventListener("keydown", (e) => { if(e.key === "Enter") sendCleanChat(); });
+
+function openCleaningTools(){
+  show("panelClean");
+  setStep(3);
+  scrollPanel("panelClean");
+}
+
+async function applyLateClean(context){
+  const input = $(`${context}CleanInput`);
+  const button = $(`${context}CleanBtn`);
+  const status = $(`${context}CleanStatus`);
+  const command = input.value.trim();
+  if(!command) return;
+  button.disabled = true;
+  button.textContent = "Applying...";
+  status.textContent = "Updating data";
+  try{
+    const res = await fetch(`${API}/clean_chat/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "That cleaning command failed.");
+    input.value = "";
+    appendChatMessage(command, data.chat_message, false);
+    renderEDA(data);
+    renderCleanPreview(data);
+    handleDataChanged(data, {reloadViz: context === "viz"});
+    show("panelClean");
+    show("dlBarClean");
+    showNarrative("cleanNarrative", data.narrative);
+    status.style.color = "var(--good)";
+    status.textContent = data.data_changed === false
+      ? data.chat_message
+      : `${data.chat_message} Columns, charts, and training controls are now using the updated data.`;
+  }catch(err){
+    status.style.color = "var(--bad)";
+    status.textContent = err.message || "That cleaning command failed.";
+  }finally{
+    button.disabled = false;
+    button.textContent = "Apply fix";
+    input.focus();
+  }
+}
+
+$("vizCleanBtn").addEventListener("click", () => applyLateClean("viz"));
+$("trainCleanBtn").addEventListener("click", () => applyLateClean("train"));
+$("vizCleanInput").addEventListener("keydown", e => { if(e.key === "Enter") applyLateClean("viz"); });
+$("trainCleanInput").addEventListener("keydown", e => { if(e.key === "Enter") applyLateClean("train"); });
+$("vizReviewCleanBtn").addEventListener("click", openCleaningTools);
+$("trainReviewCleanBtn").addEventListener("click", openCleaningTools);
+
+$("undoCleanBtn").addEventListener("click", async () => {
+  $("undoCleanBtn").disabled = true;
+  try{
+    const res = await fetch(`${API}/undo/${getSid()}`, {method:"POST"});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Nothing to undo.");
+    renderEDA(data);
+    renderCleanPreview(data);
+    handleDataChanged(data, {reloadViz: true});
+    appendChatMessage("(undo)", "Reverted the last cleaning change.", false);
+  }catch(err){
+    appendChatMessage("(undo)", err.message || "Nothing to undo.", true);
+  }
+});
+
+$("changeTypeBtn").addEventListener("click", async () => {
+  const column = $("typeCol").value, dtype = $("typeTarget").value;
+  if(!column || !dtype) return;
+  $("changeTypeBtn").disabled = true; $("changeTypeBtn").textContent = "Changing…";
+  hide("cleanNarrative"); hide("dlBarClean");
+  try{
+    const res = await fetch(`${API}/change_type/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({column,dtype})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Type conversion failed");
+    showCleaningResult(data);
+  }catch(err){
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div><p style="color:var(--bad)">${err.message}</p>`;
+    show("cleanLog");
+  }finally{ $("changeTypeBtn").disabled = false; $("changeTypeBtn").textContent = "Change type"; }
+});
+
+$("goVizBtn").addEventListener("click", () => {
+  show("panelViz"); setStep(4); scrollPanel("panelViz"); loadVizSuggestions();
+});
+
+// ---------- VISUALISE ----------
+function populateSelects(){
+  const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
+  ["vizColX","vizColY","targetSelect","typeCol"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
+  const suggestedTarget = getState().lastProfile?.learning_recommendation?.suggested_targets?.[0]?.column;
+  if(suggestedTarget && $("targetSelect")){
+    $("targetSelect").value = suggestedTarget;
+  }
+  // Populate PCA color column dropdown with categorical/text columns
+  populatePcaColorCol();
+}
+
+function populatePcaColorCol(){
+  const profile = getState().lastProfile;
+  if(!profile){
+    // Profile not loaded yet, don't populate
+    return;
+  }
+  // Include categorical and text columns for coloring
+  const catCols = (profile?.columns || []).filter(c => c.type === "categorical" || c.type === "text");
+  // If no categorical/text columns, include all non-numeric columns
+  const nonNumericCols = catCols.length > 0 ? catCols : (profile?.columns || []).filter(c => c.type !== "numeric");
+  const opts = `<option value="">None</option>` + nonNumericCols.map(c => `<option value="${c.name}">${c.name}</option>`).join("");
+  if($("pcaColorCol")){
+    $("pcaColorCol").innerHTML = opts;
+  }
+}
+
+let selectedChartType = "histogram";
+function selectChartType(el){
+  document.querySelectorAll(".ct-btn").forEach(b => b.classList.remove("selected"));
+  el.classList.add("selected");
+  selectedChartType = el.dataset.type;
+  updateVizFieldVisibility();
+}
+
+function updateVizFieldVisibility(){
+  const t = selectedChartType;
+  $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) ? "" : "none";
+  $("groupWrap").style.display = "";   // always visible — group by works with most chart types
+  $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
+  $("xLabel").textContent = t === "boxplot" ? "Numeric column" : "Column (X)";
+  $("groupLabel").textContent = t === "bubble" ? "Size column" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
+
+}
+updateVizFieldVisibility();
+
+async function loadVizSuggestions(){
+  $("vizSuggestions").innerHTML = `<p class="loading">Analysing your data</p>`;
+  try{
+    const res = await fetch(`${API}/visualize/suggestions/${getSid()}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail);
+    for(let i = customChartSpecs.length - 1; i >= 0; i--){
+      if(customChartSpecs[i]._reportSource === "auto") customChartSpecs.splice(i, 1);
+    }
+    if(!data.charts.length){ $("vizSuggestions").innerHTML = `<p class="hint">Not enough data variety to suggest charts.</p>`; return; }
+    $("vizSuggestions").innerHTML = "";
+    data.charts.forEach((ch,idx) => {
+      const id = `sc${idx}`;
+      const card = document.createElement("div"); card.className = "viz-card";
+      card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div>`;
+      const reportSpec = {...ch, title: ch.title || chartTitle(ch), reason: "", _reportSource: "auto"};
+      customChartSpecs.push(reportSpec);
+      card.querySelector(".close").addEventListener("click", () => {
+        destroyChart(id);
+        card.remove();
+        const specIdx = customChartSpecs.indexOf(reportSpec);
+        if(specIdx > -1) customChartSpecs.splice(specIdx, 1);
+        if(!$("vizSuggestions").children.length){
+          $("vizSuggestions").innerHTML = `<p class="hint">All suggested charts closed.</p>`;
+        }
+      });
+      $("vizSuggestions").appendChild(card);
+      setTimeout(() => drawChart(id, ch), 0);
+    });
+  }catch(err){ $("vizSuggestions").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+$("vizBtn").addEventListener("click", async () => {
+  hide("vizError");
+  const x = $("vizColX").value, y = $("vizColY").value, g = $("vizGroup").value;
+  const t = selectedChartType;
+  let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
+  if(["scatter","line","bubble","area"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
+  if(["boxplot","bubble"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  try{
+    const res = await fetch(url);
+    const ch = await res.json();
+    if(!res.ok) throw new Error(ch.detail || "Failed");
+    // Capture the upfront box plot mode selector so it travels with the chart object
+    if(t === "boxplot"){
+      ch._boxplotMode = $("boxplotMode").value;
+    }
+    if(!$("keepCharts").checked) clearCustomCharts();
+    addCustomChart(ch);
+  }catch(err){ $("vizError").textContent = err.message; show("vizError"); }
+});
+
+$("clearChartsBtn").addEventListener("click", clearCustomCharts);
+
+function chartTitle(ch){
+  if(ch.type === "scatter" || ch.type === "bubble") return `${ch.y} vs ${ch.x}`;
+  if(ch.type === "line") return `${ch.y} over ${ch.x}`;
+  if(ch.type === "area") return `${ch.y} over ${ch.x} (area)`;
+  if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
+  if(ch.type === "histogram") return `Histogram of ${ch.x}`;
+  if(ch.type === "bar") return `Bar chart of ${ch.x}`;
+  if(ch.type === "pie") return `Share of ${ch.x}`;
+  if(ch.type === "heatmap") return `Correlation heatmap`;
+  if(ch.type === "treemap") return `Treemap of ${ch.x}`;
+  if(ch.type === "radar") return `Radar chart: ${ch.labels?.join(", ")}`;
+  if(ch.type === "violin") return ch.group ? `Violin plot of ${ch.x} by ${ch.group}` : `Violin plot of ${ch.x}`;
+  if(ch.type === "density") return `Density plot of ${ch.x}`;
+  if(ch.type === "word_frequency") return `Most frequent words in ${ch.x}`;
+  if(ch.type === "wordcloud") return `Word cloud of ${ch.x}`;
+  return `Chart of ${ch.x}`;
+}
+
+function fmtShort(v){
+  const n = Number(v);
+  if(Number.isFinite(n)) return Math.abs(n) >= 1000 ? n.toLocaleString(undefined,{maximumFractionDigits:1}) : n.toFixed(Math.abs(n) < 10 ? 2 : 1).replace(/\.0$/,"");
+  return String(v);
+}
+
+function boxplotTooltipOptions(ch){
+  return {
+    displayColors: true,
+    callbacks: {
+      title: items => {
+        if(!items || !items.length) return ch.group || ch.x || "Box plot";
+        const label = items[0].label || "all";
+        return ch.group ? `${ch.group}: ${label}` : ch.x;
+      },
+      label: ctx => {
+        const label = ctx.label || "all";
+        const stats = ch.groups?.[label];
+        if(!stats) return `${ctx.dataset.label || ch.x}: ${fmtShort(ctx.parsed.y)}`;
+        const current = ctx.dataset.label || "Value";
+        const value = fmtShort(ctx.parsed.y);
+        const iqr = Number(stats.q3) - Number(stats.q1);
+        
+        // Show relevant stats based on what's being hovered
+        if(current === "Median"){
+          return [
+            `Median: ${value}`,
+            `Min: ${fmtShort(stats.min)}`,
+            `Max: ${fmtShort(stats.max)}`,
+            `IQR: ${fmtShort(iqr)}`,
+          ];
+        } else if(current === "Q1"){
+          return [`Q1 (25th percentile): ${value}`, `Median: ${fmtShort(stats.median)}`, `IQR: ${fmtShort(iqr)}`];
+        } else if(current === "Q3"){
+          return [`Q3 (75th percentile): ${value}`, `Median: ${fmtShort(stats.median)}`, `IQR: ${fmtShort(iqr)}`];
+        }
+        return `${current}: ${value}`;
+      }
+    }
+  };
+}
+
+
+function corrFromPoints(points){
+  if(!points || points.length < 3) return null;
+  const xs = points.map(p=>Number(p.x)).filter(Number.isFinite);
+  const ys = points.map(p=>Number(p.y)).filter(Number.isFinite);
+  if(xs.length !== points.length || ys.length !== points.length) return null;
+  const mx = xs.reduce((a,b)=>a+b,0) / xs.length;
+  const my = ys.reduce((a,b)=>a+b,0) / ys.length;
+  let num = 0, dx = 0, dy = 0;
+  for(let i=0;i<xs.length;i++){
+    const ax = xs[i] - mx, ay = ys[i] - my;
+    num += ax * ay; dx += ax * ax; dy += ay * ay;
+  }
+  return dx && dy ? num / Math.sqrt(dx * dy) : null;
+}
+
+function explainChart(ch){
+  if((ch.type === "bar" || ch.type === "pie") && ch.labels?.length && ch.values?.length){
+    const total = ch.values.reduce((a,b)=>a + Number(b || 0), 0);
+    const maxIdx = ch.values.reduce((best, v, i) => Number(v) > Number(ch.values[best]) ? i : best, 0);
+    const share = total ? (Number(ch.values[maxIdx]) / total * 100).toFixed(1) : "0.0";
+    return `${ch.labels[maxIdx]} is the largest group in ${ch.x}, with ${fmtShort(ch.values[maxIdx])} record(s) (${share}% of the shown values).`;
+  }
+  if(ch.type === "histogram" && ch.labels?.length && ch.values?.length){
+    const maxIdx = ch.values.reduce((best, v, i) => Number(v) > Number(ch.values[best]) ? i : best, 0);
+    return `Most ${ch.x} values fall in the ${ch.labels[maxIdx]} range, with ${fmtShort(ch.values[maxIdx])} record(s) in that bin.`;
+  }
+  if((ch.type === "scatter" || ch.type === "bubble") && ch.points?.length){
+    const corr = corrFromPoints(ch.points);
+    if(corr === null) return `This chart compares ${ch.y} against ${ch.x} across ${ch.points.length} point(s).`;
+    const strength = Math.abs(corr) >= 0.7 ? "strong" : Math.abs(corr) >= 0.4 ? "moderate" : "weak";
+    const direction = corr > 0 ? "positive" : corr < 0 ? "negative" : "flat";
+    return `${ch.y} and ${ch.x} show a ${strength} ${direction} pattern in the plotted points (correlation ${corr.toFixed(2)}).`;
+  }
+  if(ch.type === "line" && ch.labels?.length && ch.values?.length){
+    const first = Number(ch.values[0]), last = Number(ch.values[ch.values.length - 1]);
+    const direction = last > first ? "increases" : last < first ? "decreases" : "stays about the same";
+    return `${ch.y} ${direction} from ${fmtShort(first)} to ${fmtShort(last)} across the plotted ${ch.x} values.`;
+  }
+  if(ch.type === "boxplot" && ch.groups){
+    const groups = Object.entries(ch.groups).filter(([,s]) => s);
+    if(groups.length){
+      const entries = groups.map(([name, s]) => ({name, ...s}));
+      const highest = entries.reduce((best, item) => item.median > best.median ? item : best, entries[0]);
+      const lowest  = entries.reduce((best, item) => item.median < best.median ? item : best, entries[0]);
+      const hasOutliers = entries.some(e => e.outliers?.length > 0);
+      const parts = [];
+      if(ch.group){
+        parts.push(`This grouped box plot shows how ${ch.x} is distributed across different values of ${ch.group}.`);
+        if(entries.length === 1){
+          parts.push(`Only one group (${entries[0].name}) had enough data to show.`);
+        } else {
+          parts.push(`${highest.name} has the highest median (${fmtShort(highest.median)}), while ${lowest.name} has the lowest median (${fmtShort(lowest.median)}).`);
+          // Describe spread (range between Q1 and Q3)
+          const spreadEntries = entries.map(e => ({name: e.name, spread: e.q3 - e.q1}));
+          const widest = spreadEntries.reduce((a, b) => a.spread > b.spread ? a : b);
+          const tightest = spreadEntries.reduce((a, b) => a.spread < b.spread ? a : b);
+          parts.push(`${widest.name} shows the widest spread (Q1–Q3 range of ${fmtShort(widest.spread)}), meaning values vary the most there.`);
+          parts.push(`${tightest.name} has the tightest grouping (Q1–Q3 range of ${fmtShort(tightest.spread)}), meaning values are more consistent.`);
+        }
+      } else {
+        const s = entries[0];
+        parts.push(`This box plot summarises the distribution of ${ch.x}:`);
+        parts.push(`median ${fmtShort(s.median)}, middle 50% from ${fmtShort(s.q1)} to ${fmtShort(s.q3)}, ranging from ${fmtShort(s.min)} to ${fmtShort(s.max)}.`);
+        if(s.median - s.q1 !== s.q3 - s.median){
+          const skew = s.median - s.q1 > s.q3 - s.median ? "left" : "right";
+          parts.push(`The distribution appears ${skew}-skewed, with a longer tail toward ${skew === "left" ? "lower" : "higher"} values.`);
+        } else {
+          parts.push("The distribution is roughly symmetric.");
+        }
+      }
+      if(hasOutliers){
+        const totalOutliers = entries.reduce((sum, e) => sum + (e.outliers?.length || 0), 0);
+        const groupWithMostOutliers = entries.reduce((a, b) => (a.outliers?.length || 0) > (b.outliers?.length || 0) ? a : b);
+        parts.push(`${totalOutliers} outlier(s) found — ${groupWithMostOutliers.name} has the most (${groupWithMostOutliers.outliers?.length || 0}).`);
+      }
+      return parts.join(" ");
+    }
+  }
+  if((ch.type === "word_frequency" || ch.type === "wordcloud")){
+    const items = ch.type === "word_frequency"
+      ? (ch.labels || []).map((w,i) => ({word:w, count:ch.values[i]}))
+      : (ch.words || []);
+    if(!items.length) return `No usable words were found in ${ch.x}.`;
+    const top = items[0];
+    return `"${top.word}" is the most frequent word in ${ch.x}, appearing ${fmtShort(top.count)} time(s) across the dataset (stopwords like "the" and "and" are excluded).`;
+  }
+  return `This visualization gives a quick view of ${ch.x}.`;
+}
+
+function addCustomChart(ch){
+  const id = "vizCanvas_" + Date.now() + "_" + Math.floor(Math.random()*1000);
+  const panel = document.createElement("div");
+  panel.className = "chart-panel";
+  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(ch)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div><div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${explainChart(ch)}</div>`;
+  panel.querySelector(".download").addEventListener("click", () => downloadChart(id, chartTitle(ch)));
+  if(ch.type === "wordcloud"){
+    panel.querySelector(".download").style.display = "none";   // rendered as HTML, not a canvas — nothing to export as PNG
+  }
+  // Attach title/reason so the downloaded report can show a sensible label,
+  // and keep this spec around so "Presentation (HTML)" can include it.
+  const reportSpec = {...ch, title: chartTitle(ch), reason: explainChart(ch), _reportSource: "custom"};
+  customChartSpecs.push(reportSpec);
+  panel.querySelector(".close").addEventListener("click", () => {
+    destroyChart(id);
+    panel.remove();
+    const idx = customChartSpecs.indexOf(reportSpec);
+    if(idx > -1) customChartSpecs.splice(idx, 1);
+    if(!$("vizResult").children.length) hide("vizResult");
+  });
+  $("vizResult").prepend(panel);
+  show("vizResult");
+  drawChart(id, ch);
+}
+
+function safeFileName(name){
+  return String(name).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "chart";
+}
+
+function downloadChart(canvasId, title){
+  const canvas = $(canvasId);
+  if(!canvas) return;
+  const link = document.createElement("a");
+  link.download = `${safeFileName(title)}.png`;
+  link.href = canvas.toDataURL("image/png", 1);
+  link.click();
+}
+
+function clearCustomCharts(){
+  Array.from($("vizResult").querySelectorAll("canvas")).forEach(c => destroyChart(c.id));
+  $("vizResult").innerHTML = "";
+  hide("vizResult");
+  for(let i = customChartSpecs.length - 1; i >= 0; i--){
+    if(customChartSpecs[i]._reportSource !== "auto") customChartSpecs.splice(i, 1);
+  }
+}
+
+// CHART RENDERING
+const PIE_COLORS = ["#5fd4d6","#ffb627","#5fd98c","#ef6f6f","#a78bfa","#fb923c","#34d399","#f472b6","#60a5fa","#facc15","#94a3b8","#f87171"];
+
+function drawChart(canvasId, ch){
+  if(ch.type === "pie"){
+    makeChart(canvasId,{type:"doughnut",
+      data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:PIE_COLORS,borderColor:"#0d1b2e",borderWidth:2}]},
+      options:{plugins:{legend:{position:"right",labels:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},boxWidth:12}}}}});
+    return;
+  }
+  if(ch.type === "scatter"){
+    makeChart(canvasId,{type:"scatter",
+      data:{datasets:[{data:ch.points,backgroundColor:"#ef6f6faa",pointRadius:3}]},
+      options:{plugins:{legend:{display:false}},
+        scales:{x:{title:{display:true,text:ch.x,color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}},
+                y:{title:{display:true,text:ch.y||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    return;
+  }
+  if(ch.type === "bubble"){
+    makeChart(canvasId,{type:"bubble",
+      data:{datasets:[{data:ch.points,backgroundColor:"#5fd4d688",borderColor:"#5fd4d6"}]},
+      options:{plugins:{legend:{display:false}},
+        scales:{x:{title:{display:true,text:ch.x,color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}},
+                y:{title:{display:true,text:ch.y||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    return;
+  }
+  if(ch.type === "boxplot"){
+    // Render as grouped bar — Chart.js has no native box plot
+    const groups = Object.entries(ch.groups);
+    if(!groups.length) return;
+    const labels = groups.map(([g]) => g);
+    // Use the mode stored on the chart object (set at plot time)
+    // "simple" = normal box plot (median only), "full" = statistical (Q1/Median/Q3)
+    const simpleMode = ch._boxplotMode === "simple";
+    if(simpleMode){
+      // Normal box plot: one bar per group — median value only, clean and uncluttered
+      const medians = groups.map(([,s]) => s?.median ?? 0);
+      makeChart(canvasId,{type:"bar",
+        data:{labels, datasets:[{label:"Median",data:medians,backgroundColor:"#5fd4d6bb"}]},
+        options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{display:false},tooltip:boxplotTooltipOptions(ch)},
+          scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}},grid:{color:"#1f3a5f"}},
+                  y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    } else {
+      // Statistical mode: Q1 / Median / Q3 as grouped bars
+      const q1s    = groups.map(([,s]) => s?.q1    ?? 0);
+      const medians= groups.map(([,s]) => s?.median ?? 0);
+      const q3s    = groups.map(([,s]) => s?.q3    ?? 0);
+      makeChart(canvasId,{type:"bar",
+        data:{labels, datasets:[
+          {label:"Q1",    data:q1s,    backgroundColor:"#5fd4d655"},
+          {label:"Median",data:medians,backgroundColor:"#ffb627bb"},
+          {label:"Q3",    data:q3s,    backgroundColor:"#5fd98c55"},
+        ]},
+        options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{labels:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}}},tooltip:boxplotTooltipOptions(ch)},
+          scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}},grid:{color:"#1f3a5f"}},
+                  y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    }
+    return;
+  }
+  if(ch.type === "line"){
+    makeChart(canvasId,{type:"line",
+      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:"#5fd4d6",backgroundColor:"#5fd4d620",pointRadius:2,tension:0.3}]},
+      options:{plugins:{legend:{display:false}},
+        scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:"#1f3a5f"}},
+                y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    return;
+  }
+  if(ch.type === "wordcloud"){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box) return;
+    const words = ch.words || [];
+    if(!words.length){
+      box.innerHTML = `<p class="hint" style="padding:20px;">No usable words found.</p>`;
+      return;
+    }
+    canvas.style.display = "none";
+    const counts = words.map(w => w.count);
+    const min = Math.min(...counts), max = Math.max(...counts);
+    const scale = c => min === max ? 24 : 13 + ((c - min) / (max - min)) * 46;
+    const cloudEl = document.createElement("div");
+    cloudEl.className = "wordcloud-wrap";
+    cloudEl.innerHTML = words.map((w, i) =>
+      `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${PIE_COLORS[i % PIE_COLORS.length]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
+    ).join("");
+    box.appendChild(cloudEl);
+    return;
+  }
+  
+  if(ch.type === "heatmap" && ch.matrix){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box || !ch.matrix.length) return;
+    
+    const n = ch.matrix.length;
+    const labels = ch.labels || [];
+    
+    // Create heatmap using a custom canvas drawing
+    const ctx = canvas.getContext("2d");
+    const rect = box.getBoundingClientRect();
+    const size = Math.min(rect.width, rect.height) - 40;
+    const cellSize = size / n;
+    const offsetX = (rect.width - size) / 2;
+    const offsetY = (rect.height - size) / 2;
+    
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    
+    // Find min/max for color scaling
+    let min = Infinity, max = -Infinity;
+    for(let i = 0; i < n; i++){
+      for(let j = 0; j < n; j++){
+        const v = ch.matrix[i][j];
+        if(v < min) min = v;
+        if(v > max) max = v;
+      }
+    }
+    
+    // Draw cells
+    for(let i = 0; i < n; i++){
+      for(let j = 0; j < n; j++){
+        const v = ch.matrix[i][j];
+        const normalized = max !== min ? (v - min) / (max - min) : 0.5;
+        
+        // Color: blue for negative, red for positive, white for zero
+        let r, g, b;
+        if(v >= 0){
+          r = Math.floor(239 * normalized + 13 * (1 - normalized));
+          g = Math.floor(111 * normalized + 27 * (1 - normalized));
+          b = Math.floor(111 * normalized + 46 * (1 - normalized));
+        } else {
+          r = Math.floor(13 * (1 - normalized) + 239 * normalized);
+          g = Math.floor(27 * (1 - normalized) + 111 * normalized);
+          b = Math.floor(46 * (1 - normalized) + 111 * normalized);
+        }
+        
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(offsetX + j * cellSize, offsetY + i * cellSize, cellSize - 1, cellSize - 1);
+        
+        // Add value text if cell is large enough
+        if(cellSize > 30){
+          ctx.fillStyle = Math.abs(normalized) > 0.5 ? "#fff" : "#000";
+          ctx.font = `${Math.min(11, cellSize/3)}px IBM Plex Mono`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(v.toFixed(2), offsetX + j * cellSize + cellSize/2, offsetY + i * cellSize + cellSize/2);
+        }
+      }
+    }
+    
+    // Draw labels
+    if(labels.length){
+      ctx.fillStyle = "#8fa3bc";
+      ctx.font = "9px IBM Plex Mono";
+      for(let i = 0; i < n; i++){
+        // X-axis labels (bottom)
+        ctx.save();
+        ctx.translate(offsetX + i * cellSize + cellSize/2, offsetY + size + 12);
+        ctx.rotate(-Math.PI/4);
+        ctx.textAlign = "right";
+        ctx.fillText(labels[i] || "", 0, 0);
+        ctx.restore();
+        
+        // Y-axis labels (left)
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        ctx.fillText(labels[i] || "", offsetX - 6, offsetY + i * cellSize + cellSize/2);
+      }
+    }
+    
+    return;
+  }
+  
+  if(ch.type === "treemap" && ch.labels){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box || !ch.labels.length) return;
+    
+    const ctx = canvas.getContext("2d");
+    const rect = box.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    
+    const total = ch.values.reduce((a,b) => a + b, 0);
+    const n = ch.labels.length;
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+    const cellW = rect.width / cols;
+    const cellH = rect.height / rows;
+    
+    for(let i = 0; i < n; i++){
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = col * cellW;
+      const y = row * cellH;
+      const w = cellW - 2;
+      const h = cellH - 2;
+      
+      const color = PIE_COLORS[i % PIE_COLORS.length];
+      ctx.fillStyle = color + "cc";
+      ctx.fillRect(x + 1, y + 1, w, h);
+      
+      // Draw label
+      const share = total ? (ch.values[i] / total * 100).toFixed(1) : "0.0";
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 11px IBM Plex Mono";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      
+      const label = ch.labels[i];
+      const displayLabel = label.length > 15 ? label.slice(0, 12) + "…" : label;
+      ctx.fillText(displayLabel, x + cellW/2, y + cellH/2 - 8);
+      
+      ctx.font = "9px IBM Plex Mono";
+      ctx.fillStyle = "#fffcc";
+      ctx.fillText(`${fmtShort(ch.values[i])} (${share}%)`, x + cellW/2, y + cellH/2 + 8);
+    }
+    
+    return;
+  }
+  
+  if(ch.type === "radar" && ch.labels){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box) return;
+    
+    const ctx = canvas.getContext("2d");
+    const rect = box.getBoundingClientRect();
+    const size = Math.min(rect.width, rect.height) - 40;
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    const radius = size / 2 - 30;
+    
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    
+    const n = ch.labels.length;
+    const angleStep = (2 * Math.PI) / n;
+    
+    // Find max value for scaling
+    let maxVal = 0;
+    (ch.datasets || []).forEach(ds => {
+      ds.data.forEach(v => { if(v > maxVal) maxVal = v; });
+    });
+    maxVal = maxVal || 1;
+    
+    // Draw grid circles
+    ctx.strokeStyle = "#1f3a5f";
+    ctx.lineWidth = 1;
+    for(let level = 1; level <= 5; level++){
+      const r = (radius / 5) * level;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, r, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+    
+    // Draw axes and labels
+    ctx.strokeStyle = "#24405f";
+    ctx.fillStyle = "#8fa3bc";
+    ctx.font = "9px IBM Plex Mono";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    
+    for(let i = 0; i < n; i++){
+      const angle = -Math.PI/2 + i * angleStep;
+      const x = centerX + Math.cos(angle) * radius;
+      const y = centerY + Math.sin(angle) * radius;
+      
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      
+      // Label
+      const labelX = centerX + Math.cos(angle) * (radius + 18);
+      const labelY = centerY + Math.sin(angle) * (radius + 18);
+      ctx.fillText(ch.labels[i] || "", labelX, labelY);
+    }
+    
+    // Draw data polygons
+    (ch.datasets || []).forEach((ds, idx) => {
+      ctx.beginPath();
+      ctx.strokeStyle = PIE_COLORS[idx % PIE_COLORS.length];
+      ctx.fillStyle = PIE_COLORS[idx % PIE_COLORS.length] + "33";
+      
+      ds.data.forEach((v, i) => {
+        const angle = -Math.PI/2 + i * angleStep;
+        const r = (v / maxVal) * radius;
+        const x = centerX + Math.cos(angle) * r;
+        const y = centerY + Math.sin(angle) * r;
+        
+        if(i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    });
+    
+    return;
+  }
+  
+  if(ch.type === "area" && ch.labels){
+    makeChart(canvasId,{type:"line",
+      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:"#5fd4d6",backgroundColor:"#5fd4d633",fill:true,pointRadius:2,tension:0.3}]},
+      options:{plugins:{legend:{display:false}},
+        scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:"#1f3a5f"}},
+                y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    return;
+  }
+  
+  if(ch.type === "violin" && ch.groups){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box) return;
+    
+    const ctx = canvas.getContext("2d");
+    const rect = box.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    
+    const groups = Object.entries(ch.groups).filter(([,s]) => s);
+    if(!groups.length) return;
+    
+    const padding = 40;
+    const chartW = rect.width - padding * 2;
+    const chartH = rect.height - padding * 2;
+    const groupW = chartW / groups.length;
+    
+    // Draw axes
+    ctx.strokeStyle = "#24405f";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padding, padding);
+    ctx.lineTo(padding, rect.height - padding);
+    ctx.lineTo(rect.width - padding, rect.height - padding);
+    ctx.stroke();
+    
+    groups.forEach(([name, stats], idx) => {
+      const x = padding + idx * groupW + groupW / 2;
+      const baseY = rect.height - padding;
+      
+      // Draw violin shape (mirrored)
+      if(stats.bins && stats.widths){
+        const maxW = Math.max(...stats.widths);
+        const maxBarW = groupW * 0.4;
+        
+        ctx.fillStyle = PIE_COLORS[idx % PIE_COLORS.length] + "88";
+        ctx.strokeStyle = PIE_COLORS[idx % PIE_COLORS.length];
+        ctx.lineWidth = 1;
+        
+        stats.bins.forEach((bin, i) => {
+          const barH = (stats.widths[i] / maxW) * maxBarW;
+          const y = baseY - ((bin - stats.min) / (stats.max - stats.min || 1)) * chartH;
+          
+          ctx.fillRect(x - barH/2, y - 1, barH, 2);
+        });
+      }
+      
+      // Draw IQR box
+      const q1y = baseY - ((stats.q1 - stats.min) / (stats.max - stats.min || 1)) * chartH;
+      const q3y = baseY - ((stats.q3 - stats.min) / (stats.max - stats.min || 1)) * chartH;
+      const medianY = baseY - ((stats.median - stats.min) / (stats.max - stats.min || 1)) * chartH;
+      
+      ctx.fillStyle = PIE_COLORS[idx % PIE_COLORS.length] + "aa";
+      ctx.fillRect(x - 8, q3y, 16, q1y - q3y);
+      
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - 8, medianY);
+      ctx.lineTo(x + 8, medianY);
+      ctx.stroke();
+      
+      // Label
+      ctx.fillStyle = "#8fa3bc";
+      ctx.font = "9px IBM Plex Mono";
+      ctx.textAlign = "center";
+      ctx.fillText(name, x, rect.height - padding + 15);
+    });
+    
+    return;
+  }
+  
+  if(ch.type === "density" && ch.labels){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box || !ch.labels.length) return;
+    
+    makeChart(canvasId,{type:"line",
+      data:{labels:ch.labels,datasets:[{label:ch.x||"Density",data:ch.values,borderColor:"#ffb627",backgroundColor:"#ffb62722",fill:true,pointRadius:0,tension:0.4}]},
+      options:{plugins:{legend:{display:false}},
+        scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:10},grid:{color:"#1f3a5f"},title:{display:true,text:ch.x,color:"#8fa3bc"}},
+                y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    return;
+  }
+  
+  if(ch.type === "scatter_map" && ch.points){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box || !ch.points.length) return;
+    
+    // Hide the canvas and create a Leaflet map
+    canvas.style.display = "none";
+    const mapDiv = document.createElement("div");
+    mapDiv.className = "map-container";
+    mapDiv.style.cssText = "width:100%;height:100%;min-height:400px;border-radius:4px;overflow:hidden;";
+    box.appendChild(mapDiv);
+    
+    // Initialize Leaflet map
+    const map = L.map(mapDiv).setView([0, 0], 2);
+    
+    // Add tile layer (OpenStreetMap)
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors",
+      maxZoom: 18
+    }).addTo(map);
+    
+    // Add markers
+    const markers = L.markerClusterGroup ? L.markerClusterGroup() : L.layerGroup();
+    ch.points.forEach(pt => {
+      const marker = L.circleMarker([pt.lat, pt.lon], {
+        radius: pt.size ? Math.max(5, Math.min(20, pt.size / 10)) : 6,
+        fillColor: pt.color || "#5fd4d6",
+        color: "#fff",
+        weight: 1,
+        opacity: 0.8,
+        fillOpacity: 0.7
+      });
+      marker.bindPopup(`<b>${ch.lat_col || "Lat"}:</b> ${pt.lat.toFixed(4)}<br><b>${ch.lon_col || "Lon"}:</b> ${pt.lon.toFixed(4)}`);
+      markers.addLayer(marker);
+    });
+    map.addLayer(markers);
+    
+    // Fit bounds to show all points
+    const bounds = markers.getBounds();
+    if(bounds.isValid()){
+      map.fitBounds(bounds, {padding: [20, 20]});
+    }
+    
+    // Store map reference for cleanup
+    mapDiv._leafletMap = map;
+    
+    return;
+  }
+  
+  // word_frequency renders like a bar chart — falls through to the shared bar rendering below
+  // histogram or bar
+  const color = ch.type==="histogram" ? "#ffb627bb" : "#5fd4d6bb";
+  makeChart(canvasId,{type:"bar",
+    data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:color}]},
+    options:{plugins:{legend:{display:false}},
+      scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:"#1f3a5f"}},
+              y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+}
+
+$("goTrainBtn").addEventListener("click", () => { 
+  show("panelTrain"); setStep(5); scrollPanel("panelTrain"); 
+  setTimeout(populatePcaColorCol, 0);  // Ensure PCA color dropdown is populated when entering Train section
+});
+$("supervisedLearningBtn").addEventListener("click", () => {
+  show("panelTrain"); setStep(5); scrollPanel("panelTrain");
+  setTimeout(populatePcaColorCol, 0);
+});
+$("unsupervisedLearningBtn").addEventListener("click", () => {
+  show("panelUnsupervised"); setStep(5); scrollPanel("panelUnsupervised");
+  loadUnsupervisedSuggestions();
+});
+
+// ---------- TRAIN ----------
+function clearTrainingUI(){
+  $("trainStatus").innerHTML = "";
+  $("leaderboardTable").innerHTML = "";
+  $("saveRunName").value = "";
+  $("saveRunStatus").innerHTML = "";
+  $("savedRunsList").innerHTML = "";
+  $("savedRunsHead").style.display = "none";
+  $("predictFields").innerHTML = "";
+  $("predictResult").innerHTML = "";
+  $("predictSourceWrap").style.display = "none";
+  hide("trainNarrative");
+  hide("leaderboardWrap");
+  hide("importanceHint");
+  destroyChart("importanceCanvas");
+}
+
+function renderTrainingState(training){
+  if(!training){ clearTrainingUI(); return; }
+  $("trainStatus").innerHTML = `<p style="color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;">✓ ${training.problemType} · best: ${training.bestModel}</p>`;
+  showNarrative("trainNarrative", training.narrative);
+  renderLeaderboard(training.leaderboard, training.problemType);
+  renderImportance(training.featureImportance);
+  buildPredictForm(training.feedColumns);
+  show("leaderboardWrap");
+}
+
+let trainPollTimer = null;
+
+function stopTrainPolling(){
+  if(trainPollTimer){ clearInterval(trainPollTimer); trainPollTimer = null; }
+}
+
+function setTrainingInProgress(inProgress){
+  $("trainBtn").disabled = inProgress;
+  $("cancelTrainBtn").style.display = inProgress ? "inline-block" : "none";
+}
+
+$("trainBtn").addEventListener("click", async () => {
+  const datasetId = activeDs;
+  const sid = getSid();
+  const target = $("targetSelect").value;
+  const usePca = $("usePcaForTraining").checked;
+  if(!sid || !target) return;
+
+  $("trainStatus").innerHTML = `<p class="loading">Training models for "${target}"</p>`;
+  hide("trainNarrative"); hide("leaderboardWrap");
+  setTrainingInProgress(true);
+
+  try{
+    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, use_pca: usePca})});
+    if(!startRes.ok){
+      const errData = await startRes.json().catch(()=>({}));
+      throw new Error(errData.detail || "Could not start training");
+    }
+  }catch(err){
+    setTrainingInProgress(false);
+    if(activeDs === datasetId) $("trainStatus").innerHTML = `<div class="error-box">${err.message}</div>`;
+    return;
+  }
+
+  // Poll job status until it's done, cancelled, or errored.
+  trainPollTimer = setInterval(async () => {
+    try{
+      const res = await fetch(`${API}/train/${sid}/status`);
+      const data = await res.json();
+
+      if(data.messages && data.messages.length && activeDs === datasetId){
+        const latest = data.messages[data.messages.length - 1];
+        $("trainStatus").innerHTML = `<p class="loading">${latest}</p>`;
+      }
+
+      if(data.status === "running") return; // keep polling
+
+      stopTrainPolling();
+      setTrainingInProgress(false);
+
+      if(data.status === "cancelled"){
+        if(activeDs === datasetId) $("trainStatus").innerHTML = `<p style="color:var(--muted);">Training cancelled.</p>`;
+        return;
+      }
+      if(data.status === "error"){
+        if(activeDs === datasetId) $("trainStatus").innerHTML = `<div class="error-box">${data.error || "Training failed"}</div>`;
+        return;
+      }
+
+      // data.status === "done"
+      const training = {
+        problemType: data.problem_type,
+        bestModel: data.best_model,
+        feedColumns: data.feature_columns,
+        leaderboard: data.leaderboard,
+        featureImportance: data.feature_importance,
+        narrative: data.narrative,
+        target: data.target,
+      };
+      setDatasetState(datasetId, {training});
+      if(activeDs === datasetId){
+        renderTrainingState(training);
+        $("saveRunName").value = "";
+        $("saveRunStatus").innerHTML = "";
+      }
+      refreshSavedRuns(datasetId, sid);
+    }catch(e){
+      // transient network hiccup while polling -- try again on the next tick
+    }
+  }, 700);
+});
+
+$("cancelTrainBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  stopTrainPolling();
+  setTrainingInProgress(false);
+  $("trainStatus").innerHTML = `<p style="color:var(--muted);">Cancelling...</p>`;
+  try{
+    await fetch(`${API}/train/${sid}/cancel`, {method:"POST"});
+    $("trainStatus").innerHTML = `<p style="color:var(--muted);">Training cancelled. Change your settings and run again whenever you're ready.</p>`;
+  }catch(e){
+    $("trainStatus").innerHTML = `<div class="error-box">Could not cancel (the server may still be finishing up the current step).</div>`;
+  }
+});
+
+async function refreshSavedRuns(datasetId = activeDs, sid = getState().sessionId){
+  if(!sid) return;
+  try{
+    const res = await fetch(`${API}/train_runs/${sid}`);
+    const data = await res.json();
+    setDatasetState(datasetId, {savedRuns: data.runs || []});
+  }catch(err){ setDatasetState(datasetId, {savedRuns: []}); }
+  if(activeDs === datasetId){
+    renderSavedRunsList();
+    renderPredictSourceOptions();
+  }
+}
+
+function renderSavedRunsList(){
+  const savedRuns = getState().savedRuns || [];
+  if(!savedRuns.length){ $("savedRunsHead").style.display = "none"; $("savedRunsList").innerHTML = ""; return; }
+  $("savedRunsHead").style.display = "";
+  $("savedRunsList").innerHTML = savedRuns.map(r => {
+    const metric = r.top_metric ? `${r.top_metric.key} ${r.top_metric.value}` : "—";
+    return `<div class="saved-run-row" data-id="${r.id}">
+      <div class="srr-main"><strong>${r.name}</strong> <span class="srr-dim">→ predicts "${r.target}" · ${r.best_model || "—"} · ${metric} · ${r.created_at}</span></div>
+      <button class="icon-btn" title="Delete this saved run" data-action="delete-run">🗑</button>
+    </div>`;
+  }).join("");
+  $("savedRunsList").querySelectorAll('[data-action="delete-run"]').forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest(".saved-run-row");
+      const runId = row.dataset.id;
+      btn.disabled = true;
+      try{
+        const res = await fetch(`${API}/train_runs/${getSid()}/${runId}`, {method:"DELETE"});
+        const data = await res.json();
+        setState({savedRuns: data.runs || []});
+        renderSavedRunsList();
+        renderPredictSourceOptions();
+      }catch(err){ btn.disabled = false; }
+    });
+  });
+}
+
+$("saveRunBtn").addEventListener("click", async () => {
+  const name = $("saveRunName").value.trim();
+  if(!name){ $("saveRunStatus").innerHTML = `<div class="error-box">Give this run a name first.</div>`; return; }
+  $("saveRunBtn").disabled = true;
+  try{
+    const res = await fetch(`${API}/train_runs/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not save this run.");
+    setState({savedRuns: data.runs || []});
+    $("saveRunName").value = "";
+    $("saveRunStatus").innerHTML = `<p style="color:var(--good);font-size:11px;">✓ Saved as "${name}" — train another target any time, this one stays available for prediction.</p>`;
+    renderSavedRunsList();
+    renderPredictSourceOptions();
+  }catch(err){ $("saveRunStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+  $("saveRunBtn").disabled = false;
+});
+
+function renderPredictSourceOptions(){
+  const wrap = $("predictSourceWrap"), select = $("predictSourceSelect");
+  const savedRuns = getState().savedRuns || [];
+  const bestModel = getState().training?.bestModel;
+  if(!savedRuns.length){ wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  select.innerHTML = `<option value="">Current training${bestModel ? ` (${bestModel})` : ""}</option>` +
+    savedRuns.map(r => `<option value="${r.id}">${r.name} → ${r.target}</option>`).join("");
+}
+
+$("predictSourceSelect")?.addEventListener("change", () => {
+  const runId = $("predictSourceSelect").value;
+  const savedRuns = getState().savedRuns || [];
+  if(!runId){ buildPredictForm(getState().training?.feedColumns || []); return; }
+  const run = savedRuns.find(r => r.id === runId);
+  if(run) buildPredictForm(run.feature_columns);
+});
+
+function renderLeaderboard(rows, ptype){
+  const keys = ptype==="classification" ? ["accuracy","f1_weighted","precision_weighted","recall_weighted"] : ["r2","rmse","mae"];
+  let html = `<tr><th>Model</th>${keys.map(k=>`<th class="mono">${k}</th>`).join("")}</tr>`;
+  rows.forEach((r,i) => {
+    if(r.error){ html += `<tr><td>${r.model}</td><td colspan="${keys.length}" style="color:var(--bad)">failed: ${r.error}</td></tr>`; return; }
+    html += `<tr class="${i===0?'best':''}"><td>${r.model}</td>${keys.map(k=>`<td class="mono">${r.metrics[k]}</td>`).join("")}</tr>`;
+  });
+  $("leaderboardTable").innerHTML = html;
+}
+
+function renderImportance(items){
+  if(!items?.length){ $("importanceHint").textContent = "Not available for this model type."; show("importanceHint"); return; }
+  hide("importanceHint");
+  makeChart("importanceCanvas",{type:"bar",
+    data:{labels:items.map(i=>i.feature.split("__").pop()),datasets:[{data:items.map(i=>i.importance),backgroundColor:"#ffb627bb"}]},
+    options:{indexAxis:'y',plugins:{legend:{display:false}},
+      scales:{x:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}},y:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}},grid:{display:false}}}}});
+}
+
+$("downloadModelBtn").addEventListener("click", () => window.open(`${API}/download_model/${getSid()}`, "_blank"));
+
+// ---------- PREDICT ----------
+$("goPredictBtn").addEventListener("click", () => { show("panelPredict"); setStep(6); scrollPanel("panelPredict"); });
+$("goPredictFromUnsupervisedBtn").addEventListener("click", () => { show("panelPredict"); setStep(6); scrollPanel("panelPredict"); });
+
+// ---------- UNSUPERVISED ----------
+async function loadUnsupervisedSuggestions(){
+  const sid = getSid();
+  if(!sid) return;
+  try{
+    const res = await fetch(`${API}/unsupervised/suggest/${sid}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Failed to load suggestions");
+    if(!data.suggestions?.length){
+      $("unsupervisedSuggestions").textContent = "Not enough data variety for unsupervised analysis (need at least 2 numeric or 2 categorical columns).";
+      return;
+    }
+    $("unsupervisedSuggestions").innerHTML = data.suggestions.map(s =>
+      `<div style="margin-bottom:12px;padding:10px;border:1px solid var(--panel-border);background:rgba(95,212,214,0.04);">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--accent);margin-bottom:4px;">${s.task}</div>
+        <div style="font-size:11px;color:var(--ink-dim);margin-bottom:6px;">${s.reason}</div>
+        <div style="font-size:10px;color:var(--cyan);">Methods: ${s.methods.join(", ")}</div>
+      </div>`
+    ).join("");
+  }catch(err){
+    $("unsupervisedSuggestions").textContent = err.message;
+  }
+}
+
+function showUnsupervisedResult(id, html){
+  const el = $(id);
+  el.innerHTML = html;
+  show(id);
+}
+
+function renderUnsupervisedChart(canvasId, vizData){
+  if(!vizData || !vizData.points) return;
+  
+  const canvas = $(canvasId);
+  if(!canvas) return;
+  
+  // Group points by cluster
+  const clusters = {};
+  vizData.points.forEach(p => {
+    const cluster = p.cluster || 0;
+    if(!clusters[cluster]) clusters[cluster] = [];
+    clusters[cluster].push(p);
+  });
+  
+  const colors = [
+    '#5fd4d6', '#ffb627', '#5fd98c', '#ef6f6f', '#a78bfa', 
+    '#fb923c', '#34d399', '#f472b6', '#60a5fa', '#facc15'
+  ];
+  
+  const datasets = Object.entries(clusters).map(([cluster, points], idx) => {
+    const clusterNum = parseInt(cluster);
+    let color = colors[idx % colors.length];
+    const isAnomalyChart = /anomaly/i.test(vizData.title || "");
+    if(clusterNum === -1) color = '#ef6f6f';
+    if(isAnomalyChart && clusterNum === 1) color = '#5fd98c';
+    
+    return {
+      label: clusterNum === -1 ? 'Anomaly' : isAnomalyChart && clusterNum === 1 ? 'Normal' : `Cluster ${clusterNum}`,
+      data: points.map(p => ({x: p.x, y: p.y})),
+      backgroundColor: color + '99',
+      borderColor: color,
+      borderWidth: 1,
+      pointRadius: 5,
+    };
+  });
+  
+  makeChart(canvasId, {
+    type: 'scatter',
+    data: {datasets},
+    options: {
+      plugins: {
+        legend: {display: true, position: 'bottom', labels: {color: '#8fa3bc', font: {family: 'IBM Plex Mono', size: 10}}},
+        tooltip: {mode: 'nearest'}
+      },
+      scales: {
+        x: {title: {display: true, text: vizData.x_label || 'Feature 1', color: '#8fa3bc'}, ticks: {color: '#8fa3bc'}, grid: {color: '#1f3a5f'}},
+        y: {title: {display: true, text: vizData.y_label || 'Feature 2', color: '#8fa3bc'}, ticks: {color: '#8fa3bc'}, grid: {color: '#1f3a5f'}}
+      }
+    }
+  });
+}
+
+function hideUnsupervisedResult(id){
+  hide(id);
+  $(id).innerHTML = "";
+}
+
+function updateClusterControls(){
+  const method = $("clusterMethod").value;
+  const usesK = method === "kmeans" || method === "hierarchical";
+  $("clusterKWrap").style.display = usesK ? "" : "none";
+  $("analyzeClustersBtn").textContent = method === "auto" ? "Analyze best K" : "Analyze best K";
+}
+
+$("clusterMethod").addEventListener("change", updateClusterControls);
+$("clusterK").addEventListener("input", () => {
+  if($("clusterMethod").value === "auto"){
+    $("clusterMethod").value = "kmeans";
+    updateClusterControls();
+  }
+});
+updateClusterControls();
+
+$("analyzeClustersBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  $("analyzeClustersBtn").disabled = true; $("analyzeClustersBtn").textContent = "Analyzing…";
+  hide("clusterAnalysisResult");
+  try{
+    const res = await fetch(`${API}/unsupervised/suggest_clusters/${sid}?max_clusters=10`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Cluster analysis failed");
+    
+    let html = `<div class="result-box"><strong>Cluster Number Analysis</strong><br><br>`;
+    html += `<strong>Recommended K:</strong> ${data.recommended_k}<br>`;
+    html += `<strong>${data.recommendation}</strong><br>`;
+    html += `<br><strong>Method results:</strong><br>`;
+    html += `  Best silhouette score: K=${data.best_silhouette_k} (score: ${data.best_silhouette_score})<br>`;
+    html += `  Best Davies-Bouldin: K=${data.best_db_k} (score: ${data.best_db_score})<br>`;
+    html += `  Elbow method: K=${data.elbow_k}<br>`;
+    if(data.best_ch_k) html += `  Best Calinski-Harabasz: K=${data.best_ch_k} (score: ${data.best_ch_score})<br>`;
+    if(data.k_analysis?.length){
+      html += `<br><table style="width:100%;font-size:11px;border-collapse:collapse;">`;
+      html += `<thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid var(--panel-border);">K</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Inertia</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Silhouette</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Davies-Bouldin</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Calinski-Harabasz</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Votes</th></tr></thead><tbody>`;
+      data.k_analysis.forEach(row => {
+        const isRec = row.k === data.recommended_k;
+        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);${isRec ? "background:rgba(255,182,39,0.08);" : ""}">`;
+        html += `<td style="padding:5px 6px;">${isRec ? "★ " : ""}${row.k}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${row.inertia}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${row.silhouette}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${row.davies_bouldin}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${row.calinski_harabasz}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${row.votes}</td>`;
+        html += `</tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    html += `<br><em>Use the recommended K value above, or choose your own based on the visualization.</em></div>`;
+    
+    showUnsupervisedResult("clusterAnalysisResult", html);
+    if(data.recommended_k && $("clusterK")){
+      $("clusterK").value = data.recommended_k;
+      $("clusterMethod").value = "kmeans";
+      updateClusterControls();
+    }
+    
+    // Render elbow curve visualization
+    if(data.visualization){
+      const chartId = "clusterAnalysisChart_" + Date.now();
+      const chartHtml = `<div class="chart-box" style="height:65vh;min-height:340px;margin-top:14px;"><canvas id="${chartId}"></canvas></div>`;
+      const resultEl = $("clusterAnalysisResult");
+      resultEl.insertAdjacentHTML("beforeend", chartHtml);
+      
+      // Create multi-line chart for elbow analysis
+      setTimeout(() => {
+        const canvas = $(chartId);
+        if(!canvas) return;
+        
+        const ctx = canvas.getContext("2d");
+        const chart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: data.k_values.map(k => `K=${k}`),
+            datasets: [
+              {
+                label: 'Inertia (lower is better)',
+                data: data.inertias,
+                borderColor: '#5fd4d6',
+                backgroundColor: 'rgba(95,212,214,0.1)',
+                yAxisID: 'y',
+                tension: 0.3,
+                pointRadius: 5,
+                pointBackgroundColor: '#5fd4d6'
+              },
+              {
+                label: 'Silhouette Score (higher is better)',
+                data: data.silhouettes,
+                borderColor: '#ffb627',
+                backgroundColor: 'rgba(255,182,39,0.1)',
+                yAxisID: 'y1',
+                tension: 0.3,
+                pointRadius: 5,
+                pointBackgroundColor: '#ffb627'
+              },
+              {
+                label: 'Davies-Bouldin (lower is better)',
+                data: data.davies_bouldins,
+                borderColor: '#ef6f6f',
+                backgroundColor: 'rgba(239,111,111,0.1)',
+                yAxisID: 'y1',
+                tension: 0.3,
+                pointRadius: 5,
+                pointBackgroundColor: '#ef6f6f'
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { 
+                display: true, 
+                position: 'bottom', 
+                labels: {color: '#8fa3bc', font: {family: 'IBM Plex Mono', size: 10}}
+              },
+              tooltip: {mode: 'index', intersect: false}
+            },
+            scales: {
+              x: { 
+                ticks: {color: '#8fa3bc', font: {family: 'IBM Plex Mono', size: 9}}, 
+                grid: {color: '#1f3a5f'},
+                title: {display: true, text: 'Number of Clusters (K)', color: '#8fa3bc'}
+              },
+              y: { 
+                type: 'linear',
+                position: 'left',
+                ticks: {color: '#8fa3bc'}, 
+                grid: {color: '#1f3a5f'},
+                title: {display: true, text: 'Inertia', color: '#5fd4d6'}
+              },
+              y1: { 
+                type: 'linear',
+                position: 'right',
+                ticks: {color: '#8fa3bc'}, 
+                grid: {display: false},
+                title: {display: true, text: 'Score / Index', color: '#ffb627'}
+              }
+            }
+          }
+        });
+        
+        // Highlight recommended K
+        const recIdx = data.k_values.indexOf(data.recommended_k);
+        if(recIdx >= 0){
+          // Add a vertical line annotation for recommended K
+          const annotationPlugin = {
+            id: 'recommendedK',
+            afterDraw: (chart) => {
+              const xScale = chart.scales.x;
+              const yScale = chart.scales.y;
+              const xPos = xScale.getPixelForValue(recIdx);
+              
+              ctx.save();
+              ctx.strokeStyle = '#ffb627';
+              ctx.lineWidth = 2;
+              ctx.setLineDash([5, 5]);
+              ctx.beginPath();
+              ctx.moveTo(xPos, yScale.top);
+              ctx.lineTo(xPos, yScale.bottom);
+              ctx.stroke();
+              
+              // Add label
+              ctx.fillStyle = '#ffb627';
+              ctx.font = 'bold 12px IBM Plex Mono';
+              ctx.textAlign = 'center';
+              ctx.fillText(`★ K=${data.recommended_k}`, xPos, yScale.top - 10);
+              ctx.restore();
+            }
+          };
+          
+          chart.options.plugins = chart.options.plugins || {};
+          chart.options.plugins.afterDraw = annotationPlugin.afterDraw;
+          chart.update();
+        }
+      }, 0);
+    }
+  }catch(err){
+    showUnsupervisedResult("clusterAnalysisResult", `<div class="error-box">${err.message}</div>`);
+  }finally{ $("analyzeClustersBtn").disabled = false; $("analyzeClustersBtn").textContent = "🔍 Analyze best K"; }
+});
+
+$("clusterBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  const method = $("clusterMethod").value;
+  const body = {method};
+  if(method === "auto") body.max_clusters = 10;
+  if(method === "kmeans" || method === "hierarchical"){
+    const k = parseInt($("clusterK").value);
+    if(!Number.isFinite(k) || k < 2){
+      showUnsupervisedResult("clusterResult", `<div class="error-box">Choose a K value of at least 2.</div>`);
+      return;
+    }
+    body.n_clusters = k;
+  }
+  if(method === "dbscan"){ body.eps = parseFloat($("anomalyContamination").value) || 0.5; body.min_samples = 5; }
+  $("clusterBtn").disabled = true; $("clusterBtn").textContent = "Running…";
+  hideUnsupervisedResult("clusterResult");
+  try{
+    const res = await fetch(`${API}/unsupervised/cluster/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Clustering failed");
+    const methodLabel = {auto:"Auto Best Clustering",kmeans:"K-Means",hierarchical:"Hierarchical",dbscan:"DBSCAN"}[method] || method;
+    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>`;
+    if(data.selected_method) html += `<strong>Selected method:</strong> ${data.selected_method}<br>`;
+    if(data.selection_reason) html += `<span class="srr-dim">${data.selection_reason}</span><br><br>`;
+    html += `<strong>Cluster sizes:</strong><br>`;
+    for(const [name, count] of Object.entries(data.cluster_sizes)){
+      html += `  ${name}: ${count} rows<br>`;
+    }
+    if(data.metrics){
+      html += `<br><strong>Metrics:</strong><br>`;
+      for(const [k,v] of Object.entries(data.metrics)){
+        html += `  ${k}: ${v}<br>`;
+      }
+    }
+    if(data.n_outliers !== undefined){
+      html += `<br><strong>Outliers detected:</strong> ${data.n_outliers}<br>`;
+    }
+    html += `<br><em>Cluster labels have been added to the data as cluster_label and will appear in the downloaded HTML report.</em></div>`;
+    showUnsupervisedResult("clusterResult", html);
+    
+    // Render visualization if available
+    if(data.visualization){
+      const chartId = "clusterChart_" + Date.now();
+      const chartHtml = `<div class="chart-box" style="height:65vh;min-height:340px;margin-top:14px;"><canvas id="${chartId}"></canvas></div>`;
+      const resultEl = $("clusterResult");
+      resultEl.insertAdjacentHTML("beforeend", chartHtml);
+      setTimeout(() => renderUnsupervisedChart(chartId, data.visualization), 0);
+    }
+  }catch(err){
+    showUnsupervisedResult("clusterResult", `<div class="error-box">${err.message}</div>`);
+  }finally{ $("clusterBtn").disabled = false; $("clusterBtn").textContent = "Run clustering"; }
+});
+
+$("anomalyBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  const method = $("anomalyMethod").value;
+  const contamination = parseFloat($("anomalyContamination").value) || 0.1;
+  const body = {method, contamination};
+  if(method === "lof") body.n_neighbors = 20;
+  $("anomalyBtn").disabled = true; $("anomalyBtn").textContent = "Detecting…";
+  hideUnsupervisedResult("anomalyResult");
+  try{
+    const res = await fetch(`${API}/unsupervised/anomaly/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Anomaly detection failed");
+    const methodLabel = {isolation_forest:"Isolation Forest",lof:"Local Outlier Factor"}[method] || method;
+    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>`;
+    html += `<strong>Anomalies found:</strong> ${data.n_outliers} (${data.outlier_percentage}% of data)<br>`;
+    html += `<strong>Normal rows:</strong> ${data.n_normal}<br>`;
+    if(data.anomaly_indices?.length){
+      html += `<br><strong>Anomaly row indices (first 20):</strong><br>`;
+      html += data.anomaly_indices.slice(0, 20).join(", ");
+      if(data.anomaly_indices.length > 20) html += ` ... (+${data.anomaly_indices.length - 20} more)`;
+      html += `<br>`;
+    }
+    if(data.anomaly_scores?.length){
+      html += `<br><strong>Anomaly scores (first 10):</strong><br>`;
+      html += data.anomaly_scores.slice(0, 10).map(s => s.toFixed(4)).join(", ");
+      html += `<br>`;
+    }
+    html += `<br><em>Anomaly indices can be used to filter or highlight unusual rows.</em></div>`;
+    showUnsupervisedResult("anomalyResult", html);
+    
+    // Render visualization if available
+    if(data.visualization){
+      const chartId = "anomalyChart_" + Date.now();
+      const chartHtml = `<div class="chart-box" style="height:65vh;min-height:340px;margin-top:14px;"><canvas id="${chartId}"></canvas></div>`;
+      const resultEl = $("anomalyResult");
+      resultEl.insertAdjacentHTML("beforeend", chartHtml);
+      setTimeout(() => renderUnsupervisedChart(chartId, data.visualization), 0);
+    }
+  }catch(err){
+    showUnsupervisedResult("anomalyResult", `<div class="error-box">${err.message}</div>`);
+  }finally{ $("anomalyBtn").disabled = false; $("anomalyBtn").textContent = "Detect anomalies"; }
+});
+
+$("reduceBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  const method = $("reduceMethod").value;
+  const n_components = parseInt($("reduceComponents").value) || 2;
+  const body = {method, n_components};
+  if(method === "tsne") body.perplexity = 30.0;
+  $("reduceBtn").disabled = true; $("reduceBtn").textContent = "Reducing…";
+  hideUnsupervisedResult("reduceResult");
+  try{
+    const res = await fetch(`${API}/unsupervised/reduce/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Dimensionality reduction failed");
+    const methodLabel = {tsne:"t-SNE",pca:"PCA"}[method] || method;
+    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>`;
+    html += `<strong>Points generated:</strong> ${data.points?.length || 0}<br>`;
+    if(data.explained_variance){
+      html += `<br><strong>Explained variance per component:</strong><br>`;
+      data.explained_variance.forEach((v, i) => {
+        html += `  Component ${i+1}: ${v}%<br>`;
+      });
+      html += `<br><strong>Cumulative variance:</strong><br>`;
+      data.cumulative_variance.forEach((v, i) => {
+        html += `  PC${i+1}: ${v}%<br>`;
+      });
+    }
+    if(data.perplexity) html += `<br><strong>Perplexity:</strong> ${data.perplexity}<br>`;
+    html += `<br><em>2D coordinates are ready for visualization.</em></div>`;
+    showUnsupervisedResult("reduceResult", html);
+  }catch(err){
+    showUnsupervisedResult("reduceResult", `<div class="error-box">${err.message}</div>`);
+  }finally{ $("reduceBtn").disabled = false; $("reduceBtn").textContent = "Reduce dimensions"; }
+});
+
+$("assocBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  const min_support = parseFloat($("assocSupport").value) || 0.1;
+  const min_confidence = parseFloat($("assocConfidence").value) || 0.5;
+  const body = {min_support, min_confidence};
+  $("assocBtn").disabled = true; $("assocBtn").textContent = "Finding rules…";
+  hideUnsupervisedResult("assocResult");
+  try{
+    const res = await fetch(`${API}/unsupervised/association/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Association rules failed");
+    let html = `<div class="result-box"><strong>Apriori Association Rules</strong><br><br>`;
+    html += `<strong>Rules found:</strong> ${data.n_rules}<br>`;
+    if(data.message){
+      html += `<br><em>${data.message}</em><br>`;
+    }
+    if(data.rules?.length){
+      html += `<br><div style="max-height:400px;overflow-y:auto;">`;
+      html += `<table style="width:100%;font-size:11px;border-collapse:collapse;">`;
+      html += `<thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid var(--panel-border);">Antecedents</th><th style="text-align:left;padding:6px;border-bottom:1px solid var(--panel-border);">Consequents</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Support</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Confidence</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--panel-border);">Lift</th></tr></thead><tbody>`;
+      data.rules.forEach(rule => {
+        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">`;
+        html += `<td style="padding:5px 6px;">${rule.antecedents.join(", ")}</td>`;
+        html += `<td style="padding:5px 6px;">${rule.consequents.join(", ")}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${rule.support.toFixed(4)}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${rule.confidence.toFixed(4)}</td>`;
+        html += `<td style="padding:5px 6px;text-align:right;font-family:'IBM Plex Mono',monospace;">${rule.lift.toFixed(4)}</td>`;
+        html += `</tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+    html += `</div>`;
+    showUnsupervisedResult("assocResult", html);
+  }catch(err){
+    showUnsupervisedResult("assocResult", `<div class="error-box">${err.message}</div>`);
+  }finally{ $("assocBtn").disabled = false; $("assocBtn").textContent = "Find rules"; }
+});
+
+function buildPredictForm(columns){
+  const cols = columns || getState().training?.feedColumns || [];
+  $("predictFields").innerHTML = cols.map(c =>
+    `<div class="pred-field"><label>${c}</label><input type="text" data-field="${c}" placeholder="value"></div>`
+  ).join("");
+}
+
+function clearPredictionsUI(){
+  $("predictResult").innerHTML = "";
+  $("savedPredictionsList").innerHTML = "";
+  $("savedPredictionsHead").style.display = "none";
+}
+
+function formatPredictionInputs(prediction){
+  const row = prediction.inputs?.[0] || {};
+  const parts = Object.entries(row).map(([k, v]) => `${k}: ${v ?? "missing"}`);
+  return parts.length ? parts.join(" · ") : "No input values saved.";
+}
+
+function renderSavedPredictionsList(){
+  const predictions = getState().savedPredictions || [];
+  if(!predictions.length){
+    $("savedPredictionsHead").style.display = "none";
+    $("savedPredictionsList").innerHTML = "";
+    return;
+  }
+  $("savedPredictionsHead").style.display = "";
+  $("savedPredictionsList").innerHTML = [...predictions].reverse().map(p => {
+    const output = (p.predictions || []).map(v => escapeHtml(v)).join(", ");
+    const target = escapeHtml(p.target || "prediction");
+    const source = escapeHtml(p.source_name || "current training");
+    const model = escapeHtml(p.model_name || "");
+    const inputs = escapeHtml(formatPredictionInputs(p));
+    return `<div class="saved-pred-row" data-id="${escapeHtml(p.id)}">
+      <div class="spr-main">
+        <div class="spr-pred">${target} → <strong>${output}</strong></div>
+        <div class="spr-inputs">${inputs}</div>
+        <div class="spr-meta">${source}${model ? ` · ${model}` : ""} · ${escapeHtml(p.created_at || "")}</div>
+      </div>
+      <button class="icon-btn" title="Delete this saved prediction" data-action="delete-prediction">×</button>
+    </div>`;
+  }).join("");
+  $("savedPredictionsList").querySelectorAll('[data-action="delete-prediction"]').forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const row = btn.closest(".saved-pred-row");
+      const predictionId = row.dataset.id;
+      btn.disabled = true;
+      try{
+        const res = await fetch(`${API}/predictions/${getSid()}/${predictionId}`, {method:"DELETE"});
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.detail || "Could not delete prediction.");
+        setState({savedPredictions: data.predictions || []});
+        renderSavedPredictionsList();
+      }catch(err){ btn.disabled = false; }
+    });
+  });
+}
+
+async function refreshSavedPredictions(datasetId = activeDs, sid = getState().sessionId){
+  if(!sid) return;
+  try{
+    const res = await fetch(`${API}/predictions/${sid}`);
+    const data = await res.json();
+    setDatasetState(datasetId, {savedPredictions: data.predictions || []});
+  }catch(err){ setDatasetState(datasetId, {savedPredictions: []}); }
+  if(activeDs === datasetId) renderSavedPredictionsList();
+}
+
+$("predictBtn").addEventListener("click", async () => {
+  const row = {};
+  document.querySelectorAll("#predictFields input").forEach(inp => {
+    let v = inp.value;
+    if(v !== "" && !isNaN(v)) v = parseFloat(v);
+    row[inp.dataset.field] = v === "" ? null : v;
+  });
+  const runId = $("predictSourceSelect")?.value || null;
+  const body = {rows: [row]};
+  if(runId) body.run_id = runId;
+  $("predictResult").innerHTML = `<p class="loading">Scoring</p>`;
+  try{
+    const res = await fetch(`${API}/predict/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail);
+    const savedRuns = getState().savedRuns || [];
+    const sourceName = runId ? (savedRuns.find(r=>r.id===runId)?.name || "saved run") : "current training";
+    $("predictResult").innerHTML = `<div class="result-box">Prediction → <strong>${escapeHtml(data.predictions[0])}</strong> <span class="srr-dim">(from ${escapeHtml(sourceName)})</span></div>`
+      + (data.narrative ? `<div class="narrative"><div class="nlabel">What this means</div><p>${escapeHtml(data.narrative)}</p></div>` : "");
+    setState({savedPredictions: data.saved_predictions || []});
+    renderSavedPredictionsList();
+  }catch(err){ $("predictResult").innerHTML = `<div class="error-box">${err.message}</div>`; }
+});
+
+// ---------- PCA ----------
+$("pcaBtn").addEventListener("click", async () => {
+  $("pcaBtn").disabled = true;
+  $("pcaBtn").textContent = "Running…";
+  const colorCol = $("pcaColorCol").value;
+  const url = `${API}/pca/${getSid()}` + (colorCol ? `?color_col=${encodeURIComponent(colorCol)}` : "");
+  try{
+    const res = await fetch(url);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "PCA failed.");
+    show("pcaResult");
+    renderPCA(data);
+  }catch(err){
+    show("pcaResult");
+    $("pcaResult").innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+  $("pcaBtn").disabled = false;
+  $("pcaBtn").textContent = "Run PCA check";
+});
+
+function renderPCA(d){
+  if(!d.feasible){
+    $("pcaResult").innerHTML = `<div class="narrative"><p>${d.reason}</p></div>`;
+    return;
+  }
+
+  const verdictLabels = {
+    excellent: "✓ Excellent fit for PCA",
+    good:      "✓ Good fit for PCA",
+    moderate:  "~ Moderate value",
+    poor:      "✗ Limited value here"
+  };
+
+  // ---- Plain-English explanation block ----
+  function buildExplainer(d){
+    // What PCA does
+    let what = `<b>What PCA does:</b> PCA (Principal Component Analysis) looks at all your numeric columns 
+      and finds new "summary columns" (components) that capture the most important patterns. 
+      Instead of training on ${d.n_numeric} separate columns, you can train on just a few components 
+      that together represent most of the information — making your model faster and sometimes more accurate.`;
+
+    // What it found in this specific data
+    let found;
+    if(d.verdict === "excellent"){
+      found = `<b>What it found in your data:</b> Your ${d.n_numeric} numeric columns are <em>highly correlated</em> — 
+        just 2 components capture ${d.top2_variance}% of all the information. This means many of your columns are 
+        essentially saying the same thing. PCA is ideal here.`;
+    } else if(d.verdict === "good"){
+      found = `<b>What it found in your data:</b> ${d.components_for_80} components out of ${d.n_numeric} columns 
+        capture 80% of the information — a meaningful compression. Your columns share some common patterns 
+        but each also carries unique information.`;
+    } else if(d.verdict === "moderate"){
+      found = `<b>What it found in your data:</b> You need ${d.components_for_90} components to capture 90% of the 
+        information from ${d.n_numeric} columns — only modest compression. Your columns are relatively independent 
+        from each other.`;
+    } else {
+      found = `<b>What it found in your data:</b> Your ${d.n_numeric} columns carry mostly independent information — 
+        PCA cannot compress them much without losing important detail. Each column likely measures something distinct.`;
+    }
+
+    // Top PC1 drivers
+    const pc1Top = [...d.loadings].sort((a,b) => Math.abs(b.pc1) - Math.abs(a.pc1)).slice(0,3);
+    const pc2Top = [...d.loadings].sort((a,b) => Math.abs(b.pc2) - Math.abs(a.pc2)).slice(0,3);
+    let components = `<b>What each component represents:</b><br>
+      <b>PC1</b> (${d.pc1_variance}% of variance) is mainly driven by: 
+        ${pc1Top.map(l => `<em>${l.column}</em> (${l.pc1 > 0 ? "+" : ""}${l.pc1.toFixed(2)})`).join(", ")}.<br>
+      <b>PC2</b> (${d.pc2_variance}% of variance) is mainly driven by: 
+        ${pc2Top.map(l => `<em>${l.column}</em> (${l.pc2 > 0 ? "+" : ""}${l.pc2.toFixed(2)})`).join(", ")}.`;
+
+    // Training effect
+    let trainEffect;
+    if(d.verdict === "excellent" || d.verdict === "good"){
+      trainEffect = `<b>Effect on training:</b>
+        <ul style="margin:6px 0 0 18px;padding:0;">
+          <li>✅ <b>Speed:</b> Training will be faster — fewer input columns means less computation.</li>
+          <li>✅ <b>Reduces overfitting:</b> Removing redundant columns often improves how well the model generalises to new data.</li>
+          <li>✅ <b>Handles multicollinearity:</b> If correlated columns confuse your model, PCA resolves that automatically.</li>
+          <li>⚠️ <b>Less interpretable:</b> The model trains on PC1, PC2... instead of named columns, so you can't ask "how much did <em>profit</em> matter?"</li>
+        </ul>
+        <b>Recommendation:</b> Use <b>${d.components_for_90} components</b> when you go to the Train tab — 
+        this keeps 90% of your data's information in ${d.components_for_90} clean dimensions instead of ${d.n_numeric} columns.`;
+    } else if(d.verdict === "moderate"){
+      trainEffect = `<b>Effect on training:</b>
+        <ul style="margin:6px 0 0 18px;padding:0;">
+          <li>🔶 <b>Modest speed gain:</b> You'd reduce from ${d.n_numeric} to ${d.components_for_90} columns for 90% variance.</li>
+          <li>🔶 <b>Some overfitting protection:</b> May help slightly with noisy data.</li>
+          <li>⚠️ <b>Risk of information loss:</b> Your columns are fairly independent, so compression may hurt accuracy.</li>
+        </ul>
+        <b>Recommendation:</b> Try training both ways — with and without PCA — and compare results. 
+        If your dataset is large or training is slow, PCA with <b>${d.components_for_90} components</b> is worth trying.`;
+    } else {
+      trainEffect = `<b>Effect on training:</b>
+        <ul style="margin:6px 0 0 18px;padding:0;">
+          <li>❌ <b>Little speed gain:</b> You still need most components to keep the information.</li>
+          <li>❌ <b>Risk of accuracy loss:</b> Compressing independent columns discards real signal.</li>
+          <li>✅ <b>Still useful for visualisation:</b> The 2D scatter below can reveal clusters even when PCA isn't ideal for training.</li>
+        </ul>
+        <b>Recommendation:</b> Skip PCA for training with this dataset. Use your original ${d.n_numeric} columns directly.`;
+    }
+
+    return `<div class="narrative" style="display:flex;flex-direction:column;gap:12px;">
+      <p>${what}</p>
+      <p>${found}</p>
+      <p>${components}</p>
+      <p>${trainEffect}</p>
+    </div>`;
+  }
+
+  const expVarRows = d.explained_variance.slice(0,10).map((v,i) => `
+    <tr>
+      <td>PC${i+1}</td>
+      <td>${v}%</td>
+      <td>${d.cumulative_variance[i]}%</td>
+      <td><div class="pca-variance-bar" style="width:140px;"><div style="width:${Math.min(v/d.explained_variance[0]*100,100)}%"></div></div></td>
+    </tr>`).join("");
+
+  const loadingRows = d.loadings.map(l => {
+    const abs1 = Math.abs(l.pc1), abs2 = Math.abs(l.pc2);
+    const bar1 = `<div style="display:inline-block;width:${Math.round(abs1*60)}px;height:8px;background:${l.pc1>=0?'var(--cyan)':'var(--bad)'};border-radius:2px;vertical-align:middle;"></div>`;
+    const bar2 = `<div style="display:inline-block;width:${Math.round(abs2*60)}px;height:8px;background:${l.pc2>=0?'var(--cyan)':'var(--bad)'};border-radius:2px;vertical-align:middle;"></div>`;
+    return `<tr>
+      <td>${l.column}</td>
+      <td style="color:${l.pc1>=0?'var(--cyan)':'var(--bad)'};">${l.pc1>0?"+":""}${l.pc1.toFixed(3)} ${bar1}</td>
+      <td style="color:${l.pc2>=0?'var(--cyan)':'var(--bad)'};">${l.pc2>0?"+":""}${l.pc2.toFixed(3)} ${bar2}</td>
+    </tr>`;
+  }).join("");
+
+  const scatterId = "pcaScatter_" + Date.now();
+
+  $("pcaResult").innerHTML = `
+    <span class="pca-verdict ${d.verdict}">${verdictLabels[d.verdict]}</span>
+
+    ${buildExplainer(d)}
+
+    <div class="subhead" style="margin-top:20px;">Variance explained per component (top 10)</div>
+    <p class="hint" style="margin-top:0;">Each bar shows how much of your data's total information that component captures.</p>
+    <table class="pca-loadings-table">
+      <thead><tr><th>Component</th><th>Explains</th><th>Cumulative</th><th>Relative size</th></tr></thead>
+      <tbody>${expVarRows}</tbody>
+    </table>
+
+    <div class="subhead" style="margin-top:20px;">2D projection (PC1 vs PC2)</div>
+    <p class="hint" style="margin-top:0;">
+      PC1 captures ${d.pc1_variance}% of variance · PC2 captures ${d.pc2_variance}% · Together: ${d.top2_variance}%.<br>
+      Each dot is one row in your data. <b>Clusters in this chart mean those rows are genuinely similar across all your numeric columns.</b>
+    </p>
+    <div class="chart-box" style="height:65vh;min-height:340px;"><canvas id="${scatterId}"></canvas></div>
+
+    <div class="subhead" style="margin-top:20px;">Column loadings — what drives each component</div>
+    <p class="hint" style="margin-top:0;">
+      A high positive value means that column <b>increases</b> along this component. 
+      A high negative value means it <b>decreases</b>. Columns close to zero barely affect that component.
+    </p>
+    <table class="pca-loadings-table">
+      <thead><tr><th>Column</th><th>PC1 loading</th><th>PC2 loading</th></tr></thead>
+      <tbody>${loadingRows}</tbody>
+    </table>
+
+    <div class="pca-stat-row" style="margin-top:16px;">
+      <div class="pca-stat"><div class="v">${d.n_numeric}</div><div class="l">original columns</div></div>
+      <div class="pca-stat"><div class="v">${d.components_for_80}</div><div class="l">components → 80% info</div></div>
+      <div class="pca-stat"><div class="v">${d.components_for_90}</div><div class="l">components → 90% info</div></div>
+      <div class="pca-stat"><div class="v">${d.top2_variance}%</div><div class="l">info in top 2 PCs</div></div>
+    </div>`;
+
+  // Draw 2D scatter with Chart.js
+  const labels = d.scatter_labels.length ? d.scatter_labels : ["all"];
+  const colorsMap = {};
+  (labels.length ? labels : ["all"]).forEach((lbl,i) => colorsMap[lbl] = PIE_COLORS[i % PIE_COLORS.length]);
+
+  let datasets;
+  if(d.scatter_labels.length){
+    datasets = d.scatter_labels.map(lbl => ({
+      label: lbl,
+      data: d.scatter.filter(p=>p.label===lbl).map(p=>({x:p.x,y:p.y})),
+      backgroundColor: colorsMap[lbl] + "99",
+      pointRadius: 4,
+    }));
+  } else {
+    datasets = [{
+      label: "rows",
+      data: d.scatter.map(p=>({x:p.x,y:p.y})),
+      backgroundColor: PIE_COLORS[0] + "88",
+      pointRadius: 4,
+    }];
+  }
+
+  makeChart(scatterId, {
+    type: "scatter",
+    data: {datasets},
+    options: {
+      plugins: {legend: {display: d.scatter_labels.length > 0}},
+      scales: {
+        x: {title: {display:true, text:`PC1 (${d.pc1_variance}%)`}},
+        y: {title: {display:true, text:`PC2 (${d.pc2_variance}%)`}},
+      }
+    }
+  });
+}
+
+// ---------- ASSISTANT ----------
+$("chatBtn").addEventListener("click", sendQ);
+$("chatInput").addEventListener("keydown", e => { if(e.key==="Enter") sendQ(); });
+
+async function sendQ(){
+  const q = $("chatInput").value.trim();
+  if(!q || !getSid()) return;
+  $("chatInput").value = "";
+  addMsg(q,"user");
+  const bot = addMsg("Thinking…","bot");
+  try{
+    const res = await fetch(`${API}/ask/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Failed");
+    
+    // Show the answer
+    renderAssistantContent(bot, data.answer);
+    
+    // If there's a table, show it
+    if(data.table && data.table.rows && data.table.rows.length){
+      bot.appendChild(renderAnswerTable(data.table));
+    }
+    
+    // If the assistant modified the data, refresh the UI
+    if(data.modified && data.profile){
+      // Update the current dataset state
+      setDatasetState(activeDs, {profile: data.profile});
+      // Refresh EDA panel if visible
+      if(!$("panelEDA").classList.contains("hidden")){
+        renderEDA(data.profile);
+      }
+      // Refresh cleaning panel if visible
+      if(!$("panelClean").classList.contains("hidden")){
+        if(data.profile.cleaning_log){
+          $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + data.profile.cleaning_log.map(p=>`<p>${p}</p>`).join("");
+          show("cleanLog");
+        }
+        if(data.profile.narrative){
+          showNarrative("cleanNarrative", data.profile.narrative);
+        }
+        if(data.profile.can_undo !== undefined){
+          $("undoCleanBtn").disabled = !data.profile.can_undo;
+        }
+      }
+      // Show a notification
+      const notif = document.createElement("div");
+      notif.className = "narrative";
+      notif.style.marginTop = "10px";
+      notif.innerHTML = `<div class="nlabel">Data Modified</div><p>✓ ${escapeHtml(data.answer)}</p>`;
+      bot.appendChild(notif);
+    }
+    
+    $("chatWrap").scrollTop = $("chatWrap").scrollHeight;
+  }catch(err){ 
+    bot.textContent = err.message || "Sorry, something went wrong."; 
+    bot.style.color="var(--bad)"; 
+  }
+}
+
+function renderAnswerTable(table){
+  const wrap = document.createElement("div");
+  wrap.className = "chat-table-wrap";
+  let html = `<table class="preview-table"><thead><tr>` +
+    table.columns.map(c => `<th><span class="col-name">${escapeHtml(String(c))}</span></th>`).join("") +
+    `</tr></thead><tbody>`;
+  table.rows.forEach(row => {
+    html += "<tr>" + table.columns.map((c, i) => {
+      const v = row[c];
+      if(i === 0) return `<td style="color:var(--ink-dim);text-align:center;">${escapeHtml(String(v))}</td>`;
+      if(v === null || v === undefined) return `<td class="null-val">null</td>`;
+      const text = String(v);
+      return `<td>${escapeHtml(text.length > 40 ? text.slice(0,40)+"…" : text)}</td>`;
+    }).join("") + "</tr>";
+  });
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+  return wrap;
+}
+
+function addMsg(text, role){
+  const el = document.createElement("div");
+  el.className = `chat-msg ${role}`; el.textContent = text;
+  $("chatWrap").appendChild(el);
+  $("chatWrap").scrollTop = $("chatWrap").scrollHeight;
+  return el;
+}
+
+// Run after DOM + all listeners are fully set up
+document.addEventListener("DOMContentLoaded", () => {
+  // Create the first empty dataset slot without any scrolling
+  const id = "ds_" + Date.now();
+  datasets.push({id, name:"New dataset", sessionId:null});
+  activeDs = id;
+  dsState[id] = {};
+  renderDsTabs();
+});
+</script>
+</body>
+</html>
