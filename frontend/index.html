@@ -193,6 +193,21 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .modal-actions button.danger{background:var(--bad);color:#fff;}
 .modal-actions button.danger:hover{filter:brightness(1.1);}
 
+/* dataset selector strip (appears in Profile, Filter, Training) */
+.ds-selector{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:18px;padding:10px 14px;background:var(--bg);border:1px solid var(--panel-border);position:relative;}
+.ds-selector::before{content:"Working on:";font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-dim);margin-right:4px;}
+.ds-selector label{display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid var(--panel-border);background:var(--panel);transition:border-color .12s,background .12s;}
+.ds-selector label:hover{border-color:var(--accent);}
+.ds-selector input[type=radio]{accent-color:var(--accent);cursor:pointer;}
+.ds-selector input[type=radio]:checked + span{color:var(--accent);font-weight:600;}
+.ds-selector label:has(input:checked){border-color:var(--accent);background:rgba(80,160,255,0.07);}
+
+/* dataset selector strip (appears in Profile, Filter, Training) */
+.filter-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+.filter-row select,.filter-row input{padding:5px 8px;font-size:12px;}
+.filter-row .remove-cond{background:transparent;border:none;color:var(--ink-dim);cursor:pointer;font-size:16px;line-height:1;padding:2px 4px;}
+.filter-row .remove-cond:hover{color:var(--bad);}
+
 /* upload source tabs */
 .src-tabs{display:flex;gap:4px;margin-bottom:14px;}
 .src-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:5px 12px;border:1px solid var(--panel-border);cursor:pointer;color:var(--ink-dim);background:transparent;}
@@ -322,6 +337,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <!-- 02 PROFILE -->
   <section class="panel hidden" id="panelEDA">
     <h2><span class="idx">02 /</span> Automated Profile</h2>
+    <div class="ds-selector" id="edaDsSelector"></div>
     <div class="dl-bar hidden" id="dlBarEDA">
       <span>Download the current data as-is</span>
       <button class="dl" onclick="dlData('csv')">⬇ CSV</button>
@@ -363,7 +379,56 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     </div>
     <div class="actions">
       <button id="goCleanBtn">Continue to cleaning →</button>
+      <button class="sec" onclick="openFilterPanel()">⊂ Filter &amp; Split rows</button>
     </div>
+  </section>
+
+  <!-- 02b FILTER / SPLIT -->
+  <section class="panel hidden" id="panelFilter">
+    <h2><span class="idx">02b /</span> Filter &amp; Split</h2>
+    <div class="ds-selector" id="filterDsSelector"></div>
+    <p class="hint" style="margin-bottom:18px;">
+      Write a filter expression to extract a subset of rows — then send it to a <strong>new dataset tab</strong> to work on independently.
+      Think of it like SQL <code>WHERE</code> but written as a pandas expression.
+    </p>
+
+    <!-- Builder: visual condition rows -->
+    <div class="subhead">Build your filter</div>
+    <div id="filterConditions" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+      <button class="sec" onclick="addFilterCondition()">+ Add condition</button>
+      <select id="filterLogic" style="width:80px;padding:5px 8px;">
+        <option value="and">AND</option>
+        <option value="or">OR</option>
+      </select>
+      <span class="hint" style="margin:0;">between conditions</span>
+    </div>
+
+    <!-- Raw expression (auto-built from visual, or type manually) -->
+    <div class="subhead" style="margin-top:18px;">Expression</div>
+    <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;">
+      <textarea id="filterExpr" rows="2" placeholder="e.g.  gender == 'Male'   or   age > 30 and churn == 'Yes'" style="flex:1;font-family:'IBM Plex Mono',monospace;font-size:12px;resize:vertical;"></textarea>
+      <button class="sec" onclick="previewFilter()" style="white-space:nowrap;">Preview rows</button>
+    </div>
+    <div class="hint" style="margin-top:5px;">
+      Operators: <code>==</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code>
+      &nbsp;|&nbsp; String: <code>str.contains('X')</code> &nbsp;|&nbsp; Lists: <code>col in ['A','B']</code>
+      &nbsp;|&nbsp; Combine: <code>and</code> / <code>or</code>
+    </div>
+
+    <!-- Preview results -->
+    <div id="filterPreviewWrap" class="hidden" style="margin-top:16px;">
+      <div class="subhead">Preview <span id="filterPreviewCount"></span></div>
+      <div id="filterPreviewTable" style="overflow-x:auto;margin-top:6px;"></div>
+    </div>
+    <div id="filterError" class="hidden" style="color:var(--bad);font-size:12px;margin-top:10px;font-family:'IBM Plex Mono',monospace;"></div>
+
+    <!-- Send to new tab -->
+    <div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap;">
+      <input type="text" id="filterNewName" placeholder="Name for the new dataset tab" style="flex:1;min-width:180px;">
+      <button id="filterSendBtn" onclick="sendFilterToTab()">↗ Send to new tab</button>
+    </div>
+    <p class="hint" style="margin-top:6px;">The filtered rows open as a fresh independent dataset tab — original data is untouched.</p>
   </section>
 
   <!-- 03 CLEAN -->
@@ -507,6 +572,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <!-- 05 TRAIN -->
   <section class="panel hidden" id="panelTrain">
     <h2><span class="idx">05 /</span> Training</h2>
+    <div class="ds-selector" id="trainDsSelector"></div>
     <p class="hint">Choose supervised learning when you have a target column to predict, or unsupervised learning when you want to discover clusters, patterns, or unusual rows.</p>
 
     <div class="late-clean">
@@ -1029,6 +1095,50 @@ function renderDsTabs(){
     t.onclick = () => switchDataset(ds.id);
     tabsEl.insertBefore(t, addBtn);
   });
+  renderDsSelectors();  // keep the in-panel selectors in sync
+}
+
+// Build or refresh the radio-button dataset selector strips inside panels.
+// Each strip lists all loaded datasets as radio buttons.
+// Selecting one switches the active dataset so the panel immediately reflects it.
+function renderDsSelectors(){
+  const configs = [
+    { id: "edaDsSelector",    action: "eda"    },
+    { id: "filterDsSelector", action: "filter" },
+    { id: "trainDsSelector",  action: "train"  },
+  ];
+
+  const visible = datasets.length > 1;
+
+  configs.forEach(({ id, action }) => {
+    const el = $(id);
+    if(!el) return;
+    el.style.display = visible ? "" : "none";
+    if(!visible){ el.innerHTML = ""; return; }
+
+    el.innerHTML = datasets.map(ds => `
+      <label>
+        <input type="radio" name="${id}" value="${ds.id}"
+          data-action="${action}"
+          ${ds.id === activeDs ? "checked" : ""}
+          onchange="_onDsSelectorChange(this)">
+        <span>${ds.name}</span>
+      </label>
+    `).join("");
+  });
+}
+
+function _onDsSelectorChange(radio){
+  const id = radio.value;
+  const action = radio.dataset.action;
+  switchDataset(id);
+  // Sync the other selectors to the same selection
+  document.querySelectorAll(".ds-selector input[type=radio]").forEach(r => {
+    if(r.value === id) r.checked = true;
+  });
+  if(action === "eda")    scrollPanel("panelEDA");
+  if(action === "filter") { _rebuildExpr(); scrollPanel("panelFilter"); }
+  if(action === "train")  scrollPanel("panelTrain");
 }
 
 function clearAnalysisUI(){
@@ -1077,7 +1187,7 @@ function clearAnalysisUI(){
 }
 
 function resetPanels(){
-  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised"].forEach(hide);
+  ["panelEDA","panelFilter","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -1088,7 +1198,7 @@ function resetPanels(){
 function restoreDataset(state){
   resetPanels();
   // Just reload EDA for the active dataset
-  show("panelEDA"); show("panelAssistant"); setStep(2);
+  show("panelEDA"); show("panelFilter"); show("panelAssistant"); setStep(2);
   if(state.profile) renderEDA(state.profile);
   if(state.cleanLog){
     $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + state.cleanLog.map(p=>`<p>${p}</p>`).join("");
@@ -1260,6 +1370,7 @@ let allColumns = [];   // kept in sync for selects
 let currentCorrelation = null;
 async function loadEDA(datasetId = activeDs, sid = getState().sessionId){
   if(activeDs === datasetId) show("panelEDA");
+  if(activeDs === datasetId) show("panelFilter");
   if(activeDs === datasetId){
     $("edaStats").innerHTML = `<p class="loading">Profiling uploaded data</p>`;
     $("colList").innerHTML = "";
@@ -3456,6 +3567,164 @@ function addMsg(text, role){
   $("chatWrap").appendChild(el);
   $("chatWrap").scrollTop = $("chatWrap").scrollHeight;
   return el;
+}
+
+// ============================
+// FILTER & SPLIT
+// ============================
+let _filterConditions = [];   // [{col, op, val}]
+
+function openFilterPanel(){
+  // Reset state each time user opens it
+  _filterConditions = [];
+  $("filterConditions").innerHTML = "";
+  $("filterExpr").value = "";
+  $("filterPreviewWrap").classList.add("hidden");
+  $("filterError").classList.add("hidden");
+  $("filterNewName").value = "";
+  // Seed one blank condition
+  addFilterCondition();
+  scrollPanel("panelFilter");
+}
+
+function _colOptions(){
+  const cols = getState().allColumns || [];
+  return cols.map(c => `<option value="${c}">${c}</option>`).join("");
+}
+
+function addFilterCondition(){
+  const id = "fc_" + Date.now();
+  _filterConditions.push(id);
+  const colOpts = _colOptions();
+  const row = document.createElement("div");
+  row.className = "filter-row";
+  row.id = id;
+  row.innerHTML = `
+    <select class="fc-col" onchange="_rebuildExpr()">${colOpts}</select>
+    <select class="fc-op" onchange="_rebuildExpr()">
+      <option value="==">==(equals)</option>
+      <option value="!=">!=(not equals)</option>
+      <option value=">">&gt;(greater)</option>
+      <option value="<">&lt;(less)</option>
+      <option value=">=">&gt;=(≥)</option>
+      <option value="<=">&lt;=(≤)</option>
+      <option value="contains">contains</option>
+    </select>
+    <input type="text" class="fc-val" placeholder="value" oninput="_rebuildExpr()" style="flex:1;min-width:100px;">
+    <button class="remove-cond" onclick="_removeCondition('${id}')" title="Remove">×</button>
+  `;
+  $("filterConditions").appendChild(row);
+  _rebuildExpr();
+}
+
+function _removeCondition(id){
+  const el = $(id);
+  if(el) el.remove();
+  _filterConditions = _filterConditions.filter(x => x !== id);
+  _rebuildExpr();
+}
+
+function _rebuildExpr(){
+  const logic = " " + ($("filterLogic").value || "and") + " ";
+  const rows = $("filterConditions").querySelectorAll(".filter-row");
+  const parts = [];
+  rows.forEach(row => {
+    const col  = row.querySelector(".fc-col")?.value?.trim();
+    const op   = row.querySelector(".fc-op")?.value;
+    const val  = row.querySelector(".fc-val")?.value?.trim();
+    if(!col || !val) return;
+    if(op === "contains"){
+      parts.push(`${col}.str.contains('${val}', case=False, na=False)`);
+    } else {
+      // Wrap in quotes if non-numeric
+      const isNum = !isNaN(Number(val)) && val !== "";
+      const v = isNum ? val : `'${val}'`;
+      parts.push(`${col} ${op} ${v}`);
+    }
+  });
+  $("filterExpr").value = parts.join(logic);
+}
+
+async function previewFilter(){
+  const sid = getState().sessionId;
+  if(!sid){ alert("No dataset loaded."); return; }
+  const expr = $("filterExpr").value.trim();
+  if(!expr){ alert("Write a filter expression first."); return; }
+
+  $("filterError").classList.add("hidden");
+  $("filterPreviewWrap").classList.add("hidden");
+
+  try{
+    const res = await fetch(`${API}/filter_preview/${sid}`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({where_clause: expr, new_name: "preview"})
+    });
+    const data = await res.json();
+    if(!res.ok){ throw new Error(data.detail || "Filter failed"); }
+
+    $("filterPreviewCount").textContent =
+      `— ${data.rows_matched.toLocaleString()} of ${data.total_rows.toLocaleString()} rows match`;
+    $("filterPreviewTable").innerHTML = _buildPreviewTable(data.preview, data.columns);
+    $("filterPreviewWrap").classList.remove("hidden");
+
+    // Auto-fill a name suggestion if empty
+    if(!$("filterNewName").value){
+      const ds = datasets.find(d => d.id === activeDs);
+      $("filterNewName").value = (ds?.name || "dataset") + "_filtered";
+    }
+  }catch(e){
+    $("filterError").textContent = e.message;
+    $("filterError").classList.remove("hidden");
+  }
+}
+
+function _buildPreviewTable(rows, cols){
+  if(!rows || !rows.length) return "<p class='hint'>No rows matched.</p>";
+  const head = cols.map(c => `<th>${c}</th>`).join("");
+  const body = rows.map(r =>
+    "<tr>" + cols.map(c => `<td>${r[c] ?? ""}</td>`).join("") + "</tr>"
+  ).join("");
+  return `<table class="preview-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+async function sendFilterToTab(){
+  const sid = getState().sessionId;
+  if(!sid){ alert("No dataset loaded."); return; }
+  const expr = $("filterExpr").value.trim();
+  if(!expr){ alert("Write a filter expression first."); return; }
+  const newName = $("filterNewName").value.trim() || "filtered_subset";
+
+  $("filterError").classList.add("hidden");
+  $("filterSendBtn").disabled = true;
+  $("filterSendBtn").textContent = "Creating tab…";
+
+  try{
+    const res = await fetch(`${API}/filter/${sid}`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({where_clause: expr, new_name: newName})
+    });
+    const data = await res.json();
+    if(!res.ok){ throw new Error(data.detail || "Filter failed"); }
+
+    // Create a new dataset tab and switch to it
+    const newId = "ds_" + Date.now();
+    datasets.push({id: newId, name: data.name, sessionId: data.session_id});
+    dsState[newId] = {sessionId: data.session_id, allColumns: data.columns};
+    activeDs = newId;
+    renderDsTabs();
+    autoSave();
+    await loadEDA(newId, data.session_id);
+    $("sessionTag").textContent = `${data.name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
+    scrollPanel("panelEDA");
+  }catch(e){
+    $("filterError").textContent = e.message;
+    $("filterError").classList.remove("hidden");
+  }finally{
+    $("filterSendBtn").disabled = false;
+    $("filterSendBtn").textContent = "↗ Send to new tab";
+  }
 }
 
 // Run after DOM + all listeners are fully set up

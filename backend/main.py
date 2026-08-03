@@ -443,9 +443,7 @@ def get_pca(session_id: str, color_col: str | None = None):
     Optional: pass ?color_col=colname to colour the 2D scatter by a categorical column.
     """
     session = _get_session_or_404(session_id)
-    result = pca_analysis.analyse(session.df, color_col=color_col)
-    session.pca_result = result
-    return result
+    return pca_analysis.analyse(session.df, color_col=color_col)
 
 
 # ---------- Clean ----------
@@ -695,35 +693,6 @@ def _has_cleaning_history(session) -> bool:
     return bool(session.cleaning_log or session.chat_clean_log)
 
 
-def _report_pca_result(session) -> dict:
-    result = getattr(session, "pca_result", {}) or {}
-    if result:
-        return result
-    if len(session.df) <= 50_000:
-        try:
-            result = pca_analysis.analyse(session.df)
-            session.pca_result = result
-            return result
-        except Exception:
-            return {}
-    return {}
-
-
-def _report_feature_importance(session) -> list:
-    importance = getattr(session, "feature_importance", []) or []
-    if importance:
-        return importance
-    try:
-        if session.best_model_name and session.best_model_name in session.models and session.target in session.df.columns:
-            X = session.df.drop(columns=[session.target])
-            importance = automl.feature_importance(session.models[session.best_model_name], X)
-            session.feature_importance = importance
-            return importance
-    except Exception:
-        return []
-    return []
-
-
 def _build_work_report(session) -> str:
     profile = eda.profile_dataframe(session.df)
     narrative = narrate.narrate_eda(profile)
@@ -797,36 +766,6 @@ def _build_work_report(session) -> str:
         for a, b, val in pairs[:10]:
             lines.append(f"- `{a}` vs `{b}`: {val:+.3f}")
 
-    pca_result = _report_pca_result(session)
-    if pca_result:
-        lines.extend(["", "## Principal Component Analysis (PCA)", ""])
-        if not pca_result.get("feasible"):
-            lines.append(pca_result.get("reason", "PCA was not feasible for this dataset."))
-        else:
-            lines.append(f"- Verdict: **{str(pca_result.get('verdict', 'unknown')).title()}**")
-            lines.append(f"- Numeric columns: {pca_result.get('n_numeric', 0)}")
-            lines.append(f"- Components for 80% variance: {pca_result.get('components_for_80', '?')}")
-            lines.append(f"- Components for 90% variance: {pca_result.get('components_for_90', '?')}")
-            lines.append(f"- Variance in PC1 and PC2: {pca_result.get('top2_variance', '?')}%")
-            if pca_result.get("recommendation"):
-                lines.append(f"- Recommendation: {pca_result['recommendation']}")
-
-            explained = pca_result.get("explained_variance") or []
-            cumulative = pca_result.get("cumulative_variance") or []
-            if explained:
-                lines.extend(["", "| Component | Explains | Cumulative |", "| --- | --- | --- |"])
-                for index, value in enumerate(explained[:10]):
-                    cum = cumulative[index] if index < len(cumulative) else ""
-                    lines.append(f"| PC{index + 1} | {_fmt_report_value(value)}% | {_fmt_report_value(cum)}% |")
-
-            loadings = pca_result.get("loadings") or []
-            if loadings:
-                lines.extend(["", "### PCA Column Loadings", "", "| Column | PC1 loading | PC2 loading |", "| --- | --- | --- |"])
-                for loading in loadings[:20]:
-                    lines.append(
-                        f"| {loading.get('column', '')} | {_fmt_report_value(loading.get('pc1'))} | {_fmt_report_value(loading.get('pc2'))} |"
-                    )
-
     if _has_cleaning_history(session):
         lines.extend(["", "## Cleaning Log", ""])
         lines.extend(f"- {entry}" for entry in session.cleaning_log)
@@ -848,17 +787,6 @@ def _build_work_report(session) -> str:
                 metrics = ", ".join(f"{k}: {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
             marker = " ⭐" if row.get("model") == session.best_model_name else ""
             lines.append(f"| {i} | {row.get('model', 'model')}{marker} | {metrics} |")
-
-        importance = _report_feature_importance(session)
-        lines.extend(["", "### Feature Importance (Best Model)", ""])
-        if importance:
-            lines.append("| Feature | Importance |")
-            lines.append("| --- | --- |")
-            for item in importance[:15]:
-                feature = str(item.get("feature", "")).split("__")[-1]
-                lines.append(f"| {feature} | {_fmt_report_value(item.get('importance'))} |")
-        else:
-            lines.append("Not available for this best model type.")
 
     if session.saved_predictions:
         lines.extend(["", "## Predictions", ""])
@@ -1227,7 +1155,6 @@ def train_status(session_id: str):
     if best_name and best_name in fitted:
         X = session.df.drop(columns=[target])
         importance = automl.feature_importance(fitted[best_name], X)
-    session.feature_importance = importance
 
     training_narrative = narrate.narrate_training(
         problem_type, target, leaderboard, best_name, importance
@@ -1300,7 +1227,6 @@ def save_train_run(session_id: str, req: SaveRunRequest):
         "models": session.models,
         "leaderboard": session.leaderboard,
         "best_model_name": session.best_model_name,
-        "feature_importance": session.feature_importance,
         "label_encoder": session.label_encoder,
         "feature_columns": session.feature_columns,
     }
@@ -1622,6 +1548,78 @@ def _get_session_or_404(session_id: str):
 def get_progress(session_id: str):
     session = _get_session_or_404(session_id)
     return {"messages": session.progress_messages}
+
+
+# ---------- Filter / Split endpoint ----------
+
+class FilterRequest(BaseModel):
+    where_clause: str = Field(min_length=1, max_length=4000)   # pandas-style query string
+    new_name: str = Field(default="filtered_subset", max_length=120)
+
+
+def _apply_filter(df: pd.DataFrame, where_clause: str) -> pd.DataFrame:
+    """
+    Run a filter using pandas .query().
+    Supports expressions like:
+        gender == 'Male'
+        age > 30 and monthly_charges < 60
+        churn == 'Yes' or tenure > 60
+        city in ['Nairobi', 'Mombasa']
+    Raises ValueError with a readable message on bad syntax.
+    """
+    try:
+        result = df.query(where_clause, engine="python")
+        return result.reset_index(drop=True)
+    except Exception as exc:
+        raise ValueError(f"Filter error: {exc}")
+
+
+@app.post("/api/filter/{session_id}")
+def filter_dataset(session_id: str, req: FilterRequest):
+    """
+    Apply a filter expression to the current dataframe and create a brand-new
+    session from the matching rows. Returns a new session_id the frontend can
+    open as an independent dataset tab.
+    """
+    session = _get_session_or_404(session_id)
+    try:
+        result_df = _apply_filter(session.df, req.where_clause)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    if result_df.empty:
+        raise HTTPException(400, "The filter matched 0 rows. Try a less restrictive condition.")
+
+    new_name = req.new_name.strip() or "filtered_subset"
+    new_session = create_session(result_df, new_name + ".csv")
+
+    return {
+        "session_id": new_session.id,
+        "name": new_name,
+        "shape": {"rows": len(result_df), "columns": len(result_df.columns)},
+        "columns": list(result_df.columns),
+        "preview": result_df.head(5).to_dict(orient="records"),
+    }
+
+
+@app.post("/api/filter_preview/{session_id}")
+def filter_preview(session_id: str, req: FilterRequest):
+    """
+    Dry-run: return the first 10 rows + row count for the filter expression
+    without creating a new session.
+    """
+    session = _get_session_or_404(session_id)
+    try:
+        result_df = _apply_filter(session.df, req.where_clause)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    return {
+        "rows_matched": len(result_df),
+        "total_rows": len(session.df),
+        "preview": result_df.head(10).to_dict(orient="records"),
+        "columns": list(result_df.columns),
+    }
 
 
 # ---------- Serve frontend ----------
