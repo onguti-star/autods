@@ -10,6 +10,7 @@ import os
 import uuid
 import shutil
 import pickle
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -111,11 +112,61 @@ class Session:
         self.save_to_disk()
         return True
 
-    def clear_current_training(self):
+    def _autosave_current_training(self):
+        """If there's a trained model on the current data, snapshot it into
+        saved_runs BEFORE it would otherwise be lost by clearing or replacing.
+
+        This is the safety net that guarantees a model trained on one target
+        (e.g. 'price') stays available for prediction even after the user moves
+        on — training another target, cleaning the data, changing a column type,
+        undoing a change, or running a chat action that modifies the dataframe.
+
+        Idempotent: once models are cleared, repeated calls do nothing.
+        """
+        if not self.models:
+            return
+        if not self.target:
+            return
+
+        # Avoid piling up an identical auto-save if we're merely switching targets
+        # and a previous identical run already exists (e.g. re-train same target).
+        for run in self.saved_runs.values():
+            if (
+                run.get("auto_saved")
+                and run.get("target") == self.target
+                and run.get("best_model_name") == self.best_model_name
+            ):
+                return
+
+        run_id = str(uuid.uuid4())
+        self.saved_runs[run_id] = {
+            "name": f"Auto-saved: {self.target}",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "target": self.target,
+            "problem_type": self.problem_type,
+            "models": self.models,
+            "leaderboard": self.leaderboard,
+            "best_model_name": self.best_model_name,
+            "label_encoder": self.label_encoder,
+            "feature_columns": self.feature_columns,
+            "auto_saved": True,   # marks this as an automatic snapshot (not a user-named run)
+        }
+
+    def clear_current_training(self, auto_preserve: bool = True):
         """Drop models tied to the previous current dataframe.
 
         Saved runs are intentionally kept: they are explicit model snapshots.
+        When auto_preserve=True (the default), any currently trained model is
+        first automatically snapshot into saved_runs so it is never lost —
+        regardless of whether the clear is triggered by cleaning, a type change,
+        undo, a chat action, or switching to a new target.
+
+        Pass auto_preserve=False to skip the snapshot (e.g. when tearing down
+        a session or intentionally discarding the model).
         """
+        if auto_preserve:
+            self._autosave_current_training()
+
         self.target = None
         self.problem_type = None
         self.models = {}

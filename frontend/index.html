@@ -655,7 +655,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         </div>
       </div>
       <div class="subhead" style="margin-top:20px;">Save this run</div>
-      <p class="hint">Give this training a name to keep it around — training a different target afterwards won't lose it, and you can predict with either one later.</p>
+      <p class="hint">Give this training a name to keep it around — training a different target afterwards won't lose it, and you can predict with either one later. <strong style="color:var(--good);">Previous models are also auto-saved when you train on a new target.</strong></p>
       <div class="pred-row">
         <div class="pred-field"><input type="text" id="saveRunName" placeholder="e.g. Sentiment v1" maxlength="100"></div>
         <div class="pred-field"><button class="sec" id="saveRunBtn" style="margin-top:0;">💾 Save this run</button></div>
@@ -663,15 +663,27 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div id="saveRunStatus"></div>
       <div class="subhead" id="savedRunsHead" style="margin-top:14px;display:none;">Saved runs</div>
       <div id="savedRunsList"></div>
+      <p class="hint" style="margin-top:14px;">Want to predict a different column? Pick a new target above and click <strong>Run AutoML</strong> — your current model is auto-saved and stays available for prediction.</p>
       <div class="actions">
+        <button id="trainAnotherBtn" class="sec">＋ Train another target</button>
         <button id="goPredictBtn">Continue to predictions →</button>
       </div>
     </div>
   </section>
 
-  <!-- 06 PREDICT -->
+  <!-- 06 TRAINED MODELS (each model gets its own panel) -->
+  <section class="panel hidden" id="panelModels">
+    <h2><span class="idx">06 /</span> Trained Models</h2>
+    <p class="hint">Each trained model has its own panel below — pick a target, train, and every model stays available with its own prediction form. You can predict on any of them freely, even after training new ones.</p>
+    <div id="modelPanelsList"></div>
+    <div class="actions">
+      <button id="goTrainFromModelsBtn">＋ Train another target</button>
+    </div>
+  </section>
+
+  <!-- 07 PREDICT (legacy single-model view) -->
   <section class="panel hidden" id="panelPredict">
-    <h2><span class="idx">06 /</span> Predict</h2>
+    <h2><span class="idx">07 /</span> Predict</h2>
     <p class="hint">Enter values for each feature and get a prediction from the best trained model.</p>
     <div class="pred-field" id="predictSourceWrap" style="display:none;max-width:340px;margin-bottom:12px;">
       <label>Model source</label>
@@ -1479,6 +1491,10 @@ function handleDataChanged(profile, opts = {}){
   clearVisualizationUIAfterDataChange();
   renderSavedRunsList();
   renderPredictSourceOptions();
+  // The backend auto-saves the previously trained model into saved_runs when
+  // the data changes (so "price" isn't lost when you later train "quantity").
+  // Re-fetch the list so that preserved model shows up under "Saved runs".
+  refreshSavedRuns();
   if(opts.reloadViz && !$("panelViz").classList.contains("hidden")){
     loadVizSuggestions();
   }
@@ -2629,7 +2645,14 @@ $("trainBtn").addEventListener("click", async () => {
   const usePca = $("usePcaForTraining").checked;
   if(!sid || !target) return;
 
-  $("trainStatus").innerHTML = `<p class="loading">Training models for "${target}"</p>`;
+  // If there's already a trained model on a different target, let the user know
+  // it will be auto-saved so they don't lose it.
+  const currentTraining = getState().training;
+  if(currentTraining && currentTraining.target && currentTraining.target !== target){
+    $("trainStatus").innerHTML = `<p class="loading">Auto-saving previous model (${currentTraining.target})... Training models for "${target}"</p>`;
+  } else {
+    $("trainStatus").innerHTML = `<p class="loading">Training models for "${target}"</p>`;
+  }
   hide("trainNarrative"); hide("leaderboardWrap");
   setTrainingInProgress(true);
 
@@ -2687,6 +2710,10 @@ $("trainBtn").addEventListener("click", async () => {
         $("saveRunStatus").innerHTML = "";
       }
       refreshSavedRuns(datasetId, sid);
+      // After training completes, show the Trained Models panel so the user
+      // immediately sees this model (and any previously saved ones) with its
+      // own prediction form.
+      if(activeDs === datasetId) openModelPanels();
     }catch(e){
       // transient network hiccup while polling -- try again on the next tick
     }
@@ -2802,6 +2829,17 @@ function renderImportance(items){
 }
 
 $("downloadModelBtn").addEventListener("click", () => window.open(`${API}/download_model/${getSid()}`, "_blank"));
+
+// "Train another target" — scroll back up to the target selector so the user
+// can pick a new column and run AutoML again. The current model is auto-saved
+// server-side, so it stays available for prediction.
+$("trainAnotherBtn").addEventListener("click", () => {
+  const targetSelect = $("targetSelect");
+  if(targetSelect){
+    targetSelect.scrollIntoView({behavior:"smooth", block:"center"});
+    targetSelect.focus({preventScroll:true});
+  }
+});
 
 // ---------- PREDICT ----------
 $("goPredictBtn").addEventListener("click", () => { show("panelPredict"); setStep(6); scrollPanel("panelPredict"); });
@@ -3339,6 +3377,103 @@ $("predictBtn").addEventListener("click", async () => {
     setState({savedPredictions: data.saved_predictions || []});
     renderSavedPredictionsList();
   }catch(err){ $("predictResult").innerHTML = `<div class="error-box">${err.message}</div>`; }
+});
+
+// ---------- TRAINED MODELS PANEL (each model gets its own card) ----------
+// Builds one card per available model: the current training plus every saved run.
+// Each card has its own feature inputs, Predict button, and result area, so the
+// user can predict on any model freely — even after training new ones.
+function renderModelPanels(){
+  const list = $("modelPanelsList");
+  if(!list) return;
+  const training = getState().training;
+  const savedRuns = getState().savedRuns || [];
+
+  const models = [];
+  if(training && training.feedColumns && training.feedColumns.length){
+    models.push({
+      key: "current",
+      title: `Current training — ${training.target || "target"}`,
+      subtitle: `Best: ${training.bestModel || "—"} · ${training.problemType || ""}`,
+      featureColumns: training.feedColumns,
+      runId: null,
+    });
+  }
+  savedRuns.forEach(r => {
+    models.push({
+      key: r.id,
+      title: r.name,
+      subtitle: `Predicts "${r.target}" · ${r.best_model || "—"} · ${r.created_at || ""}`,
+      featureColumns: r.feature_columns || [],
+      runId: r.id,
+    });
+  });
+
+  if(!models.length){
+    list.innerHTML = `<p class="hint">No trained models yet. Go to the Training step, pick a target, and click <strong>Run AutoML</strong>.</p>`;
+    return;
+  }
+
+  list.innerHTML = models.map(m => {
+    const fields = (m.featureColumns || []).map(c =>
+      `<div class="pred-field"><label>${escapeHtml(c)}</label><input type="text" data-field="${escapeHtml(c)}" placeholder="value"></div>`
+    ).join("");
+    return `
+      <div class="model-panel-card" data-key="${escapeHtml(m.key)}" style="border:1px solid var(--panel-border);padding:16px;margin-bottom:16px;background:rgba(95,212,214,0.03);">
+        <div class="subhead" style="margin-top:0;">${escapeHtml(m.title)}</div>
+        <p class="hint" style="margin-top:-4px;">${escapeHtml(m.subtitle)}</p>
+        <div class="pred-row">${fields}</div>
+        <button class="sec model-predict-btn" data-key="${escapeHtml(m.key)}">Predict</button>
+        <div class="model-predict-result" data-key="${escapeHtml(m.key)}"></div>
+      </div>`;
+  }).join("");
+
+  // Wire up each card's Predict button
+  list.querySelectorAll(".model-predict-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const key = btn.dataset.key;
+      const card = list.querySelector(`.model-panel-card[data-key="${CSS.escape(key)}"]`);
+      const resultEl = card.querySelector(".model-predict-result");
+      const model = models.find(x => x.key === key);
+      if(!model) return;
+
+      const row = {};
+      card.querySelectorAll("input[data-field]").forEach(inp => {
+        let v = inp.value;
+        if(v !== "" && !isNaN(v)) v = parseFloat(v);
+        row[inp.dataset.field] = v === "" ? null : v;
+      });
+
+      const body = {rows: [row]};
+      if(model.runId) body.run_id = model.runId;
+      resultEl.innerHTML = `<p class="loading">Scoring</p>`;
+      try{
+        const res = await fetch(`${API}/predict/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.detail);
+        resultEl.innerHTML = `<div class="result-box">Prediction → <strong>${escapeHtml(data.predictions[0])}</strong></div>`
+          + (data.narrative ? `<div class="narrative"><div class="nlabel">What this means</div><p>${escapeHtml(data.narrative)}</p></div>` : "");
+        setState({savedPredictions: data.saved_predictions || []});
+        renderSavedPredictionsList();
+      }catch(err){
+        resultEl.innerHTML = `<div class="error-box">${err.message}</div>`;
+      }
+    });
+  });
+}
+
+// Navigation: open the Trained Models panel
+function openModelPanels(){
+  renderModelPanels();
+  show("panelModels");
+  setStep(6);
+  scrollPanel("panelModels");
+}
+
+$("goTrainFromModelsBtn").addEventListener("click", () => {
+  show("panelTrain"); setStep(5); scrollPanel("panelTrain");
+  const targetSelect = $("targetSelect");
+  if(targetSelect) targetSelect.focus({preventScroll:true});
 });
 
 // ---------- PCA ----------

@@ -1115,6 +1115,22 @@ def train(session_id: str, req: TrainRequest):
     if req.target not in session.df.columns:
         raise HTTPException(400, f"Column '{req.target}' not found.")
 
+    # Automatically preserve the current training as a saved run before starting
+    # a new one, so the user never loses a trained model when switching targets.
+    if session.models and session.target and session.target != req.target:
+        run_id = str(uuid.uuid4())
+        session.saved_runs[run_id] = {
+            "name": f"Auto-saved: {session.target}",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "target": session.target,
+            "problem_type": session.problem_type,
+            "models": session.models,
+            "leaderboard": session.leaderboard,
+            "best_model_name": session.best_model_name,
+            "label_encoder": session.label_encoder,
+            "feature_columns": session.feature_columns,
+        }
+
     # Starting a new run always replaces any previous one for this session.
     _cleanup_train_job(session_id)
 
