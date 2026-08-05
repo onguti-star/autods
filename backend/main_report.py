@@ -489,7 +489,7 @@ def _build_html_report(session, extra_charts=None) -> str:
     
     if _has_cleaning_history(session):
         html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
-    if session.leaderboard:
+    if session.leaderboard or session.saved_runs:
         html_parts.append('                <li><a href="#training">Model Training Results</a></li>')
     if session.saved_predictions:
         html_parts.append('                <li><a href="#predictions">Saved Predictions</a></li>')
@@ -686,67 +686,86 @@ def _build_html_report(session, extra_charts=None) -> str:
             <span>{message}</span>
         </div>""")
     
-    # Model Training Section
+    # Model Training Section — covers every trained model, not just the current one
+    all_runs = []
+    # Saved runs first (auto-saved or manually saved)
+    for run_id, run in (session.saved_runs or {}).items():
+        all_runs.append({
+            "label": run.get("name", f"Saved: {run.get('target', '?')}"),
+            "target": run.get("target", "?"),
+            "problem_type": run.get("problem_type", ""),
+            "best_model_name": run.get("best_model_name", "?"),
+            "leaderboard": run.get("leaderboard", []),
+            "feature_columns": run.get("feature_columns", []),
+            "is_current": False,
+        })
+    # Current (most recently trained) model
     if session.leaderboard:
-        html_parts.append(f"""        <h2 class="section-title" id="training">🤖 Model Training Results</h2>
-        <p><strong>Target Column:</strong> {session.target}</p>
-        <p><strong>Problem Type:</strong> {session.problem_type.title()}</p>
-        <p><strong>Best Model:</strong> {session.best_model_name}</p>
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Model</th>
-                    <th>Metrics</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
+        all_runs.append({
+            "label": f"Current model — {session.target}",
+            "target": session.target,
+            "problem_type": session.problem_type or "",
+            "best_model_name": session.best_model_name or "?",
+            "leaderboard": session.leaderboard,
+            "feature_columns": session.feature_columns or [],
+            "is_current": True,
+        })
+
+    if all_runs:
+        html_parts.append(f'        <h2 class="section-title" id="training">🤖 Model Training Results</h2>')
+        html_parts.append(f'        <p style="color:#6c757d;font-size:0.9em;">{len(all_runs)} model(s) trained in this session.</p>')
+
+        for run in all_runs:
+            badge = ' <span style="background:#198754;color:#fff;font-size:0.75em;padding:2px 8px;border-radius:3px;vertical-align:middle;">current</span>' if run["is_current"] else ' <span style="background:#6c757d;color:#fff;font-size:0.75em;padding:2px 8px;border-radius:3px;vertical-align:middle;">saved</span>'
+            html_parts.append(f"""        <div style="border:1px solid #dee2e6;border-radius:6px;padding:18px 20px;margin-bottom:20px;">
+        <h3 style="margin:0 0 6px;font-size:1.1em;">→ Predicts <strong>{html.escape(str(run['target']))}</strong>{badge}</h3>
+        <p style="margin:0 0 12px;color:#6c757d;font-size:0.85em;">{html.escape(run['label'])} &nbsp;·&nbsp; {html.escape(run['problem_type'].title() if run['problem_type'] else '')} &nbsp;·&nbsp; Best: <strong>{html.escape(str(run['best_model_name']))}</strong></p>""")
+
+            if run["leaderboard"]:
+                html_parts.append("""        <table class="table" style="margin-bottom:8px;">
+            <thead><tr><th>Model</th><th>Metrics</th><th>Status</th></tr></thead>
             <tbody>""")
-        
-        for row in session.leaderboard:
-            status = "✓ Success" if not row.get("error") else "✗ Failed"
-            if row.get("error"):
-                metrics = f"<span style='color:#dc3545;'>{row['error']}</span>"
-            else:
-                metrics = ", ".join(f"<strong>{k}:</strong> {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
-            
-            html_parts.append(f"""                <tr>
-                    <td><strong>{row.get('model', 'model')}</strong></td>
+                for row in run["leaderboard"]:
+                    status = "✓ Success" if not row.get("error") else "✗ Failed"
+                    if row.get("error"):
+                        metrics = f"<span style='color:#dc3545;'>{html.escape(str(row['error']))}</span>"
+                    else:
+                        metrics = ", ".join(f"<strong>{k}:</strong> {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
+                    best_marker = " ⭐" if row.get("model") == run["best_model_name"] else ""
+                    html_parts.append(f"""                <tr>
+                    <td><strong>{html.escape(str(row.get('model', 'model')))}{best_marker}</strong></td>
                     <td>{metrics}</td>
                     <td>{status}</td>
                 </tr>""")
-        
-        html_parts.append("""            </tbody>
-        </table>""")
+                html_parts.append("            </tbody></table>")
 
-        importance = _report_feature_importance(session)
-        if importance:
-            max_importance = max(abs(float(item.get("importance", 0) or 0)) for item in importance) or 1.0
-            html_parts.append("""        <h3 class="subsection-title">Feature Importance (Best Model)</h3>
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Feature</th>
-                    <th>Importance</th>
-                    <th>Relative strength</th>
-                </tr>
-            </thead>
+            if run["feature_columns"]:
+                feats = ", ".join(html.escape(c) for c in run["feature_columns"][:20])
+                if len(run["feature_columns"]) > 20:
+                    feats += f", … (+{len(run['feature_columns'])-20} more)"
+                html_parts.append(f'        <p style="font-size:0.82em;color:#6c757d;margin:0;"><strong>Features used:</strong> {feats}</p>')
+
+            # Feature importance only for current model (saved runs don't store fitted models in report)
+            if run["is_current"]:
+                importance = _report_feature_importance(session)
+                if importance:
+                    max_importance = max(abs(float(item.get("importance", 0) or 0)) for item in importance) or 1.0
+                    html_parts.append("""        <h4 style="margin:14px 0 8px;font-size:0.95em;">Feature Importance (Best Model)</h4>
+        <table class="table" style="font-size:0.88em;">
+            <thead><tr><th>Feature</th><th>Importance</th><th>Relative strength</th></tr></thead>
             <tbody>""")
-            for item in importance[:15]:
-                feature = html.escape(str(item.get("feature", "")).split("__")[-1])
-                value = float(item.get("importance", 0) or 0)
-                width = min(abs(value) / max_importance * 100, 100)
-                html_parts.append(f"""                <tr>
+                    for item in importance[:15]:
+                        feature = html.escape(str(item.get("feature", "")).split("__")[-1])
+                        value = float(item.get("importance", 0) or 0)
+                        width = min(abs(value) / max_importance * 100, 100)
+                        html_parts.append(f"""                <tr>
                     <td><strong>{feature}</strong></td>
                     <td>{_fmt_report_value(value)}</td>
                     <td><div class="importance-bar"><div class="importance-fill" style="width:{width:.1f}%"></div></div></td>
                 </tr>""")
-            html_parts.append("""            </tbody>
-        </table>""")
-        else:
-            html_parts.append("""        <div class="analysis-item">
-            <strong>Feature Importance (Best Model)</strong>
-            <div class="analysis-meta">Not available for this best model type.</div>
-        </div>""")
+                    html_parts.append("            </tbody></table>")
+
+            html_parts.append("        </div>")  # end run card
 
     if session.saved_predictions:
         html_parts.append("""        <h2 class="section-title" id="predictions">🎯 Saved Predictions</h2>""")
@@ -1541,22 +1560,53 @@ def _build_work_report(session) -> str:
         lines.extend(f"- {entry}" for entry in session.cleaning_log)
         lines.extend(f"- {entry.get('command', '')}: {entry.get('message', '')}" for entry in session.chat_clean_log)
 
+    all_runs_md = []
+    for run_id, run in (session.saved_runs or {}).items():
+        all_runs_md.append({
+            "label": run.get("name", f"Saved: {run.get('target', '?')}"),
+            "target": run.get("target", "?"),
+            "problem_type": run.get("problem_type", ""),
+            "best_model_name": run.get("best_model_name", "?"),
+            "leaderboard": run.get("leaderboard", []),
+            "feature_columns": run.get("feature_columns", []),
+            "is_current": False,
+        })
     if session.leaderboard:
+        all_runs_md.append({
+            "label": f"Current model",
+            "target": session.target,
+            "problem_type": session.problem_type or "",
+            "best_model_name": session.best_model_name or "?",
+            "leaderboard": session.leaderboard,
+            "feature_columns": session.feature_columns or [],
+            "is_current": True,
+        })
+
+    if all_runs_md:
         lines.extend(["", "## Model Training", ""])
-        lines.append(f"- Target column: `{session.target}`")
-        lines.append(f"- Problem type: {session.problem_type.title() if session.problem_type else 'Unknown'}")
-        lines.append(f"- Best model: **{session.best_model_name}**")
-        lines.append(f"- Features used: {', '.join(f'`{c}`' for c in session.feature_columns) if session.feature_columns else 'all columns'}")
-        lines.append("")
-        lines.append("| Rank | Model | Metrics |")
-        lines.append("| --- | --- | --- |")
-        for i, row in enumerate(session.leaderboard, 1):
-            if row.get("error"):
-                metrics = f"failed: {row['error']}"
-            else:
-                metrics = ", ".join(f"{k}: {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
-            marker = " ⭐" if row.get("model") == session.best_model_name else ""
-            lines.append(f"| {i} | {row.get('model', 'model')}{marker} | {metrics} |")
+        lines.append(f"{len(all_runs_md)} model(s) trained in this session.")
+        for run in all_runs_md:
+            tag = " *(current)*" if run["is_current"] else " *(saved)*"
+            lines.extend(["", f"### → Predicts `{run['target']}`{tag}", ""])
+            lines.append(f"- **Label:** {run['label']}")
+            lines.append(f"- **Problem type:** {run['problem_type'].title() if run['problem_type'] else 'Unknown'}")
+            lines.append(f"- **Best model:** {run['best_model_name']}")
+            if run["feature_columns"]:
+                feats = ", ".join(f"`{c}`" for c in run["feature_columns"][:20])
+                if len(run["feature_columns"]) > 20:
+                    feats += f", … (+{len(run['feature_columns'])-20} more)"
+                lines.append(f"- **Features used:** {feats}")
+            if run["leaderboard"]:
+                lines.append("")
+                lines.append("| Rank | Model | Metrics |")
+                lines.append("| --- | --- | --- |")
+                for i, row in enumerate(run["leaderboard"], 1):
+                    if row.get("error"):
+                        metrics = f"failed: {row['error']}"
+                    else:
+                        metrics = ", ".join(f"{k}: {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
+                    marker = " ⭐" if row.get("model") == run["best_model_name"] else ""
+                    lines.append(f"| {i} | {row.get('model', 'model')}{marker} | {metrics} |")
 
     if session.saved_predictions:
         lines.extend(["", "## Predictions", ""])

@@ -230,6 +230,21 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .preview-table td.null-val{color:#3a4f6a;font-style:italic;}
 .preview-table tr:hover td{background:rgba(95,212,214,0.04);}
 .preview-table tr:nth-child(even) td{background:rgba(0,0,0,0.1);}
+
+/* ── Persistent trained-model cards ───────────────────────────────── */
+.model-card{background:var(--panel);border:1px solid var(--panel-border);padding:20px 22px;margin-bottom:18px;position:relative;}
+.model-card::before{content:"";position:absolute;width:9px;height:9px;border-top:2px solid var(--cyan);border-left:2px solid var(--cyan);top:-1px;left:-1px;}
+.model-card::after{content:"";position:absolute;width:9px;height:9px;border-bottom:2px solid var(--cyan);border-right:2px solid var(--cyan);bottom:-1px;right:-1px;}
+.model-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px;}
+.model-card-title{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:700;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;}
+.model-card-badge{font-family:'IBM Plex Mono',monospace;font-size:10px;padding:3px 9px;border:1px solid var(--good);color:var(--good);text-transform:uppercase;letter-spacing:.6px;}
+.model-card-meta{font-size:11px;color:var(--ink-dim);margin-bottom:14px;}
+.model-card-predict-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end;}
+.model-card-result{margin-top:10px;}
+.model-card-collapse-btn{background:transparent;color:var(--ink-dim);border:1px solid var(--panel-border);font-size:10px;padding:3px 9px;cursor:pointer;}
+.model-card-collapse-btn:hover{color:var(--cyan);border-color:var(--cyan);}
+.model-card-body.collapsed{display:none;}
+#panelModelCards{margin-top:0;}
 </style>
 </head>
 <body>
@@ -253,7 +268,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="step" id="step3" onclick="scrollPanel('panelClean')"><span class="n">03</span> Clean</div>
       <div class="step" id="step4" onclick="scrollPanel('panelViz')"><span class="n">04</span> Visualise</div>
       <div class="step" id="step5" onclick="scrollPanel('panelTrain')"><span class="n">05</span> Training</div>
-      <div class="step" id="step6" onclick="scrollPanel('panelPredict')"><span class="n">06</span> Predict</div>
+      <div class="step" id="step6" onclick="scrollPanel('panelModelCards')"><span class="n">06</span> Models</div>
     </div>
   </div>
 
@@ -671,29 +686,27 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     </div>
   </section>
 
-  <!-- 06 TRAINED MODELS (each model gets its own panel) -->
-  <section class="panel hidden" id="panelModels">
+  <!-- 06 TRAINED MODELS — one persistent card per trained target -->
+  <section class="panel hidden" id="panelModelCards">
     <h2><span class="idx">06 /</span> Trained Models</h2>
-    <p class="hint">Each trained model has its own panel below — pick a target, train, and every model stays available with its own prediction form. You can predict on any of them freely, even after training new ones.</p>
-    <div id="modelPanelsList"></div>
-    <div class="actions">
-      <button id="goTrainFromModelsBtn">＋ Train another target</button>
+    <p class="hint">Every model you train gets its own card here with its own prediction form. Train on <strong>price</strong>, then train on <strong>quantity</strong> — both cards stay open so you can predict freely on either one at any time.</p>
+    <div id="modelCardsList"></div>
+    <div class="actions" style="margin-top:6px;">
+      <button id="goTrainFromModelsBtn" class="sec">＋ Train another target</button>
     </div>
+    <div class="subhead" id="savedPredictionsHead" style="margin-top:22px;display:none;">Saved predictions</div>
+    <div id="savedPredictionsList"></div>
   </section>
 
-  <!-- 07 PREDICT (legacy single-model view) -->
+  <!-- Legacy predict panel kept for backward-compat (hidden by default) -->
   <section class="panel hidden" id="panelPredict">
-    <h2><span class="idx">07 /</span> Predict</h2>
-    <p class="hint">Enter values for each feature and get a prediction from the best trained model.</p>
-    <div class="pred-field" id="predictSourceWrap" style="display:none;max-width:340px;margin-bottom:12px;">
+    <div class="pred-field" id="predictSourceWrap" style="display:none;">
       <label>Model source</label>
       <select id="predictSourceSelect"></select>
     </div>
     <div class="pred-row" id="predictFields"></div>
-    <button id="predictBtn">Predict</button>
+    <button id="predictBtn" style="display:none;">Predict</button>
     <div id="predictResult"></div>
-    <div class="subhead" id="savedPredictionsHead" style="margin-top:18px;display:none;">Saved predictions</div>
-    <div id="savedPredictionsList"></div>
   </section>
 
   <!-- UNSUPERVISED -->
@@ -1069,9 +1082,17 @@ function addDataset(){
 }
 
 function switchDataset(id){
-  // Save the current tab's chat log HTML before switching away
+  // Save the current tab's state before switching away
   if(activeDs && dsState[activeDs]){
     dsState[activeDs].chatLogHtml = $("cleanChatLog")?.innerHTML || "";
+    // Preserve any in-progress or completed training state so it survives tab switches
+    // (training is already written to dsState when it completes, but if the UI has
+    // a training object that dsState doesn't reflect yet, capture it now)
+    const currentTraining = dsState[activeDs].training;
+    if(currentTraining){
+      // Ensure it stays saved — no-op if already equal, safe to re-assign
+      dsState[activeDs].training = currentTraining;
+    }
   }
   activeDs = id;
   renderDsTabs();
@@ -1206,7 +1227,7 @@ function clearAnalysisUI(){
 }
 
 function resetPanels(){
-  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised"].forEach(hide);
+  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -1246,6 +1267,12 @@ function restoreDataset(state){
   refreshSavedRuns(activeDs, state.sessionId);
   renderSavedPredictionsList();
   refreshSavedPredictions(activeDs, state.sessionId);
+  // Restore persistent model cards for all trained targets
+  renderModelCards();
+  if((state.modelCards && state.modelCards.length) || state.training){
+    show("panelModelCards");
+    setStep(6);
+  }
 }
 
 // Initialize with one dataset slot
@@ -1486,15 +1513,16 @@ function clearVisualizationUIAfterDataChange(){
 
 function handleDataChanged(profile, opts = {}){
   if(profile?.data_changed === false) return;
+  // Re-fetch saved runs BEFORE clearing training state so the backend's
+  // auto-saved snapshot (created when data changed) appears in the list
+  // immediately — without this, the user sees a blank "Saved runs" section
+  // until the next manual refresh.
+  refreshSavedRuns();
   setState({training: null});
   clearTrainingUI();
   clearVisualizationUIAfterDataChange();
   renderSavedRunsList();
   renderPredictSourceOptions();
-  // The backend auto-saves the previously trained model into saved_runs when
-  // the data changes (so "price" isn't lost when you later train "quantity").
-  // Re-fetch the list so that preserved model shows up under "Saved runs".
-  refreshSavedRuns();
   if(opts.reloadViz && !$("panelViz").classList.contains("hidden")){
     loadVizSuggestions();
   }
@@ -1836,9 +1864,13 @@ function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
   ["vizColX","vizColY","targetSelect","typeCol"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
+  // Prefer the previously trained target so switching tabs doesn't reset the
+  // dropdown to the EDA suggestion and make it look like training was lost.
+  const trainedTarget = getState().training?.target;
   const suggestedTarget = getState().lastProfile?.learning_recommendation?.suggested_targets?.[0]?.column;
-  if(suggestedTarget && $("targetSelect")){
-    $("targetSelect").value = suggestedTarget;
+  const targetToSelect = trainedTarget || suggestedTarget;
+  if(targetToSelect && $("targetSelect")){
+    $("targetSelect").value = targetToSelect;
   }
   // Populate PCA color column dropdown with categorical/text columns
   populatePcaColorCol();
@@ -2662,6 +2694,11 @@ $("trainBtn").addEventListener("click", async () => {
       const errData = await startRes.json().catch(()=>({}));
       throw new Error(errData.detail || "Could not start training");
     }
+    // The backend auto-saves the previous model into saved_runs at the moment
+    // training starts (not finishes). Fetch saved runs now so any displaced card
+    // gets its real runId immediately — before the new model is done training.
+    // This means "Predict" on the old card will work correctly right away.
+    refreshSavedRuns(datasetId, sid);
   }catch(err){
     setTrainingInProgress(false);
     if(activeDs === datasetId) $("trainStatus").innerHTML = `<div class="error-box">${err.message}</div>`;
@@ -2704,16 +2741,36 @@ $("trainBtn").addEventListener("click", async () => {
         target: data.target,
       };
       setDatasetState(datasetId, {training});
+
+      // Push/update a persistent card for this target.
+      // All other cards already have their runId resolved (set by the refreshSavedRuns
+      // call that fired immediately when training started), so we only need to
+      // add/update the card for the newly-trained target.
+      const existingCards = dsState[datasetId]?.modelCards || [];
+      const cardIdx = existingCards.findIndex(c => c.target === training.target);
+      const newCard = {
+        target:           training.target,
+        bestModel:        training.bestModel,
+        problemType:      training.problemType,
+        feedColumns:      training.feedColumns,
+        featureImportance:training.featureImportance,
+        leaderboard:      training.leaderboard,
+        narrative:        training.narrative,
+        trainedAt:        new Date().toLocaleTimeString(),
+        runId:            null, // null = live session model; predict uses session.models directly
+      };
+      const finalCards = cardIdx >= 0
+        ? existingCards.map((c,i) => i === cardIdx ? newCard : c)
+        : [...existingCards, newCard];
+      setDatasetState(datasetId, {modelCards: finalCards});
+
       if(activeDs === datasetId){
         renderTrainingState(training);
         $("saveRunName").value = "";
         $("saveRunStatus").innerHTML = "";
       }
       refreshSavedRuns(datasetId, sid);
-      // After training completes, show the Trained Models panel so the user
-      // immediately sees this model (and any previously saved ones) with its
-      // own prediction form.
-      if(activeDs === datasetId) openModelPanels();
+      if(activeDs === datasetId) openModelCards();
     }catch(e){
       // transient network hiccup while polling -- try again on the next tick
     }
@@ -2739,11 +2796,38 @@ async function refreshSavedRuns(datasetId = activeDs, sid = getState().sessionId
   try{
     const res = await fetch(`${API}/train_runs/${sid}`);
     const data = await res.json();
-    setDatasetState(datasetId, {savedRuns: data.runs || []});
+    const runs = data.runs || [];
+    setDatasetState(datasetId, {savedRuns: runs});
+
+    // Backfill runId into any model card whose target now has a saved-run snapshot.
+    // This handles the case where the backend auto-saved the previous model when
+    // training a new target started — the card was created with runId=null but
+    // now needs a real UUID so it predicts from its own snapshot, not the current model.
+    const existingCards = dsState[datasetId]?.modelCards || [];
+    const currentTarget = dsState[datasetId]?.training?.target;
+    if(existingCards.length && runs.length){
+      // Map: target → most-recent saved run id for that target
+      const runByTarget = {};
+      runs.forEach(r => { if(!runByTarget[r.target]) runByTarget[r.target] = r.id; });
+
+      const updated = existingCards.map(card => {
+        // The live model (null runId, matches current target) stays null — it uses
+        // session.models directly, which is always the freshest for that target.
+        if(card.runId === null && card.target === currentTarget) return card;
+        // Any other card with null runId that now has a saved snapshot: assign it.
+        if(card.runId === null && runByTarget[card.target]){
+          return {...card, runId: runByTarget[card.target]};
+        }
+        return card;
+      });
+      setDatasetState(datasetId, {modelCards: updated});
+    }
   }catch(err){ setDatasetState(datasetId, {savedRuns: []}); }
+
   if(activeDs === datasetId){
     renderSavedRunsList();
     renderPredictSourceOptions();
+    renderModelCards();
   }
 }
 
@@ -2831,9 +2915,10 @@ function renderImportance(items){
 $("downloadModelBtn").addEventListener("click", () => window.open(`${API}/download_model/${getSid()}`, "_blank"));
 
 // "Train another target" — scroll back up to the target selector so the user
-// can pick a new column and run AutoML again. The current model is auto-saved
-// server-side, so it stays available for prediction.
+// can pick a new column and run AutoML again. Model cards remain visible below.
 $("trainAnotherBtn").addEventListener("click", () => {
+  show("panelTrain"); setStep(5); scrollPanel("panelTrain");
+  show("panelModelCards"); // keep model cards panel visible so user can see prior models
   const targetSelect = $("targetSelect");
   if(targetSelect){
     targetSelect.scrollIntoView({behavior:"smooth", block:"center"});
@@ -2842,7 +2927,7 @@ $("trainAnotherBtn").addEventListener("click", () => {
 });
 
 // ---------- PREDICT ----------
-$("goPredictBtn").addEventListener("click", () => { show("panelPredict"); setStep(6); scrollPanel("panelPredict"); });
+$("goPredictBtn").addEventListener("click", () => { openModelCards(); });
 $("goPredictFromUnsupervisedBtn").addEventListener("click", () => { show("panelPredict"); setStep(6); scrollPanel("panelPredict"); });
 
 // ---------- UNSUPERVISED ----------
@@ -3383,91 +3468,153 @@ $("predictBtn").addEventListener("click", async () => {
 // Builds one card per available model: the current training plus every saved run.
 // Each card has its own feature inputs, Predict button, and result area, so the
 // user can predict on any model freely — even after training new ones.
-function renderModelPanels(){
-  const list = $("modelPanelsList");
+// ── Persistent per-target model cards ────────────────────────────────────────
+// Each trained target gets its own card that stacks in panelModelCards.
+// Cards survive switching the active target and switching dataset tabs.
+
+function renderModelCards(){
+  const list = $("modelCardsList");
   if(!list) return;
-  const training = getState().training;
-  const savedRuns = getState().savedRuns || [];
 
-  const models = [];
-  if(training && training.feedColumns && training.feedColumns.length){
-    models.push({
-      key: "current",
-      title: `Current training — ${training.target || "target"}`,
-      subtitle: `Best: ${training.bestModel || "—"} · ${training.problemType || ""}`,
-      featureColumns: training.feedColumns,
-      runId: null,
-    });
-  }
-  savedRuns.forEach(r => {
-    models.push({
-      key: r.id,
-      title: r.name,
-      subtitle: `Predicts "${r.target}" · ${r.best_model || "—"} · ${r.created_at || ""}`,
-      featureColumns: r.feature_columns || [],
-      runId: r.id,
-    });
-  });
+  const state      = getState();
+  const cards      = state.modelCards  || [];
+  const savedRuns  = state.savedRuns   || [];
 
-  if(!models.length){
-    list.innerHTML = `<p class="hint">No trained models yet. Go to the Training step, pick a target, and click <strong>Run AutoML</strong>.</p>`;
+  // Build a combined list: live cards from this session + any saved runs that
+  // aren't already represented as a live card (user may have refreshed).
+  const liveTargets = new Set(cards.map(c => c.target));
+  const savedCards  = savedRuns
+    .filter(r => !liveTargets.has(r.target))
+    .map(r => ({
+      target:       r.target,
+      bestModel:    r.best_model || "—",
+      problemType:  r.problem_type || "",
+      feedColumns:  r.feature_columns || [],
+      narrative:    r.narrative || "",
+      trainedAt:    r.created_at || "",
+      runId:        r.id,
+      fromSaved:    true,
+    }));
+
+  const all = [...cards, ...savedCards];
+
+  if(!all.length){
+    list.innerHTML = `<p class="hint" style="margin-top:8px;">No models trained yet — go to the Training panel, pick a target column, and click <strong>Run AutoML</strong>.</p>`;
     return;
   }
 
-  list.innerHTML = models.map(m => {
-    const fields = (m.featureColumns || []).map(c =>
-      `<div class="pred-field"><label>${escapeHtml(c)}</label><input type="text" data-field="${escapeHtml(c)}" placeholder="value"></div>`
+  list.innerHTML = all.map((m, idx) => {
+    const fields = (m.feedColumns || []).map(c =>
+      `<div class="pred-field">
+        <label>${escapeHtml(c)}</label>
+        <input type="text" data-field="${escapeHtml(c)}" placeholder="value" style="width:120px;">
+      </div>`
     ).join("");
+
+    const metricRow = m.leaderboard && m.leaderboard[0]
+      ? (() => {
+          const best = m.leaderboard[0];
+          const keys = m.problemType === "classification"
+            ? ["accuracy","f1_weighted"] : ["r2","rmse"];
+          return keys.filter(k => best.metrics?.[k] != null)
+            .map(k => `<span style="margin-right:12px;"><span style="color:var(--ink-dim);">${k}</span> <strong style="color:var(--accent);font-family:'IBM Plex Mono',monospace;">${best.metrics[k]}</strong></span>`)
+            .join("");
+        })()
+      : "";
+
+    // null runId  = live session model (most recently trained)
+    // real UUID   = saved-run snapshot — predict uses that specific model
+    const isLive = m.runId === null && !m.fromSaved;
+
     return `
-      <div class="model-panel-card" data-key="${escapeHtml(m.key)}" style="border:1px solid var(--panel-border);padding:16px;margin-bottom:16px;background:rgba(95,212,214,0.03);">
-        <div class="subhead" style="margin-top:0;">${escapeHtml(m.title)}</div>
-        <p class="hint" style="margin-top:-4px;">${escapeHtml(m.subtitle)}</p>
-        <div class="pred-row">${fields}</div>
-        <button class="sec model-predict-btn" data-key="${escapeHtml(m.key)}">Predict</button>
-        <div class="model-predict-result" data-key="${escapeHtml(m.key)}"></div>
-      </div>`;
+    <div class="model-card" id="model-card-${idx}" data-idx="${idx}">
+      <div class="model-card-header">
+        <div>
+          <div class="model-card-title">→ Predicts <span style="color:var(--accent);">${escapeHtml(m.target)}</span></div>
+          <div class="model-card-meta">
+            ${escapeHtml(m.bestModel || "—")} &nbsp;·&nbsp; ${escapeHtml(m.problemType || "")}
+            ${m.trainedAt ? `&nbsp;·&nbsp; trained ${escapeHtml(m.trainedAt)}` : ""}
+            ${isLive
+              ? `&nbsp;·&nbsp; <span style="color:var(--good);font-size:10px;">● live model</span>`
+              : `&nbsp;·&nbsp; <span style="color:var(--cyan);font-size:10px;">saved snapshot</span>`}
+          </div>
+          ${metricRow ? `<div style="margin:6px 0 2px;font-size:11px;">${metricRow}</div>` : ""}
+        </div>
+        <button class="model-card-collapse-btn" data-idx="${idx}">▲ collapse</button>
+      </div>
+      <div class="model-card-body" id="model-card-body-${idx}">
+        ${m.narrative ? `<div class="narrative" style="margin-bottom:12px;"><div class="nlabel">What this model learned</div><p>${escapeHtml(m.narrative)}</p></div>` : ""}
+        <div class="subhead" style="margin-top:10px;margin-bottom:8px;">Make a prediction</div>
+        <div class="model-card-predict-row">${fields}</div>
+        <button class="sec model-card-predict-btn" data-idx="${idx}" style="margin-top:4px;">▶ Predict</button>
+        <div class="model-card-result" id="model-card-result-${idx}"></div>
+      </div>
+    </div>`;
   }).join("");
 
-  // Wire up each card's Predict button
-  list.querySelectorAll(".model-predict-btn").forEach(btn => {
+  // Wire collapse toggles
+  list.querySelectorAll(".model-card-collapse-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx  = btn.dataset.idx;
+      const body = $(`model-card-body-${idx}`);
+      if(!body) return;
+      const collapsed = body.classList.toggle("collapsed");
+      btn.textContent = collapsed ? "▼ expand" : "▲ collapse";
+    });
+  });
+
+  // Wire predict buttons
+  list.querySelectorAll(".model-card-predict-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const key = btn.dataset.key;
-      const card = list.querySelector(`.model-panel-card[data-key="${CSS.escape(key)}"]`);
-      const resultEl = card.querySelector(".model-predict-result");
-      const model = models.find(x => x.key === key);
-      if(!model) return;
+      const idx    = parseInt(btn.dataset.idx, 10);
+      const model  = all[idx];
+      const card   = $(`model-card-${idx}`);
+      const result = $(`model-card-result-${idx}`);
+      if(!model || !result) return;
 
       const row = {};
       card.querySelectorAll("input[data-field]").forEach(inp => {
-        let v = inp.value;
+        let v = inp.value.trim();
         if(v !== "" && !isNaN(v)) v = parseFloat(v);
         row[inp.dataset.field] = v === "" ? null : v;
       });
 
       const body = {rows: [row]};
+      // null  → no run_id sent → backend uses session.models (live current model)
+      // UUID  → sent as run_id → backend uses that specific saved-run snapshot
       if(model.runId) body.run_id = model.runId;
-      resultEl.innerHTML = `<p class="loading">Scoring</p>`;
+
+      result.innerHTML = `<p class="loading">Scoring</p>`;
+      btn.disabled = true;
       try{
-        const res = await fetch(`${API}/predict/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+        const res  = await fetch(`${API}/predict/${getSid()}`, {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(body)
+        });
         const data = await res.json();
-        if(!res.ok) throw new Error(data.detail);
-        resultEl.innerHTML = `<div class="result-box">Prediction → <strong>${escapeHtml(data.predictions[0])}</strong></div>`
-          + (data.narrative ? `<div class="narrative"><div class="nlabel">What this means</div><p>${escapeHtml(data.narrative)}</p></div>` : "");
+        if(!res.ok) throw new Error(data.detail || "Prediction failed");
+        result.innerHTML =
+          `<div class="result-box" style="margin-top:10px;">
+            <span style="color:var(--ink-dim);font-size:10px;text-transform:uppercase;letter-spacing:.6px;">Predicted ${escapeHtml(model.target)}</span><br>
+            <strong style="font-size:18px;font-family:'IBM Plex Mono',monospace;">${escapeHtml(String(data.predictions[0]))}</strong>
+           </div>` +
+          (data.narrative ? `<div class="narrative" style="margin-top:8px;"><div class="nlabel">What this means</div><p>${escapeHtml(data.narrative)}</p></div>` : "");
         setState({savedPredictions: data.saved_predictions || []});
         renderSavedPredictionsList();
       }catch(err){
-        resultEl.innerHTML = `<div class="error-box">${err.message}</div>`;
+        result.innerHTML = `<div class="error-box">${err.message}</div>`;
       }
+      btn.disabled = false;
     });
   });
 }
 
-// Navigation: open the Trained Models panel
-function openModelPanels(){
-  renderModelPanels();
-  show("panelModels");
+function openModelCards(){
+  renderModelCards();
+  show("panelModelCards");
   setStep(6);
-  scrollPanel("panelModels");
+  scrollPanel("panelModelCards");
 }
 
 $("goTrainFromModelsBtn").addEventListener("click", () => {

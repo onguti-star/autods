@@ -302,51 +302,164 @@ def build_notebook(session) -> str:
     cells.append(_code_cell(
         _source_of(automl)
     ))
-    cells.append(_code_cell(
-        "# Run AutoML — pick your target column\n"
-        "TARGET = df.columns[-1]  # Change this to your desired target column\n"
-        "print(f'Training models to predict: {TARGET}')\n\n"
-        "try:\n"
-        "    problem_type, leaderboard, fitted, best_name, label_encoder = train_all(df, TARGET)\n"
-        "    print(f'\\nProblem type: {problem_type}')\n"
-        "    print(f'Best model: {best_name}')\n"
-        "    print()\n"
-        "    for row in leaderboard:\n"
-        "        if 'metrics' in row:\n"
-        "            print(f'  {row[\"model\"]:30s} → {row[\"metrics\"]}')\n"
-        "        else:\n"
-        "            print(f'  {row[\"model\"]:30s} ✗ failed: {row[\"error\"]}')\n\n"
-        "    # Feature importance\n"
-        "    if best_name and best_name in fitted:\n"
-        "        X = df.drop(columns=[TARGET])\n"
-        "        importance = feature_importance(fitted[best_name], X)\n"
-        "        if importance:\n"
-        "            print(f'\\nTop features ({best_name}):')\n"
-        "            for item in importance[:10]:\n"
-        "                print(f'  {item[\"feature\"]:30s} importance = {item[\"importance\"]:.4f}')\n"
-        "except ValueError as e:\n"
-        "    print(f'Training error: {e}')"
-    ))
+
+    # Build session-specific training cells — one per trained target
+    all_nb_runs = []
+    for run_id, run in (session.saved_runs or {}).items():
+        all_nb_runs.append({
+            "target": run.get("target", ""),
+            "problem_type": run.get("problem_type", ""),
+            "best_model_name": run.get("best_model_name", ""),
+            "leaderboard": run.get("leaderboard", []),
+            "feature_columns": run.get("feature_columns", []),
+            "label": run.get("name", f"Auto-saved: {run.get('target', '?')}"),
+            "is_current": False,
+        })
+    if session.leaderboard:
+        all_nb_runs.append({
+            "target": session.target or "",
+            "problem_type": session.problem_type or "",
+            "best_model_name": session.best_model_name or "",
+            "leaderboard": session.leaderboard,
+            "feature_columns": session.feature_columns or [],
+            "label": f"Current model — {session.target}",
+            "is_current": True,
+        })
+
+    if all_nb_runs:
+        # Intro cell describing what was trained in this session
+        targets_summary = ", ".join(f"`{r['target']}`" for r in all_nb_runs)
+        cells.append(_markdown_cell(
+            f"### Session Training Results\n\n"
+            f"In this AutoDS session, **{len(all_nb_runs)} model(s)** were trained: {targets_summary}.\n\n"
+            f"The cells below reproduce each training run. Run them to retrain the same models "
+            f"on the embedded dataset, or change `TARGET` to experiment with a different column."
+        ))
+
+        for run in all_nb_runs:
+            target = run["target"]
+            feat_cols = run["feature_columns"]
+            problem_type = run["problem_type"]
+            best_model = run["best_model_name"]
+            leaderboard = run["leaderboard"]
+            label = run["label"]
+
+            # Build a summary comment showing what AutoDS found
+            summary_lines = [f"# {label}"]
+            summary_lines.append(f"# Problem type: {problem_type}")
+            summary_lines.append(f"# Best model:   {best_model}")
+            if leaderboard:
+                summary_lines.append("# Leaderboard:")
+                for i, row in enumerate(leaderboard):
+                    marker = " ⭐" if row.get("model") == best_model else ""
+                    if row.get("error"):
+                        summary_lines.append(f"#   {i+1}. {row.get('model', '?')}{marker} — failed: {row['error']}")
+                    else:
+                        metrics_str = ", ".join(f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}"
+                                                for k, v in row.get("metrics", {}).items())
+                        summary_lines.append(f"#   {i+1}. {row.get('model', '?')}{marker}: {metrics_str}")
+
+            # Feature-column line
+            if feat_cols:
+                feat_repr = repr(feat_cols)
+                drop_cols_code = f"X = df[{feat_repr}]"
+            else:
+                drop_cols_code = f"X = df.drop(columns=[TARGET])"
+
+            cells.append(_markdown_cell(
+                f"#### Train on `{target}` ({label})\n\n"
+                f"Problem type: **{problem_type}** · Best model: **{best_model}**"
+            ))
+            cells.append(_code_cell(
+                "\n".join(summary_lines) + "\n\n"
+                f"TARGET = {repr(target)}\n"
+                f"print(f'Training models to predict: {{TARGET}}')\n\n"
+                f"try:\n"
+                f"    problem_type, leaderboard, fitted, best_name, label_encoder = train_all(df, TARGET)\n"
+                f"    print(f'\\nProblem type: {{problem_type}}')\n"
+                f"    print(f'Best model:   {{best_name}}')\n"
+                f"    print()\n"
+                f"    for row in leaderboard:\n"
+                f"        if 'metrics' in row:\n"
+                f"            print(f'  {{row[\"model\"]:30s}} → {{row[\"metrics\"]}}')\n"
+                f"        else:\n"
+                f"            print(f'  {{row[\"model\"]:30s}} ✗ failed: {{row[\"error\"]}}')\n\n"
+                f"    # Feature importance\n"
+                f"    {drop_cols_code}\n"
+                f"    importance = feature_importance(fitted[best_name], X) if best_name and best_name in fitted else []\n"
+                f"    if importance:\n"
+                f"        print(f'\\nTop features ({{best_name}}):')\n"
+                f"        for item in importance[:10]:\n"
+                f"            print(f'  {{item[\"feature\"]:30s}} importance = {{item[\"importance\"]:.4f}}')\n\n"
+                f"    # Predict — fill in values for each feature\n"
+                f"    sample_row = {{col: None for col in {repr(feat_cols)}}}\n"
+                f"    # example: sample_row = {{{', '.join(repr(c)+': 0' for c in (feat_cols[:3] if feat_cols else []))}}}\n"
+                f"    import pandas as _pd\n"
+                f"    _X_sample = _pd.DataFrame([sample_row])\n"
+                f"    _pred = fitted[best_name].predict(_X_sample)\n"
+                f"    print(f'\\nSample prediction for {{TARGET}}: {{_pred[0]}}')\n\n"
+                f"except ValueError as e:\n"
+                f"    print(f'Training error: {{e}}')"
+            ))
+    else:
+        # No training done — keep the generic placeholder
+        cells.append(_code_cell(
+            "# Run AutoML — pick your target column\n"
+            "TARGET = df.columns[-1]  # Change this to your desired target column\n"
+            "print(f'Training models to predict: {TARGET}')\n\n"
+            "try:\n"
+            "    problem_type, leaderboard, fitted, best_name, label_encoder = train_all(df, TARGET)\n"
+            "    print(f'\\nProblem type: {problem_type}')\n"
+            "    print(f'Best model: {best_name}')\n"
+            "    print()\n"
+            "    for row in leaderboard:\n"
+            "        if 'metrics' in row:\n"
+            "            print(f'  {row[\"model\"]:30s} → {row[\"metrics\"]}')\n"
+            "        else:\n"
+            "            print(f'  {row[\"model\"]:30s} ✗ failed: {row[\"error\"]}')\n"
+            "except ValueError as e:\n"
+            "    print(f'Training error: {e}')"
+        ))
 
     # --- 10. Training Narrative ---
     cells.append(_markdown_cell(
         "## 11. Training Narrative\n\n"
         "Get plain-English explanations of your model training results."
     ))
-    cells.append(_code_cell(
-        "# Generate training narrative\n"
-        "TARGET = df.columns[-1]\n"
-        "try:\n"
-        "    problem_type, leaderboard, fitted, best_name, label_encoder = train_all(df, TARGET)\n"
-        "    X = df.drop(columns=[TARGET])\n"
-        "    importance = feature_importance(fitted[best_name], X) if (best_name and best_name in fitted) else []\n"
-        "    training_note = narrate_training(problem_type, TARGET, leaderboard, best_name, importance)\n"
-        "    print('### Training Summary ###')\n"
-        "    for note in training_note:\n"
-        "        print(f'• {note}')\n"
-        "except ValueError as e:\n"
-        "    print(f'Could not train: {e}')"
-    ))
+    if all_nb_runs:
+        for run in all_nb_runs:
+            target = run["target"]
+            feat_cols = run["feature_columns"]
+            drop_code = f"X = df[{repr(feat_cols)}]" if feat_cols else f"X = df.drop(columns=[TARGET])"
+            cells.append(_code_cell(
+                f"# Training narrative for '{target}'\n"
+                f"TARGET = {repr(target)}\n"
+                f"try:\n"
+                f"    problem_type, leaderboard, fitted, best_name, label_encoder = train_all(df, TARGET)\n"
+                f"    {drop_code}\n"
+                f"    importance = feature_importance(fitted[best_name], X) if (best_name and best_name in fitted) else []\n"
+                f"    training_note = narrate_training(problem_type, TARGET, leaderboard, best_name, importance)\n"
+                f"    print(f'### Training Summary for {{TARGET}} ###')\n"
+                f"    for note in training_note:\n"
+                f"        print(f'• {{note}}')\n"
+                f"except ValueError as e:\n"
+                f"    print(f'Could not train: {{e}}')"
+            ))
+    else:
+        cells.append(_code_cell(
+            "# Generate training narrative\n"
+            "TARGET = df.columns[-1]\n"
+            "try:\n"
+            "    problem_type, leaderboard, fitted, best_name, label_encoder = train_all(df, TARGET)\n"
+            "    X = df.drop(columns=[TARGET])\n"
+            "    importance = feature_importance(fitted[best_name], X) if (best_name and best_name in fitted) else []\n"
+            "    training_note = narrate_training(problem_type, TARGET, leaderboard, best_name, importance)\n"
+            "    print('### Training Summary ###')\n"
+            "    for note in training_note:\n"
+            "        print(f'• {note}')\n"
+            "except ValueError as e:\n"
+            "    print(f'Could not train: {e}')"
+        ))
 
     # --- 11. Assistant / Question Answering ---
     cells.append(_markdown_cell(
