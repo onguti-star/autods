@@ -379,56 +379,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     </div>
     <div class="actions">
       <button id="goCleanBtn">Continue to cleaning →</button>
-      <button class="sec" onclick="openFilterPanel()">⊂ Filter &amp; Split rows</button>
     </div>
-  </section>
-
-  <!-- 02b FILTER / SPLIT -->
-  <section class="panel hidden" id="panelFilter">
-    <h2><span class="idx">02b /</span> Filter &amp; Split</h2>
-    <div class="ds-selector" id="filterDsSelector"></div>
-    <p class="hint" style="margin-bottom:18px;">
-      Write a filter expression to extract a subset of rows — then send it to a <strong>new dataset tab</strong> to work on independently.
-      Think of it like SQL <code>WHERE</code> but written as a pandas expression.
-    </p>
-
-    <!-- Builder: visual condition rows -->
-    <div class="subhead">Build your filter</div>
-    <div id="filterConditions" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
-    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
-      <button class="sec" onclick="addFilterCondition()">+ Add condition</button>
-      <select id="filterLogic" style="width:80px;padding:5px 8px;">
-        <option value="and">AND</option>
-        <option value="or">OR</option>
-      </select>
-      <span class="hint" style="margin:0;">between conditions</span>
-    </div>
-
-    <!-- Raw expression (auto-built from visual, or type manually) -->
-    <div class="subhead" style="margin-top:18px;">Expression</div>
-    <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;">
-      <textarea id="filterExpr" rows="2" placeholder="e.g.  gender == 'Male'   or   age > 30 and churn == 'Yes'" style="flex:1;font-family:'IBM Plex Mono',monospace;font-size:12px;resize:vertical;"></textarea>
-      <button class="sec" onclick="previewFilter()" style="white-space:nowrap;">Preview rows</button>
-    </div>
-    <div class="hint" style="margin-top:5px;">
-      Operators: <code>==</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code>
-      &nbsp;|&nbsp; String: <code>str.contains('X')</code> &nbsp;|&nbsp; Lists: <code>col in ['A','B']</code>
-      &nbsp;|&nbsp; Combine: <code>and</code> / <code>or</code>
-    </div>
-
-    <!-- Preview results -->
-    <div id="filterPreviewWrap" class="hidden" style="margin-top:16px;">
-      <div class="subhead">Preview <span id="filterPreviewCount"></span></div>
-      <div id="filterPreviewTable" style="overflow-x:auto;margin-top:6px;"></div>
-    </div>
-    <div id="filterError" class="hidden" style="color:var(--bad);font-size:12px;margin-top:10px;font-family:'IBM Plex Mono',monospace;"></div>
-
-    <!-- Send to new tab -->
-    <div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap;">
-      <input type="text" id="filterNewName" placeholder="Name for the new dataset tab" style="flex:1;min-width:180px;">
-      <button id="filterSendBtn" onclick="sendFilterToTab()">↗ Send to new tab</button>
-    </div>
-    <p class="hint" style="margin-top:6px;">The filtered rows open as a fresh independent dataset tab — original data is untouched.</p>
   </section>
 
   <!-- 03 CLEAN -->
@@ -484,12 +435,63 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     </div>
     <div class="subhead">Clean it yourself — chat</div>
     <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email" or "fill missing values in age with median". Type "help" to see everything I understand.</p>
+
+    <!-- Filter & Split — collapsible dropdown inside cleaning -->
+    <details id="filterDropdown" style="margin-bottom:18px;">
+      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span id="filterDropdownArrow" style="font-size:14px;transition:transform .2s;">▶</span>
+        ⊂ Filter &amp; Split — extract a subset into a new tab
+      </summary>
+      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
+        <p class="hint" style="margin:0 0 14px;">
+          Pick conditions to extract matching rows into a <strong>new dataset tab</strong> — original stays untouched.
+          You can also type it in the chat above: <code>split rows where gender is Male and age is 3 into new tab</code>
+        </p>
+
+        <!-- Visual condition builder -->
+        <div class="subhead">Build your filter</div>
+        <div id="filterConditions" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+          <button class="sec" onclick="addFilterCondition()">+ Add condition</button>
+          <select id="filterLogic" style="width:80px;padding:5px 8px;">
+            <option value="and">AND</option>
+            <option value="or">OR</option>
+          </select>
+          <span class="hint" style="margin:0;">between conditions</span>
+        </div>
+
+        <!-- Expression field -->
+        <div class="subhead" style="margin-top:16px;">Expression</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px;">
+          <textarea id="filterExpr" rows="2" placeholder="e.g.  gender == 'Male' and age > 30" style="flex:1;font-family:'IBM Plex Mono',monospace;font-size:12px;resize:vertical;"></textarea>
+          <button class="sec" onclick="previewFilter()" style="white-space:nowrap;">Preview</button>
+        </div>
+        <div class="hint" style="margin-top:5px;">
+          Operators: <code>==</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code> <code>contains</code> &nbsp;|&nbsp; Combine: <code>and</code> / <code>or</code>
+        </div>
+
+        <!-- Preview results -->
+        <div id="filterPreviewWrap" class="hidden" style="margin-top:14px;">
+          <div class="subhead">Preview <span id="filterPreviewCount"></span></div>
+          <div id="filterPreviewTable" style="overflow-x:auto;margin-top:6px;"></div>
+        </div>
+        <div id="filterError" class="hidden" style="color:var(--bad);font-size:12px;margin-top:10px;font-family:'IBM Plex Mono',monospace;"></div>
+
+        <!-- Send to new tab -->
+        <div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap;">
+          <input type="text" id="filterNewName" placeholder="Name for the new tab" style="flex:1;min-width:160px;">
+          <button id="filterSendBtn" onclick="sendFilterToTab()">↗ Send to new tab</button>
+        </div>
+      </div>
+    </details>
+
     <div class="clean-chat-log" id="cleanChatLog"></div>
     <div class="clean-chat-input-row">
       <input type="text" id="cleanChatInput" placeholder="e.g. remove rows where status is cancelled" autocomplete="off">
       <button id="cleanChatSendBtn">Send</button>
     </div>
     <div class="actions">
+      <div id="cleanSessionDebug" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-dim);margin-bottom:6px;word-break:break-all;"></div>
       <button id="cleanBtn">Clean now</button>
       <button class="sec" id="undoCleanBtn" disabled>↶ Undo last change</button>
       <button class="sec" id="goVizBtn">Skip to visualise →</button>
@@ -848,6 +850,7 @@ function _doAutoSave(){
         profile:          st.profile           || null,
         lastProfile:      st.lastProfile       || null,
         cleanLog:         st.cleanLog          || null,
+        chatLogHtml:      st.chatLogHtml       || "",
         training:         st.training          || null,
         savedRuns:        st.savedRuns         || [],
         savedPredictions: st.savedPredictions  || [],
@@ -1054,11 +1057,14 @@ function addDataset(){
 }
 
 function switchDataset(id){
+  // Save the current tab's chat log HTML before switching away
+  if(activeDs && dsState[activeDs]){
+    dsState[activeDs].chatLogHtml = $("cleanChatLog")?.innerHTML || "";
+  }
   activeDs = id;
   renderDsTabs();
   const state = dsState[id] || {};
   if(state.sessionId){
-    // Restore the loaded state for this dataset
     restoreDataset(state);
   } else {
     resetPanels();
@@ -1096,6 +1102,9 @@ function renderDsTabs(){
     tabsEl.insertBefore(t, addBtn);
   });
   renderDsSelectors();  // keep the in-panel selectors in sync
+  // Update debug session indicator
+  const dbg = $("cleanSessionDebug");
+  if(dbg){ const sid = getState().sessionId; dbg.textContent = sid ? "session: " + sid : "no session"; }
 }
 
 // Build or refresh the radio-button dataset selector strips inside panels.
@@ -1104,7 +1113,6 @@ function renderDsTabs(){
 function renderDsSelectors(){
   const configs = [
     { id: "edaDsSelector",    action: "eda"    },
-    { id: "filterDsSelector", action: "filter" },
     { id: "trainDsSelector",  action: "train"  },
   ];
 
@@ -1137,7 +1145,6 @@ function _onDsSelectorChange(radio){
     if(r.value === id) r.checked = true;
   });
   if(action === "eda")    scrollPanel("panelEDA");
-  if(action === "filter") { _rebuildExpr(); scrollPanel("panelFilter"); }
   if(action === "train")  scrollPanel("panelTrain");
 }
 
@@ -1187,7 +1194,7 @@ function clearAnalysisUI(){
 }
 
 function resetPanels(){
-  ["panelEDA","panelFilter","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised"].forEach(hide);
+  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -1197,13 +1204,25 @@ function resetPanels(){
 
 function restoreDataset(state){
   resetPanels();
-  // Just reload EDA for the active dataset
-  show("panelEDA"); show("panelFilter"); show("panelAssistant"); setStep(2);
+  show("panelEDA"); show("panelAssistant"); setStep(2);
   if(state.profile) renderEDA(state.profile);
+
+  // Restore the clean panel state for this specific dataset
   if(state.cleanLog){
     $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + state.cleanLog.map(p=>`<p>${p}</p>`).join("");
     show("cleanLog"); show("panelClean");
   }
+
+  // Restore this dataset's chat log (each dataset keeps its own history)
+  const chatLog = $("cleanChatLog");
+  if(chatLog){
+    chatLog.innerHTML = state.chatLogHtml || "";
+    if(chatLog.innerHTML) {
+      show("panelClean");
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  }
+
   if(state.training){
     renderTrainingState(state.training);
     show("panelTrain");
@@ -1370,7 +1389,6 @@ let allColumns = [];   // kept in sync for selects
 let currentCorrelation = null;
 async function loadEDA(datasetId = activeDs, sid = getState().sessionId){
   if(activeDs === datasetId) show("panelEDA");
-  if(activeDs === datasetId) show("panelFilter");
   if(activeDs === datasetId){
     $("edaStats").innerHTML = `<p class="loading">Profiling uploaded data</p>`;
     $("colList").innerHTML = "";
@@ -1616,6 +1634,12 @@ function showCleaningResult(data){
 }
 
 $("cleanBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid){
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div><p style="color:var(--bad)">No active session. Please re-upload your file.</p>`;
+    show("cleanLog");
+    return;
+  }
   $("cleanBtn").disabled = true; $("cleanBtn").textContent = "Cleaning…";
   hide("cleanLog"); hide("cleanNarrative"); hide("dlBarClean");
   const opts = {
@@ -1626,7 +1650,7 @@ $("cleanBtn").addEventListener("click", async () => {
     fill_missing_numeric:$("opt_fill_numeric").value, fill_missing_categorical:$("opt_fill_cat").value,
   };
   try{
-    const res = await fetch(`${API}/clean/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(opts)});
+    const res = await fetch(`${API}/clean/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(opts)});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Cleaning failed");
     showCleaningResult(data);
@@ -1644,18 +1668,53 @@ function appendChatMessage(command, message, isError){
   row.querySelector(".cc-reply").textContent = message;
   $("cleanChatLog").appendChild(row);
   $("cleanChatLog").scrollTop = $("cleanChatLog").scrollHeight;
+  // Save this dataset's chat log so it survives tab switching and page reload
+  if(dsState[activeDs]) dsState[activeDs].chatLogHtml = $("cleanChatLog").innerHTML;
+  autoSave();
 }
 
 async function sendCleanChat(){
   const input = $("cleanChatInput");
   const command = input.value.trim();
   if(!command) return;
+  const sid = getSid();
+  if(!sid){
+    appendChatMessage(command, "No active session — please re-upload your file or use the fresh reload button.", true);
+    return;
+  }
   input.value = "";
   $("cleanChatSendBtn").disabled = true;
   try{
-    const res = await fetch(`${API}/clean_chat/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command})});
+    const res = await fetch(`${API}/clean_chat/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command})});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "That command failed.");
+
+    // Special: the assistant wants to create a new dataset tab
+    if(data.split_to_tab){
+      appendChatMessage(command, data.chat_message, false);
+      const newId = "ds_" + Date.now();
+      datasets.push({id: newId, name: data.tab_name, sessionId: data.new_session_id});
+      // Initialise FULL state so the new tab can be cleaned immediately
+      dsState[newId] = {
+        sessionId:        data.new_session_id,
+        allColumns:       data.columns,
+        profile:          null,
+        lastProfile:      null,
+        cleanLog:         null,
+        training:         null,
+        savedRuns:        [],
+        savedPredictions: [],
+        chatCleanLog:     [],
+      };
+      activeDs = newId;
+      renderDsTabs();
+      autoSave();
+      await loadEDA(newId, data.new_session_id);
+      $("sessionTag").textContent = `${data.tab_name} · ${data.rows_matched.toLocaleString()}×${data.columns.length}`;
+      scrollPanel("panelEDA");
+      return;
+    }
+
     appendChatMessage(command, data.chat_message, false);
     renderEDA(data);
     renderCleanPreview(data);
@@ -3575,16 +3634,24 @@ function addMsg(text, role){
 let _filterConditions = [];   // [{col, op, val}]
 
 function openFilterPanel(){
-  // Reset state each time user opens it
+  // Reset state each time
   _filterConditions = [];
   $("filterConditions").innerHTML = "";
   $("filterExpr").value = "";
   $("filterPreviewWrap").classList.add("hidden");
   $("filterError").classList.add("hidden");
   $("filterNewName").value = "";
-  // Seed one blank condition
   addFilterCondition();
-  scrollPanel("panelFilter");
+  // Open the dropdown and scroll to the clean panel
+  const dropdown = $("filterDropdown");
+  if(dropdown) dropdown.open = true;
+  show("panelClean");
+  setStep(3);
+  scrollPanel("panelClean");
+  // Scroll the dropdown into view after a short delay
+  setTimeout(() => {
+    if(dropdown) dropdown.scrollIntoView({behavior:"smooth", block:"start"});
+  }, 300);
 }
 
 function _colOptions(){
@@ -3708,10 +3775,20 @@ async function sendFilterToTab(){
     const data = await res.json();
     if(!res.ok){ throw new Error(data.detail || "Filter failed"); }
 
-    // Create a new dataset tab and switch to it
+    // Create a new dataset tab with FULL state so cleaning works immediately
     const newId = "ds_" + Date.now();
     datasets.push({id: newId, name: data.name, sessionId: data.session_id});
-    dsState[newId] = {sessionId: data.session_id, allColumns: data.columns};
+    dsState[newId] = {
+      sessionId:        data.session_id,
+      allColumns:       data.columns,
+      profile:          null,
+      lastProfile:      null,
+      cleanLog:         null,
+      training:         null,
+      savedRuns:        [],
+      savedPredictions: [],
+      chatCleanLog:     [],
+    };
     activeDs = newId;
     renderDsTabs();
     autoSave();
@@ -3730,6 +3807,16 @@ async function sendFilterToTab(){
 // Run after DOM + all listeners are fully set up
 document.addEventListener("DOMContentLoaded", () => {
   const restored = tryRestoreSession();
+
+  // Animate the filter dropdown arrow and seed a blank condition on first open
+  const fd = $("filterDropdown");
+  if(fd){
+    fd.addEventListener("toggle", () => {
+      const arrow = $("filterDropdownArrow");
+      if(arrow) arrow.style.transform = fd.open ? "rotate(90deg)" : "";
+      if(fd.open && $("filterConditions").children.length === 0) addFilterCondition();
+    });
+  }
 
   if(restored && datasets.length){
     renderDsTabs();

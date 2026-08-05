@@ -6,86 +6,21 @@ English cleaning instructions with regex/heuristics and applies the matching
 pandas operation locally. If a command isn't understood, it explains what
 phrasings are supported instead of guessing.
 """
+import ast
+import operator
 import re
 
 import numpy as np
 import pandas as pd
 
 from . import nlp
-from .assistant import _find_columns_in_text, _normalise_text
-
-
-def _levenshtein(a: str, b: str) -> int:
-    """Edit distance between two strings."""
-    m, n = len(a), len(b)
-    dp = list(range(n + 1))
-    for i in range(1, m + 1):
-        prev = dp[:]
-        dp[0] = i
-        for j in range(1, n + 1):
-            dp[j] = prev[j-1] if a[i-1] == b[j-1] else 1 + min(prev[j], dp[j-1], prev[j-1])
-    return dp[n]
-
-
-_WORD_TO_NUM = {
-    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "hundred": 100, "thousand": 1000,
-}
-
-def _coerce_numeric(raw: str):
-    """Convert a string to a number, including English words like 'four'."""
-    raw = raw.strip().lower()
-    if raw in _WORD_TO_NUM:
-        return _WORD_TO_NUM[raw]
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
-def _find_columns_multi(cols_text: str, columns: list) -> list:
-    """
-    Match column names from a comma/and-separated string.
-    First tries exact normalised match, then falls back to edit-distance
-    fuzzy matching (>=0.6 similarity) for each unmatched token.
-    This handles typos and slight name mismatches like
-    'discount_applied' matching 'discount_allowed'.
-    """
-    exact = _find_columns_in_text(cols_text, columns)
-    found_set = set(exact)
-
-    # Split the typed text into individual column tokens
-    import re as _re
-    raw_tokens = _re.split(r",|\band\b|\bor\b", cols_text, flags=_re.IGNORECASE)
-    raw_tokens = [t.strip() for t in raw_tokens if t.strip()]
-
-    for token in raw_tokens:
-        token_norm = _normalise_text(token)
-        if not token_norm:
-            continue
-        # Already matched exactly?
-        if any(_normalise_text(c) == token_norm for c in exact):
-            continue
-        # Find closest column by edit distance
-        best_col, best_ratio = None, 0.0
-        for col in columns:
-            if col in found_set:
-                continue
-            col_norm = _normalise_text(col)
-            max_len = max(len(token_norm), len(col_norm), 1)
-            ratio = 1 - _levenshtein(token_norm, col_norm) / max_len
-            if ratio > best_ratio:
-                best_ratio, best_col = ratio, col
-        if best_col and best_ratio >= 0.6:
-            found_set.add(best_col)
-            exact.append(best_col)
-
-    return exact
+from .assistant import (
+    CLEAN_KEYWORDS,
+    _correct_keyword_typos,
+    _find_columns_in_text,
+    _format_keyword_correction_note,
+    _normalise_text,
+)
 
 
 _TYPE_ALIASES = {
@@ -96,10 +31,6 @@ _TYPE_ALIASES = {
     "category": {"category", "categorical"},
     "boolean": {"boolean", "bool", "true/false", "yes/no"},
 }
-
-REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|get\s+rid\s+of)"
-RENAME_VERB_RE = r"(?:rename|call)"
-NAME_JOINER_RE = r"(?:to|into|as)"
 
 
 def _normalize_type_phrase(raw: str) -> str | None:
@@ -165,12 +96,6 @@ def _convert_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFra
     return out, note
 
 
-def _clean_new_column_name(raw: str) -> str:
-    text = raw.strip(" '\"?.,:;-")
-    text = re.sub(r"^(?:the\s+)?(?:column\s+)?(?:called\s+|named\s+)?", "", text, flags=re.IGNORECASE)
-    return text.strip(" '\"?.,:;-")
-
-
 def _fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:,.3f}".rstrip("0").rstrip(".")
@@ -182,6 +107,180 @@ def _match_col(text: str, columns: list) -> str | None:
     return found[0] if found else None
 
 
+def _default_text_column(df: pd.DataFrame) -> str | None:
+    text_cols = df.select_dtypes(include=["object", "string", "category"]).columns.tolist()
+    return text_cols[0] if len(text_cols) == 1 else None
+
+
+def _split_first_word_columns(
+    df: pd.DataFrame,
+    source_col: str,
+    first_col: str,
+    rest_col: str,
+) -> pd.DataFrame:
+    out = df.copy()
+    cleaned = out[source_col].astype("string").str.strip()
+    parts = cleaned.str.extract(r"^(\S+)(?:\s+(.*))?$")
+    blank_or_missing = cleaned.isna() | cleaned.eq("")
+
+    out[first_col] = parts[0].mask(blank_or_missing, pd.NA)
+    out[rest_col] = parts[1].fillna("").mask(blank_or_missing, pd.NA)
+    return out
+
+
+# Safe mathematical expression evaluator
+_SAFE_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _safe_eval_math(expr: str, df: pd.DataFrame, row: pd.Series = None) -> float | None:
+    """Safely evaluate a mathematical expression with column references.
+    
+    Supports: +, -, *, /, //, %, **, parentheses
+    Column names are replaced with their values from the current row.
+    """
+    try:
+        # Replace column names with their values
+        eval_expr = expr
+        if row is not None:
+            # Sort by length (longest first) to avoid partial replacements
+            cols_sorted = sorted(df.columns, key=len, reverse=True)
+            for col in cols_sorted:
+                # Use case-insensitive matching for column names
+                col_pattern = r'\b' + re.escape(str(col)) + r'\b'
+                if re.search(col_pattern, eval_expr, re.IGNORECASE):
+                    val = row[col]
+                    if pd.isna(val):
+                        return np.nan
+                    eval_expr = re.sub(col_pattern, f"({val})", eval_expr, flags=re.IGNORECASE)
+        
+        # Parse and evaluate
+        tree = ast.parse(eval_expr, mode='eval')
+        
+        def _eval(node):
+            if isinstance(node, ast.Expression):
+                return _eval(node.body)
+            elif isinstance(node, ast.Constant):  # Python 3.8+
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                raise ValueError(f"Unsupported constant: {node.value}")
+            elif isinstance(node, ast.Num):  # Python 3.7 compatibility
+                return node.n
+            elif isinstance(node, ast.BinOp):
+                left = _eval(node.left)
+                right = _eval(node.right)
+                op_type = type(node.op)
+                if op_type in _SAFE_OPERATORS:
+                    return _SAFE_OPERATORS[op_type](left, right)
+                raise ValueError(f"Unsupported operator: {op_type}")
+            elif isinstance(node, ast.UnaryOp):
+                operand = _eval(node.operand)
+                op_type = type(node.op)
+                if op_type in _SAFE_OPERATORS:
+                    return _SAFE_OPERATORS[op_type](operand)
+                raise ValueError(f"Unsupported unary operator: {op_type}")
+            elif isinstance(node, ast.Call):
+                raise ValueError("Function calls are not allowed")
+            else:
+                raise ValueError(f"Unsupported expression: {type(node)}")
+        
+        return _eval(tree)
+    except Exception:
+        return None
+
+
+def _apply_aggregate_operation(df: pd.DataFrame, operation: str, columns: list = None) -> pd.Series:
+    """Apply an aggregate operation across columns.
+    
+    Args:
+        df: DataFrame
+        operation: 'sum', 'mean', 'average', 'min', 'max', 'product', 'multiply'
+        columns: list of columns to operate on (None = all numeric columns)
+    
+    Returns:
+        Series with the result for each row
+    """
+    if columns is None:
+        # Use all numeric columns by default
+        columns = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    if not columns:
+        return pd.Series([np.nan] * len(df))
+    
+    # Filter to only columns that exist in df
+    columns = [c for c in columns if c in df.columns]
+    
+    if not columns:
+        return pd.Series([np.nan] * len(df))
+    
+    # Get the data subset
+    data = df[columns]
+    
+    # Apply operation across columns (axis=1)
+    if operation in ('sum', 'add', 'total'):
+        return data.sum(axis=1, skipna=True)
+    elif operation in ('mean', 'average', 'avg'):
+        return data.mean(axis=1, skipna=True)
+    elif operation == 'min':
+        return data.min(axis=1, skipna=True)
+    elif operation == 'max':
+        return data.max(axis=1, skipna=True)
+    elif operation in ('product', 'multiply'):
+        return data.product(axis=1, skipna=True)
+    elif operation == 'median':
+        return data.median(axis=1, skipna=True)
+    elif operation == 'std':
+        return data.std(axis=1, skipna=True)
+    else:
+        return pd.Series([np.nan] * len(df))
+
+
+def _parse_math_expression(text: str, df: pd.DataFrame) -> tuple[str | None, str | None]:
+    """Parse a mathematical expression from text like 'price * 1.2' or 'quantity + 10'.
+    Returns (expression, new_column_name) or (None, None) if not found.
+    """
+    # Pattern: "create column X as expression" or "X = expression"
+    # or "expression as X" or just the expression
+    
+    # Try to find explicit column name with various separators
+    create_patterns = [
+        r"create\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s+(?:as|with|from|=)\s+(.+)",
+        r"add\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s+(?:as|with|from|=)\s+(.+)",
+        r"new\s+column\s+(?:called\s+|named\s+)?(\w+)\s+(?:as|with|from|=)\s+(.+)",
+        r"column\s+(?:called\s+|named\s+)?(\w+)\s*=\s*(.+)",
+        # Handle "where it is" or "where" patterns
+        r"create\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s+where\s+(?:it\s+)?is\s+(.+)",
+        r"add\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s+where\s+(?:it\s+)?is\s+(.+)",
+        r"new\s+column\s+(?:called\s+|named\s+)?(\w+)\s+where\s+(?:it\s+)?is\s+(.+)",
+    ]
+    
+    for pattern in create_patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            col_name = m.group(1).strip()
+            expr = m.group(2).strip()
+            return expr, col_name
+    
+    # Try "expression as column_name"
+    as_pattern = r"(.+?)\s+as\s+(\w+)$"
+    m = re.search(as_pattern, text, re.IGNORECASE)
+    if m:
+        expr = m.group(1).strip()
+        col_name = m.group(2).strip()
+        return expr, col_name
+    
+    return None, None
+
+
 def _match_two_cols(text: str, columns: list) -> tuple[str | None, str | None]:
     found = _find_columns_in_text(text, columns)
     if len(found) >= 2:
@@ -191,6 +290,22 @@ def _match_two_cols(text: str, columns: list) -> tuple[str | None, str | None]:
 
 def _parse_value_token(raw: str):
     raw = raw.strip(" '\"?.,:;-")
+    # Word number mapping
+    word_numbers = {
+        'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4,
+        'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+        'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+        'fourteen': 14, 'fifteen': 15, 'sixteen': 16, 'seventeen': 17,
+        'eighteen': 18, 'nineteen': 19, 'twenty': 20, 'thirty': 30,
+        'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70,
+        'eighty': 80, 'ninety': 90, 'hundred': 100, 'thousand': 1000
+    }
+    
+    # Check if it's a word number
+    if raw.lower() in word_numbers:
+        return word_numbers[raw.lower()]
+    
+    # Try numeric parsing
     try:
         if re.fullmatch(r"-?\d+", raw):
             return int(raw)
@@ -203,14 +318,17 @@ def _parse_value_token(raw: str):
 
 HELP_TEXT = (
     "I understand plain-English cleaning commands. Try things like:\n"
-    "• show null rows in order_date  (lists row numbers where a column is missing)\n"
-    "• show where rows is null in price\n"
-    "• replace 2 with 0 in profit  (replaces exact values in a column)\n"
-    "• replace yes with 1 in discount_applied\n"
     "• remove duplicates\n"
     "• remove duplicates of column age\n"
-    "• drop column notes  (also: remove / delete / discard / erase column notes)\n"
-    "• rename column dob to date_of_birth  (also: rename dob into date_of_birth / rename dob as date_of_birth)\n"
+    "• drop column notes\n"
+    "• rename column dob to date_of_birth\n"
+    "• create column total as price * quantity  (math operations)\n"
+    "• add new column tax as price * 0.15\n"
+    "• new column profit = revenue - cost\n"
+    "• create column doubled as quantity * 2\n"
+    "• split first word from full_name into title and name\n"
+    "• replace 2 with 0 in profit  (replaces exact values in a column)\n"
+    "• replace yes with 1 in discount_applied\n"
     "• fill missing values in income with median  (mean / mode / zero / a specific value)\n"
     "• remove rows where email is missing\n"
     "• strip whitespace in name\n"
@@ -227,11 +345,29 @@ HELP_TEXT = (
     "• keep only rows where country is Kenya\n"
     "• convert price to number  (or: integer / text / category / date / time / boolean)\n"
     "• change ORDER_DATE to date / time\n"
-    "• reset  (undoes every chat cleaning command and restores the original upload)"
+    "• reset  (undoes every chat cleaning command and restores the original upload)\n"
+    "\n"
+    "📂 Split into a new tab:\n"
+    "• split rows where gender is Male into new tab\n"
+    "• send rows where age is 3 to new tab\n"
+    "• create new tab where country is Kenya\n"
+    "• new tab where status is cancelled  (keeps original intact)\n"
+    "\n"
+    "Math operations: +, -, *, /, ** (power), % (modulo)\n"
+    "Examples: 'price * 1.2', 'quantity + 10', '(price - cost) / cost * 100'"
 )
 
 
-def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str]:
+def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str | dict]:
+    corrected_text, corrections = _correct_keyword_typos(text.strip(), CLEAN_KEYWORDS)
+    new_df, message = _run_command_impl(df, corrected_text, original_df)
+    # split_to_tab returns a dict — don't try to prepend a string correction note to it
+    if isinstance(message, dict):
+        return new_df, message
+    return new_df, _format_keyword_correction_note(corrections) + message
+
+
+def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str]:
     """
     Parse one natural-language cleaning command and apply it.
     Returns (possibly-new dataframe, human-readable result message).
@@ -249,10 +385,267 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         return df, HELP_TEXT
 
     # ---- reset ----
-    if re.search(r"\b(reset|undo everything|restore original|start over|undo all)\b", ql):
+    if re.search(r"\b(reset|undo|restore|start over|revert)\b", ql):
         if original_df is None:
             return df, "No original data is available to reset to."
         return original_df.copy(), "Restored the original uploaded data — every chat cleaning command has been undone."
+
+    # ---- split / send rows to a new dataset tab (supports multiple conditions) ----
+    # Accepts many phrasings, word-order variations, and common misspellings.
+    # Supports: "split where gender is Male and age is 3 into new tab"
+    #           "new tab where country is Kenya or country is Uganda"
+    _SPLIT_VERBS  = r"(?:split|spilt|splitt?|send|sned|snde|export|extract|copy|move|push|filter|separate)"
+    _CREATE_VERBS = r"(?:create|creat|craete|make|open|add)"
+    _NEW_WORD     = r"(?:new|nwe|enw)"
+    _TAB_WORD     = r"(?:tab|tba|dataset)"
+    _WHERE_WORD   = r"(?:where|when|with|for|that\s+(?:have|has|are|is))"
+    _IS_WORD      = r"(?:is|=|==|equals?|are)"
+
+    _tab_trigger = re.search(
+        rf"""
+        (?:
+            {_SPLIT_VERBS}
+            \s+(?:rows?\s+)?(?:{_WHERE_WORD})\s+
+            (.+?)
+            \s+(?:into?|to|as)\s+(?:a\s+)?(?:{_NEW_WORD}\s+)?{_TAB_WORD}
+            |
+            {_CREATE_VERBS}\s+(?:a\s+)?(?:{_NEW_WORD}\s+)?{_TAB_WORD}\s+
+            (?:{_WHERE_WORD})\s+(.+)
+            |
+            (?:{_NEW_WORD}\s+{_TAB_WORD})\s+(?:{_WHERE_WORD})\s+(.+)
+        )
+        """,
+        ql,
+        re.VERBOSE,
+    )
+
+    if _tab_trigger:
+        # Pull the conditions string from whichever branch matched
+        conditions_raw = next((g for g in _tab_trigger.groups() if g), None)
+
+        if conditions_raw:
+            # ---- parse multi-condition string ----
+            # Split on " and " / " or " keeping track of the logic operator
+            # e.g. "gender is Male and age is 3 or country is Kenya"
+            #   → [("and", "gender is Male"), ("or", "age is 3"), ("or", "country is Kenya")]
+            def _parse_conditions(cond_str):
+                """
+                Returns list of (logic, col, op, value) tuples.
+                logic is 'and'|'or' (first entry is always 'and').
+                op is '=='|'!='|'>'|'>='|'<'|'<='|'contains'.
+                """
+                # Tokenise on ' and ' / ' or '
+                parts = re.split(r'\s+(and|or)\s+', cond_str.strip(), flags=re.IGNORECASE)
+                # parts alternates: [cond, logic, cond, logic, cond ...]
+                result = []
+                logic = "and"
+                for part in parts:
+                    p = part.strip()
+                    if p.lower() in ("and", "or"):
+                        logic = p.lower()
+                        continue
+                    # Match: col [is|>|<|>=|<=|!=|contains] value
+                    m = re.match(
+                        rf"(.+?)\s+(?:{_IS_WORD}|contains?|greater\s+than|less\s+than|not\s+equal|!=|>=|<=|>(?!=)|<(?!=))\s+(.+)",
+                        p, re.IGNORECASE
+                    )
+                    if not m:
+                        result.append((logic, None, None, None, p))   # unparseable
+                        logic = "and"
+                        continue
+
+                    raw_col = m.group(1).strip()
+                    raw_val = m.group(2).strip(" '\"?.,:;-")
+
+                    # Detect operator from the full part
+                    if re.search(r'\bgreater\s+than\s+or\s+equal|>=', p, re.I): op = ">="
+                    elif re.search(r'\bless\s+than\s+or\s+equal|<=', p, re.I): op = "<="
+                    elif re.search(r'\bgreater\s+than|>(?!=)', p, re.I):        op = ">"
+                    elif re.search(r'\bless\s+than|<(?!=)', p, re.I):           op = "<"
+                    elif re.search(r'\bnot\s+equal|!=', p, re.I):               op = "!="
+                    elif re.search(r'\bcontains?', p, re.I):                    op = "contains"
+                    else:                                                        op = "=="
+
+                    result.append((logic, raw_col, op, raw_val, p))
+                    logic = "and"
+                return result
+
+            parsed = _parse_conditions(conditions_raw)
+
+            # Validate columns
+            errors = []
+            resolved = []
+            for logic, raw_col, op, raw_val, original in parsed:
+                if raw_col is None:
+                    errors.append(f"Couldn't parse condition: '{original}'")
+                    continue
+                col = _match_col(raw_col, columns)
+                if not col:
+                    errors.append(f"Column '{raw_col.strip()}' not found. Available: {', '.join(columns)}")
+                    continue
+                value = _parse_value_token(raw_val)
+                resolved.append((logic, col, op, value))
+
+            if errors:
+                return df, (
+                    "Some conditions couldn't be understood:\n" +
+                    "\n".join(f"• {e}" for e in errors) + "\n\n"
+                    "Example: split rows where gender is Male and age is 3 into new tab"
+                )
+
+            # Build the combined mask
+            mask = pd.Series([True] * len(df), index=df.index)
+            condition_parts = []
+            for i, (logic, col, op, value) in enumerate(resolved):
+                num_val = value if isinstance(value, (int, float)) else None
+                if op == "==" :
+                    col_mask = df[col].astype(str).str.strip().str.lower() == str(value).lower()
+                elif op == "!=":
+                    col_mask = df[col].astype(str).str.strip().str.lower() != str(value).lower()
+                elif op == ">" and num_val is not None:
+                    col_mask = pd.to_numeric(df[col], errors="coerce") > num_val
+                elif op == ">=" and num_val is not None:
+                    col_mask = pd.to_numeric(df[col], errors="coerce") >= num_val
+                elif op == "<" and num_val is not None:
+                    col_mask = pd.to_numeric(df[col], errors="coerce") < num_val
+                elif op == "<=" and num_val is not None:
+                    col_mask = pd.to_numeric(df[col], errors="coerce") <= num_val
+                elif op == "contains":
+                    col_mask = df[col].astype(str).str.contains(str(value), case=False, na=False)
+                else:
+                    col_mask = df[col].astype(str).str.strip().str.lower() == str(value).lower()
+
+                if i == 0:
+                    mask = col_mask
+                elif logic == "or":
+                    mask = mask | col_mask
+                else:
+                    mask = mask & col_mask
+
+                op_label = {"==": "is", "!=": "is not", ">": ">", ">=": ">=", "<": "<", "<=": "<=", "contains": "contains"}.get(op, op)
+                prefix = "" if i == 0 else logic.upper() + " "
+                condition_parts.append(f"{prefix}{col} {op_label} {value}")
+
+            matched = int(mask.sum())
+            conditions_label = " | ".join(condition_parts)
+
+            if matched == 0:
+                return df, (
+                    f"No rows matched: {conditions_label}\n"
+                    "Try loosening one of the conditions."
+                )
+
+            subset = df[mask].reset_index(drop=True)
+            tab_name = " & ".join(
+                f"{col}={val}" for _, col, _, val in resolved
+            )[:60]   # cap length
+
+            return df, {
+                "__action__": "split_to_tab",
+                "conditions_label": conditions_label,
+                "rows_matched": matched,
+                "total_rows": len(df),
+                "subset_df": subset,          # full DataFrame — used by endpoint
+                "subset_records": subset.head(5).to_dict(orient="records"),
+                "columns": list(df.columns),
+                "tab_name": tab_name,
+            }
+
+
+    split_patterns = [
+        r"\b(?:split|separate|extract)\s+(?:the\s+)?first\s+word\s+(?:from|in|of)\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\s+(?:and|,)\s+(\w+)\b",
+        r"\b(?:split|separate|extract)\s+(.+?)\s+(?:by|on|using)\s+(?:the\s+)?first\s+word\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\s+(?:and|,)\s+(\w+)\b",
+        r"\bcreate\s+(?:new\s+)?columns?\s+(\w+)\s+(?:and|,)\s+(\w+)\s+from\s+(.+?)\s+(?:by\s+)?(?:splitting|separating|extracting)\s+(?:the\s+)?first\s+word\b",
+    ]
+    for i, pattern in enumerate(split_patterns):
+        m = re.search(pattern, q, re.IGNORECASE)
+        if not m:
+            continue
+
+        if i == 2:
+            first_col, rest_col, source_text = m.group(1), m.group(2), m.group(3)
+        else:
+            source_text, first_col, rest_col = m.group(1), m.group(2), m.group(3)
+
+        source_key = re.sub(r"^(?:the|a|an)\s+", "", source_text.strip().lower())
+        source_col = _match_col(source_text, columns)
+        if not source_col and source_key in ("row", "rows", "cell", "value", "values"):
+            source_col = _default_text_column(df)
+        if not source_col:
+            return df, (
+                f"I couldn't find the source column to split. Available columns: {', '.join(columns)}. "
+                "Try: split first word from full_name into title and name."
+            )
+        if first_col in columns or rest_col in columns:
+            return df, f"'{first_col}' or '{rest_col}' already exists. Choose new column names."
+        if first_col == rest_col:
+            return df, "Use two different names for the new columns."
+
+        new_df = _split_first_word_columns(df, source_col, first_col, rest_col)
+        return new_df, f"Split first word from '{source_col}' into '{first_col}' and '{rest_col}'."
+
+    # ---- create new column with math expression ----
+    if any(term in ql for term in ("create", "add", "new column")):
+        # First check if this is an aggregate operation (sum/mean/multiply all columns)
+        aggregate_match = re.search(
+            r"(?:create|add|new)\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s+"
+            r"(?:as|with|from|=|where\s+(?:it\s+)?is\s+)?\s*"
+            r"(sum|add|total|mean|average|multiply|product|min|max|median)\s+(?:of\s+)?(?:all\s+)?(?:columns?)?",
+            ql
+        )
+        
+        if aggregate_match:
+            new_col_name = aggregate_match.group(1)
+            operation = aggregate_match.group(2)
+            
+            # Apply the aggregate operation
+            result_series = _apply_aggregate_operation(df, operation)
+            
+            if result_series.isna().all():
+                return df, f"Could not perform {operation} operation. Make sure you have numeric columns."
+            
+            new_df = df.copy()
+            new_df[new_col_name] = result_series
+            
+            op_name = {
+                'sum': 'sum', 'add': 'sum', 'total': 'sum',
+                'mean': 'mean', 'average': 'mean', 'avg': 'mean',
+                'multiply': 'product', 'product': 'product',
+                'min': 'min', 'max': 'max', 'median': 'median'
+            }.get(operation, operation)
+            
+            return new_df, f"Created new column '{new_col_name}' as {op_name} of all numeric columns"
+        
+        # Otherwise, try to parse as a regular expression
+        expr, new_col_name = _parse_math_expression(q, df)
+        
+        if expr and new_col_name:
+            # Validate the expression by trying to evaluate on first non-null row
+            test_row = df.dropna().iloc[0] if len(df.dropna()) > 0 else df.iloc[0]
+            test_result = _safe_eval_math(expr, df, test_row)
+            
+            if test_result is None:
+                return df, f"Could not evaluate the expression '{expr}'. Make sure it uses valid column names and operators (+, -, *, /, **, %)."
+            
+            # Create the new column
+            new_df = df.copy()
+            try:
+                new_df[new_col_name] = df.apply(lambda row: _safe_eval_math(expr, df, row), axis=1)
+                return new_df, f"Created new column '{new_col_name}' with expression: {expr}"
+            except Exception as e:
+                return df, f"Error creating column: {e}"
+        else:
+            return df, (
+                "To create a new column, use formats like:\n"
+                "• create column total as price * quantity\n"
+                "• add new column tax as price * 0.15\n"
+                "• new column profit = revenue - cost\n"
+                "• create column sum_all as sum of all columns\n"
+                "• create column avg as mean of all columns\n"
+                "• create column total as multiply all columns\n"
+                "Supports: +, -, *, /, ** (power), % (modulo)\n"
+                "You can use any existing column names in the expression."
+            )
 
     # ---- remove duplicates ----
     dup_col_match = re.search(r"duplicate\w*\s+(?:of|in|for|values?\s+in)\s+(.+)", ql)
@@ -273,9 +666,9 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         return new_df, f"Removed {removed:,} exact duplicate row(s)."
 
     # ---- drop column ----
-    m = re.search(rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?column\s+(.+)", ql) or \
-        re.search(rf"\b{REMOVE_VERB_RE}\s+(.+?)\s+column\b", ql) or \
-        re.search(rf"column\s+(.+?)\s+{REMOVE_VERB_RE}\b", ql)
+    m = re.search(r"\b(?:drop|remove|delete|discard|get\s+rid\s+of)\s+(?:the\s+)?column\s+(.+)", ql) or \
+        re.search(r"\b(?:drop|remove|delete|discard)\s+(.+?)\s+column\b", ql) or \
+        re.search(r"column\s+(.+?)\s+(?:drop|remove|delete|discard)\b", ql)
     if m:
         col = _match_col(m.group(1), columns) or _match_col(q, columns)
         if not col:
@@ -283,55 +676,48 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         return df.drop(columns=[col]), f"Dropped column '{col}'."
 
     # ---- rename column ----
-    m = re.search(rf"\b{RENAME_VERB_RE}\s+(?:the\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql) or \
-        re.search(rf"change\s+(?:the\s+)?(?:name\s+of\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql)
+    m = re.search(r"\brename\s+(?:the\s+)?(?:column\s+)?(.+?)\s+(?:to|into|as)\s+(.+)", ql) or \
+        re.search(r"change\s+(?:the\s+)?(?:name\s+of\s+)?(?:column\s+)?(.+?)\s+(?:to|into|as)\s+(.+)", ql)
     if m:
         old_col = _match_col(m.group(1), columns)
-        new_name = _clean_new_column_name(m.group(2))
+        new_name = m.group(2).strip(" '\"?.,:;-")
         if not old_col:
             return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
         if not new_name:
             return df, "Tell me the new name, for example: rename dob to date_of_birth."
         return df.rename(columns={old_col: new_name}), f"Renamed column '{old_col}' to '{new_name}'."
 
-    # ---- fill missing (one or many columns) ----
-    m = re.search(r"\bfill\s+(?:missing|na|null)\s*(?:values?)?\s*(?:in\s+)?(.+?)\s+with\s+(.+)", ql)
+    # ---- fill missing ----
+    m = re.search(r"\bfill\s+(?:missing|na|null|empty)\s*(?:values?)?\s*(?:in\s+)?(.+?)\s+with\s+(.+)", ql) or \
+        re.search(r"fill\s+(.+?)\s+(?:missing|na|null|empty)\s*values?\s*with\s+(.+)", ql) or \
+        re.search(r"(?:impute|populate|replace\s+missing)\s*(?:values?\s*)?(?:in\s+)?(.+?)\s+with\s+(.+)", ql)
     if m:
-        cols_text = m.group(1)
+        col = _match_col(m.group(1), columns)
         strategy_raw = m.group(2).strip(" '\"?.,:;-")
-        matched_cols = _find_columns_multi(cols_text, columns)
-        if not matched_cols:
-            return df, f"I couldn't find any columns matching '{cols_text.strip()}'. Available columns: {', '.join(columns)}."
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        n_missing = int(df[col].isna().sum())
+        if n_missing == 0:
+            return df, f"'{col}' has no missing values — nothing to fill."
         new_df = df.copy()
-        results = []
-        skipped = []
-        for col in matched_cols:
-            n_missing = int(new_df[col].isna().sum())
-            if n_missing == 0:
-                skipped.append(col)
-                continue
-            if strategy_raw in ("mean", "average") and pd.api.types.is_numeric_dtype(new_df[col]):
-                val = new_df[col].mean()
-            elif strategy_raw == "median" and pd.api.types.is_numeric_dtype(new_df[col]):
-                val = new_df[col].median()
-            elif strategy_raw == "mode":
-                mode = new_df[col].mode(dropna=True)
-                val = mode.iloc[0] if len(mode) else "Unknown"
-            elif strategy_raw in ("zero", "0"):
-                val = 0
-            else:
-                val = _parse_value_token(strategy_raw)
-            new_df[col] = new_df[col].fillna(val)
-            results.append(f"'{col}': filled {n_missing:,} missing value(s) with {_fmt(val)}")
-        if not results:
-            return df, f"None of {', '.join(repr(c) for c in matched_cols)} had missing values — nothing to fill."
-        msg = "Filled missing values:\n" + "\n".join(f"  • {r}" for r in results)
-        if skipped:
-            msg += f"\n  (skipped {', '.join(repr(c) for c in skipped)} — already complete)"
-        return new_df, msg
+        if strategy_raw in ("mean", "average") and pd.api.types.is_numeric_dtype(df[col]):
+            val = df[col].mean()
+        elif strategy_raw == "median" and pd.api.types.is_numeric_dtype(df[col]):
+            val = df[col].median()
+        elif strategy_raw == "mode":
+            mode = df[col].mode(dropna=True)
+            val = mode.iloc[0] if len(mode) else "Unknown"
+        elif strategy_raw in ("zero", "0"):
+            val = 0
+        else:
+            val = _parse_value_token(strategy_raw)
+        new_df[col] = new_df[col].fillna(val)
+        return new_df, f"Filled {n_missing:,} missing value(s) in '{col}' with {_fmt(val)}."
 
     # ---- drop rows where col is missing ----
-    m = re.search(r"\b(?:remove|drop)\s+rows?\s+where\s+(.+?)\s+is\s+(?:missing|null|na|empty)\b", ql)
+    m = re.search(r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+is\s+(?:missing|null|na|empty)\b", ql) or \
+        re.search(r"\b(?:remove|drop|delete)\s+(?:rows?\s+with\s+)?(?:missing|null|empty)\s+(?:values?\s+in\s+)?(.+)", ql) or \
+        re.search(r"delete\s+(?:rows?\s+)?where\s+(.+?)\s+(?:is\s+)?(?:missing|null|na|empty)", ql)
     if m:
         col = _match_col(m.group(1), columns)
         if not col:
@@ -353,8 +739,9 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
             return new_df, f"Trimmed leading/trailing whitespace in '{col}'."
 
     # ---- lowercase / uppercase ----
-    m = re.search(r"\b(lowercase|uppercase)\s+(?:column\s+)?(.+)", ql) or \
-        re.search(r"\bmake\s+(.+?)\s+(lowercase|uppercase)\b", ql)
+    m = re.search(r"\b(lowercase|uppercase|lower|upper)\s+(?:column\s+)?(.+)", ql) or \
+        re.search(r"\bmake\s+(.+?)\s+(lowercase|uppercase|lower|upper)\b", ql) or \
+        re.search(r"convert\s+(.+?)\s+(?:to\s+)?(lower|upper)\s*case", ql)
     if m:
         groups = m.groups()
         case_word = groups[0] if groups[0] in ("lowercase", "uppercase") else groups[1]
@@ -414,28 +801,184 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         new_df[col] = new_df[col].map(nlp.remove_numbers)
         return new_df, f"Removed numbers from '{col}'."
 
+    # ---- filter rows by comparison operators (less than, greater than, etc.) ----
+    # IMPORTANT: This comes BEFORE "remove exact text" to avoid conflicts
+    comparison_patterns = [
+        # Pattern: "remove rows where col < value" or "remove rows where col is less than value"
+        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than|<)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
+        # Pattern: "remove rows in col where values is less than value"
+        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:less\s+than|<)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+rows?\s+(?:in|from)\s+(.+?)\s+where\s+(?:values?\s+)?(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
+        # Pattern: "remove less than 0 in quantity" or "remove greater than 100 from price"
+        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than|<)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        r"\b(?:remove|drop|delete)\s+(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than|>)\s+(.+?)\s+(?:in|from)\s+(.+)",
+    ]
+    
+    for pattern in comparison_patterns:
+        m = re.search(pattern, ql)
+        if m:
+            # Determine which group is column and which is value
+            first_group = m.group(1).strip()
+            second_group = m.group(2).strip()
+            
+            # Try to parse as number (use _parse_value_token to handle word numbers like "zero")
+            first_parsed = _parse_value_token(first_group)
+            second_parsed = _parse_value_token(second_group)
+            first_is_num = isinstance(first_parsed, (int, float))
+            second_is_num = isinstance(second_parsed, (int, float))
+            
+            if first_is_num and not second_is_num:
+                # Pattern: "remove less than 0 in quantity"
+                value = first_parsed
+                col_text = second_group
+            else:
+                # Pattern: "remove rows where quantity < 0"
+                col_text = first_group
+                value = second_parsed
+            
+            col = _match_col(col_text, columns)
+            if not col:
+                return df, f"I couldn't find a column matching '{col_text.strip()}'. Available columns: {', '.join(columns)}."
+            
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                return df, f"'{col}' isn't numeric, so comparison operators don't apply."
+            
+            # Determine operator
+            operator = None
+            full_match = m.group(0)
+            if re.search(r"less\s+than\s+or\s+equal\s+to|<=|<=", full_match):
+                operator = "<="
+            elif re.search(r"greater\s+than\s+or\s+equal\s+to|>=|>=", full_match):
+                operator = ">="
+            elif re.search(r"less\s+than|<(?!\s*=|>)", full_match):
+                operator = "<"
+            elif re.search(r"greater\s+than|>(?!\s*=|>)", full_match):
+                operator = ">"
+            
+            before = len(df)
+            if operator == "<":
+                new_df = df[df[col] >= value].reset_index(drop=True)
+                op_text = "less than"
+            elif operator == ">":
+                new_df = df[df[col] <= value].reset_index(drop=True)
+                op_text = "greater than"
+            elif operator == "<=":
+                new_df = df[df[col] > value].reset_index(drop=True)
+                op_text = "less than or equal to"
+            elif operator == ">=":
+                new_df = df[df[col] < value].reset_index(drop=True)
+                op_text = "greater than or equal to"
+            
+            removed = before - len(new_df)
+            if removed == 0:
+                return df, f"No rows found where '{col}' is {op_text} {value} — nothing removed."
+            return new_df, f"Removed {removed:,} row(s) where '{col}' was {op_text} {value}."
+    
+    # ---- keep only rows by comparison operators ----
+    keep_patterns = [
+        r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than|<)\s+(.+)",
+        r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than|>)\s+(.+)",
+        r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:less\s+than\s+or\s+equal\s+to|<=)\s+(.+)",
+        r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is\s+)?(?:greater\s+than\s+or\s+equal\s+to|>=)\s+(.+)",
+        r"\bkeep\s+(?:only\s+)?(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:less\s+than|<)\s+(.+?)\s+(?:in|from)\s+(.+)",
+        r"\bkeep\s+(?:only\s+)?(?:rows?\s+)?(?:where\s+)?(?:values?\s+)?(?:greater\s+than|>)\s+(.+?)\s+(?:in|from)\s+(.+)",
+    ]
+    
+    for pattern in keep_patterns:
+        m = re.search(pattern, ql)
+        if m:
+            first_group = m.group(1).strip()
+            second_group = m.group(2).strip()
+            
+            # Try to parse as number (use _parse_value_token to handle word numbers like "zero")
+            first_parsed = _parse_value_token(first_group)
+            second_parsed = _parse_value_token(second_group)
+            first_is_num = isinstance(first_parsed, (int, float))
+            second_is_num = isinstance(second_parsed, (int, float))
+            
+            if first_is_num and not second_is_num:
+                value = first_parsed
+                col_text = second_group
+            else:
+                col_text = first_group
+                value = second_parsed
+            
+            col = _match_col(col_text, columns)
+            if not col:
+                return df, f"I couldn't find a column matching '{col_text.strip()}'. Available columns: {', '.join(columns)}."
+            
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                return df, f"'{col}' isn't numeric, so comparison operators don't apply."
+            
+            operator = None
+            full_match = m.group(0)
+            if re.search(r"less\s+than\s+or\s+equal\s+to|<=|<=", full_match):
+                operator = "<="
+            elif re.search(r"greater\s+than\s+or\s+equal\s+to|>=|>=", full_match):
+                operator = ">="
+            elif re.search(r"less\s+than|<(?!\s*=|>)", full_match):
+                operator = "<"
+            elif re.search(r"greater\s+than|>(?!\s*=|>)", full_match):
+                operator = ">"
+            
+            if operator == "<":
+                new_df = df[df[col] < value].reset_index(drop=True)
+                op_text = "less than"
+            elif operator == ">":
+                new_df = df[df[col] > value].reset_index(drop=True)
+                op_text = "greater than"
+            elif operator == "<=":
+                new_df = df[df[col] <= value].reset_index(drop=True)
+                op_text = "less than or equal to"
+            elif operator == ">=":
+                new_df = df[df[col] >= value].reset_index(drop=True)
+                op_text = "greater than or equal to"
+            
+            kept = len(new_df)
+            if kept == 0:
+                return df, f"No rows found where '{col}' is {op_text} {value} — nothing kept (no change made)."
+            return new_df, f"Kept {kept:,} row(s) where '{col}' is {op_text} {value}; removed the rest."
+
     # ---- remove exact text from a column ----
     m = re.search(r"\bremove\s+(.+?)\s+(?:in|from)\s+(.+)", q, flags=re.IGNORECASE)
     if m:
         text_to_remove = m.group(1).strip(" '\"")
         col = _match_col(m.group(2), columns)
+        
+        # Skip if this looks like a comparison operator phrase
         if col and text_to_remove:
-            pattern = re.escape(text_to_remove)
-            if text_to_remove.endswith(".") and len(text_to_remove) > 1:
-                pattern = re.escape(text_to_remove[:-1]) + r"\.?"
-            new_df = df.copy()
-            cleaned = (
-                new_df[col]
-                .where(new_df[col].isna(), new_df[col].astype(str).str.replace(pattern, "", regex=True, case=False))
-            )
-            new_df[col] = cleaned.where(cleaned.isna(), cleaned.astype(str).str.replace(r"\s+", " ", regex=True).str.strip())
-            changed = int((df[col].astype(str) != new_df[col].astype(str)).sum())
-            if changed == 0:
-                return df, f"No '{text_to_remove}' text found in '{col}' — nothing removed."
-            return new_df, f"Removed '{text_to_remove}' from {changed:,} value(s) in '{col}'."
+            comparison_keywords = ['less than', 'greater than', 'less than or equal', 'greater than or equal', 
+                                  'equal to', 'equals', 'is equal', 'is less', 'is greater']
+            is_comparison = any(keyword in text_to_remove.lower() for keyword in comparison_keywords)
+            
+            is_numeric_comparison = bool(re.fullmatch(r'-?\d+\.?\d*\s*(?:<|>|<=|>=|=|==|is|equals?)?\s*-?\d*\.?\d*', 
+                                                      text_to_remove, re.IGNORECASE))
+            
+            if not is_comparison and not is_numeric_comparison:
+                pattern = re.escape(text_to_remove)
+                if text_to_remove.endswith(".") and len(text_to_remove) > 1:
+                    pattern = re.escape(text_to_remove[:-1]) + r"\.?"
+                new_df = df.copy()
+                cleaned = (
+                    new_df[col]
+                    .where(new_df[col].isna(), new_df[col].astype(str).str.replace(pattern, "", regex=True, case=False))
+                )
+                new_df[col] = cleaned.where(cleaned.isna(), cleaned.astype(str).str.replace(r"\s+", " ", regex=True).str.strip())
+                changed = int((df[col].astype(str) != new_df[col].astype(str)).sum())
+                if changed == 0:
+                    return df, f"No '{text_to_remove}' text found in '{col}' — nothing removed."
+                return new_df, f"Removed '{text_to_remove}' from {changed:,} value(s) in '{col}'."
 
     # ---- remove outliers (drop the rows, not cap them) ----
-    m = re.search(r"\bremove\s+outliers?\s*(?:in\s+|from\s+)?(.+)", ql)
+    m = re.search(r"\b(?:remove|caps?|delete|drop)\s+outliers?\s*(?:in\s+|from\s+)?(.+)", ql) or \
+        re.search(r"outliers?\s+(?:in\s+|from\s+)?(.+)", ql)
     if m:
         col = _match_col(m.group(1), columns)
         if not col:
@@ -454,81 +997,14 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
             return df, f"No IQR-based outliers found in '{col}' — nothing removed."
         return new_df, f"Removed {removed:,} outlier row(s) in '{col}' (outside {_fmt(lo)} to {_fmt(hi)})."
 
-    # ---- convert type ----
-    m = re.search(r"\b(?:convert|change|make)\s+(?:column\s+)?(.+?)\s+(?:to|into)\s+(?:an?\s+)?(.+)", ql)
-    if m:
-        col_text, type_phrase_raw = m.group(1), m.group(2)
-        col = _match_col(col_text, columns)
-        target = _normalize_type_phrase(type_phrase_raw)
-        if col and target:
-            new_df, note = _convert_type(df, col, target)
-            return new_df, note
-        if col and not target:
-            return df, (
-                f"I found column '{col}' but didn't recognise the target type '{type_phrase_raw.strip()}'. "
-                "Try: number, integer, text, category, date / time, or boolean."
-            )
-        # fall through — maybe this wasn't a type-change command after all (e.g. "change" used loosely)
-
-
-    # ---- filter rows by value (remove / keep only) ----
-    m = re.search(r"\b(?:remove|drop)\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql)
-    if m:
-        col = _match_col(m.group(1), columns)
-        value = _parse_value_token(m.group(2))
-        if not col:
-            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
-        mask = df[col].astype(str).str.strip().str.lower() != str(value).strip().lower()
-        removed = int((~mask).sum())
-        if removed == 0:
-            return df, f"No rows found where '{col}' is '{value}' — nothing removed."
-        return df[mask].reset_index(drop=True), f"Removed {removed:,} row(s) where '{col}' was '{value}'."
-
-    m = re.search(r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql)
-    if m:
-        col = _match_col(m.group(1), columns)
-        value = _parse_value_token(m.group(2))
-        if not col:
-            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
-        mask = df[col].astype(str).str.strip().str.lower() == str(value).strip().lower()
-        kept = int(mask.sum())
-        if kept == 0:
-            return df, f"No rows found where '{col}' is '{value}' — nothing kept (no change made)."
-        return df[mask].reset_index(drop=True), f"Kept {kept:,} row(s) where '{col}' is '{value}'; removed the rest."
-
-    # ---- show null rows (read-only, does not modify df) ----
-    m = (
-        re.search(r"\b(?:show|list|find|display)\s+(?:where\s+)?(?:rows?\s+(?:is|are)\s+)?(?:null|missing|na|empty)\s+(?:in\s+)?(.+)", ql)
-        or re.search(r"\b(?:show|list|find|display)\s+(?:null|missing|na|empty)\s+rows?\s+(?:in\s+)?(.+)", ql)
-        or re.search(r"\b(?:where|which)\s+(?:rows?\s+(?:is|are)\s+)?(?:null|missing|na|empty)\s+(?:in\s+)?(.+)", ql)
-    )
-    if m:
-        col = _match_col(m.group(1), columns)
-        if not col:
-            return df, f"I couldn't find a column matching \'{m.group(1).strip()}\'. Available columns: {', '.join(columns)}."
-        null_mask = df[col].isna()
-        n_null = int(null_mask.sum())
-        if n_null == 0:
-            return df, f"\'{col}\' has no missing values — all {len(df):,} rows are populated."
-        null_indices = df.index[null_mask].tolist()
-        row_label = "row" if n_null == 1 else "rows"
-        preview_limit = 20
-        shown = null_indices[:preview_limit]
-        row_list = ", ".join(str(i + 1) for i in shown)
-        suffix = f" ... and {n_null - preview_limit} more" if n_null > preview_limit else ""
-        pct = round(100 * n_null / len(df), 1)
-        msg = (
-            f"\'{col}\' has {n_null:,} missing {row_label} ({pct}% of {len(df):,} total).\n"
-            f"Row number(s): {row_list}{suffix}.\n"
-            f"Tip: use \"fill missing values in {col} with median\" or \"remove rows where {col} is missing\" to fix them."
-        )
-        return df, msg
-
     # ---- replace value in column ----
-    # Use original-case `q` so that replacements like "replace A1 with X9" preserve casing
     _rep_m = (
         re.search(r"\breplace\s+(.+?)\s+with\s*(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"in\s+(.+?)\s+replace\s+(.+?)\s+with\s*(.+)", q, re.IGNORECASE)
+        or re.search(r"replace\s+(?:the\s+)?(.+?)\s+(?:to|into)\s*(.+?)\s+(?:in\s+)?(.+)", q, re.IGNORECASE)
+        or re.search(r"change\s+(.+?)\s+(?:to|into)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
+        or re.search(r"swap\s+(.+?)\s+(?:and|for)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
+        or re.search(r"(?:set|make)\s+(.+?)\s+(?:to|as|equal\s+to)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
     )
     if _rep_m:
         _is_in_first = bool(re.match(r"in\s+", ql))
@@ -543,10 +1019,9 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         new_val_raw = new_val_raw.strip(" '\"")
         new_df = df.copy()
         col_series = new_df[col]
-        # Numeric column — try to coerce both sides to numbers (supports word-numbers like "four")
         if pd.api.types.is_numeric_dtype(col_series):
-            old_num = _coerce_numeric(old_val_raw)
-            new_num = _coerce_numeric(new_val_raw)
+            old_num = _parse_value_token(old_val_raw)
+            new_num = _parse_value_token(new_val_raw)
             if old_num is not None and new_num is not None:
                 mask = col_series == old_num
                 count = int(mask.sum())
@@ -554,16 +1029,13 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
                     return df, f"No rows in '{col}' equal {old_val_raw} — nothing changed."
                 new_df[col] = col_series.where(~mask, new_num)
                 return new_df, f"Replaced {count:,} occurrence(s) of {old_val_raw} → {new_val_raw} in '{col}'."
-        # String / mixed column — case-insensitive match, preserve new value's casing exactly
         mask = col_series.astype(str).str.strip().str.lower() == old_val_raw.lower()
         count = int(mask.sum())
         if count == 0:
-            # Try partial / substring match as fallback
             mask = col_series.astype(str).str.lower().str.contains(re.escape(old_val_raw.lower()), na=False)
             count = int(mask.sum())
             if count == 0:
                 return df, f"No rows in '{col}' contain '{old_val_raw}' — nothing changed."
-            # Partial: replace the substring, preserve surrounding text
             new_df[col] = col_series.where(
                 ~mask,
                 col_series.astype(str).str.replace(old_val_raw, new_val_raw, case=False, regex=False)
@@ -572,15 +1044,39 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
         new_df[col] = col_series.where(~mask, new_val_raw)
         return new_df, f"Replaced {count:,} occurrence(s) of '{old_val_raw}' → '{new_val_raw}' in '{col}'."
 
+    # ---- filter rows by value (remove / keep only) ----
+    m = re.search(r"\b(?:remove|drop|delete)\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
+        re.search(r"delete\s+(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
+        re.search(r"(?:delete|remove)\s+all\s+(?:the\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql)
+    if m:
+        col = _match_col(m.group(1), columns)
+        value = _parse_value_token(m.group(2))
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        mask = df[col].astype(str).str.strip().str.lower() != str(value).strip().lower()
+        removed = int((~mask).sum())
+        if removed == 0:
+            return df, f"No rows found where '{col}' is '{value}' — nothing removed."
+        return df[mask].reset_index(drop=True), f"Removed {removed:,} row(s) where '{col}' was '{value}'."
+
+    m = re.search(r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
+        re.search(r"filter\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql) or \
+        re.search(r"show\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql)
+    if m:
+        col = _match_col(m.group(1), columns)
+        value = _parse_value_token(m.group(2))
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        mask = df[col].astype(str).str.strip().str.lower() == str(value).strip().lower()
+        kept = int(mask.sum())
+        if kept == 0:
+            return df, f"No rows found where '{col}' is '{value}' — nothing kept (no change made)."
+        return df[mask].reset_index(drop=True), f"Kept {kept:,} row(s) where '{col}' is '{value}'; removed the rest."
+
     return df, (
         "I didn't recognise that command. " + HELP_TEXT
     )
 
-
-# ---------------------------------------------------------------------------
-# Bulk "Clean Now" pipeline — applied when the user clicks the Clean Now button
-# (as opposed to the per-command chat assistant).  Returns (cleaned_df, log).
-# ---------------------------------------------------------------------------
 
 def build_cleaning_recommendations(df: pd.DataFrame) -> dict:
     """Inspect a dataframe and suggest which bulk cleaning options to apply."""

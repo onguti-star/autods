@@ -198,13 +198,54 @@ def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_t
         preds = pipe.predict(X_test)
 
         if problem_type == "classification":
-            metrics = {
-                "accuracy": round(float(accuracy_score(y_test, preds)), 4),
-                "f1_weighted": round(float(f1_score(y_test, preds, average="weighted", zero_division=0)), 4),
-                "precision_weighted": round(float(precision_score(y_test, preds, average="weighted", zero_division=0)), 4),
-                "recall_weighted": round(float(recall_score(y_test, preds, average="weighted", zero_division=0)), 4),
+            n_classes_test = len(np.unique(y_test))
+            binary = n_classes_test == 2
+
+            # ROC-AUC: use predict_proba if available, else skip
+            roc_auc = None
+            try:
+                if hasattr(pipe, "predict_proba"):
+                    proba = pipe.predict_proba(X_test)
+                    if binary:
+                        from sklearn.metrics import roc_auc_score
+                        roc_auc = round(float(roc_auc_score(y_test, proba[:, 1])), 4)
+                    else:
+                        from sklearn.metrics import roc_auc_score
+                        roc_auc = round(float(roc_auc_score(
+                            y_test, proba, multi_class="ovr", average="weighted"
+                        )), 4)
+            except Exception:
+                roc_auc = None
+
+            # Per-class recall (how many of each class did we catch)
+            from sklearn.metrics import classification_report
+            report = classification_report(y_test, preds, output_dict=True, zero_division=0)
+            per_class_recall = {
+                str(cls): round(float(report[str(cls)]["recall"]), 4)
+                for cls in np.unique(y_test)
+                if str(cls) in report
             }
-            primary = metrics["f1_weighted"]
+
+            metrics = {
+                "accuracy":           round(float(accuracy_score(y_test, preds)), 4),
+                "f1_weighted":        round(float(f1_score(y_test, preds, average="weighted", zero_division=0)), 4),
+                "f1_macro":           round(float(f1_score(y_test, preds, average="macro",    zero_division=0)), 4),
+                "precision_weighted": round(float(precision_score(y_test, preds, average="weighted", zero_division=0)), 4),
+                "recall_weighted":    round(float(recall_score(y_test, preds, average="weighted",    zero_division=0)), 4),
+                "per_class_recall":   per_class_recall,
+            }
+            if roc_auc is not None:
+                metrics["roc_auc"] = roc_auc
+
+            # For imbalanced data roc_auc is the best ranking metric;
+            # fall back to f1_macro (better than f1_weighted for imbalance),
+            # then f1_weighted.
+            if roc_auc is not None and class_ratio > 3.0:
+                primary = roc_auc
+            elif class_ratio > 3.0:
+                primary = metrics["f1_macro"]
+            else:
+                primary = metrics["f1_weighted"]
         else:
             rmse = float(root_mean_squared_error(y_test, preds))
             metrics = {

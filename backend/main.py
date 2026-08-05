@@ -468,6 +468,7 @@ def clean_data(session_id: str, req: CleanRequest):
     cleaned_df, log = clean_module.clean_dataframe(session.df, clean_options)
     session.df = cleaned_df
     session.clear_current_training()
+    session.save_to_disk()
 
     # Merge the Clean Now log with any chat-cleaning already applied so the
     # report shows the full picture instead of wiping prior chat changes.
@@ -499,12 +500,41 @@ class CleanChatRequest(BaseModel):
 def clean_chat_endpoint(session_id: str, req: CleanChatRequest):
     session = _get_session_or_404(session_id)
     new_df, message = clean_chat.run_command(session.df, req.command, original_df=session.original_df)
+
+    # Special action: split rows into a brand-new session (new tab)
+    if isinstance(message, dict) and message.get("__action__") == "split_to_tab":
+        action = message
+        subset_df = action["subset_df"]   # full DataFrame stored by clean_chat
+        new_session = create_session(subset_df, action["tab_name"] + ".csv")
+        conditions_label = action.get("conditions_label", "")
+        return {
+            "split_to_tab": True,
+            "new_session_id": new_session.id,
+            "tab_name": action["tab_name"],
+            "rows_matched": action["rows_matched"],
+            "total_rows": action["total_rows"],
+            "columns": action["columns"],
+            "preview": action["subset_records"],
+            **eda.profile_dataframe(session.df),
+                        "chat_message": (
+                "✓ Created new tab '"
+                + action["tab_name"]
+                + "' with "
+                + f"{action['rows_matched']:,} of {action['total_rows']:,} rows "
+                + f"({conditions_label}). Original dataset unchanged."
+            ),
+                        "chat_history": session.chat_clean_log,
+            "data_changed": False,
+            "can_undo": session.can_undo(),
+        }
+
     changed = new_df is not session.df
     if changed:   # something actually changed (including "reset") — make it undoable
         session.snapshot_before_change()
     session.df = new_df
     if changed:
         session.clear_current_training()
+        session.save_to_disk()
     session.chat_clean_log.append({"command": req.command, "message": message})
 
     profile = eda.profile_dataframe(session.df)
@@ -596,6 +626,7 @@ def change_column_type(session_id: str, req: TypeChangeRequest):
     session.df, log_entry = _convert_column_type(session.df, req.column, req.dtype)
     session.clear_current_training()
     session.cleaning_log.append(log_entry)
+    session.save_to_disk()
 
     profile = eda.profile_dataframe(session.df)
     profile["cleaning_log"] = session.cleaning_log

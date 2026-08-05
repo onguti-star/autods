@@ -1,0 +1,4 @@
+Name,Age,City,Flag,Amount
+Alice,30.0,NY,x,10
+Alice,,,x,20
+Bob,40.0,LA,x,30

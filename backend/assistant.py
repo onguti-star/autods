@@ -46,12 +46,11 @@ ASSISTANT_KEYWORDS = {
 }
 
 CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
-    "add", "boolean", "column", "convert", "create", "delete", "discard", "drop",
-    "erase",
-    "duplicates", "emails", "extract", "fill", "first", "float", "greater",
-    "integer", "keep", "lowercase", "missing", "multiply", "numbers",
-    "outliers", "punctuation", "rename", "replace", "reset", "rows",
-    "product", "separate", "split", "stopwords", "strip", "text", "trim",
+    "add", "boolean", "column", "convert", "copy", "create", "delete", "drop",
+    "duplicates", "emails", "export", "extract", "fill", "first", "float", "greater",
+    "integer", "keep", "lowercase", "missing", "move", "multiply", "numbers",
+    "outliers", "punctuation", "push", "rename", "replace", "reset", "rows",
+    "product", "send", "separate", "split", "stopwords", "strip", "tab", "text", "trim",
     "uppercase", "urls", "whitespace",
 }
 
