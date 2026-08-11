@@ -87,6 +87,7 @@ class Session:
         self.saved_predictions: dict = {}         # prediction_id -> prediction result snapshot
         self.unsupervised_results: dict = {}       # latest unsupervised analysis snapshots for reports
         self.progress_messages: list = []          # progress messages for long-running operations
+        self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
         # Persist to disk immediately on creation
         _save_df_to_disk(self.id, self.df, self.original_df)
 

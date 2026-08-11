@@ -31,11 +31,18 @@ at 5,500,000 rows and 1,000 columns, and URL ingestion only accepts public HTTP/
 cd backend
 python3 -m venv venv && source venv/bin/activate   # optional but recommended
 pip install -r requirements.txt
-python3 -m uvicorn main:app --reload --port 8000
+cd ..
+python3 backend/run.py
 ```
 
 Then open **http://localhost:8000** in your browser — the backend serves the frontend directly,
 so there's nothing else to start.
+
+`backend/main.py` uses package-relative imports, so starting Uvicorn as
+`main:app` from inside `backend/` will fail with `ImportError: attempted relative
+import with no known parent package`. Use `python3 backend/run.py` from the
+project root, or equivalently run `python3 -m uvicorn backend.main:app --reload
+--port 8000` from the project root.
 
 ## Try it
 

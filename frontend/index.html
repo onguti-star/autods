@@ -99,6 +99,10 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .clean-chat-msg .cc-reply::before{content:"✓";position:absolute;left:0;color:var(--good);}
 .clean-chat-msg.cc-error .cc-reply::before{content:"!";color:var(--bad);}
 .clean-chat-msg.cc-error .cc-reply{color:var(--bad);}
+.cc-thinking .cc-reply::before{content:"…";color:var(--cyan);animation:none;}
+.cc-thinking .cc-reply{color:var(--cyan);font-style:italic;}
+.cc-dots::after{content:"";animation:cc-pulse 1.2s steps(4,end) infinite;}
+@keyframes cc-pulse{0%{content:"";}25%{content:".";}50%{content:"..";}75%{content:"...";}100%{content:"..."}}
 .clean-chat-input-row{display:flex;gap:8px;margin-bottom:14px;}
 .clean-chat-input-row input{flex:1;background:var(--panel-bg,transparent);border:1px solid var(--panel-border);color:var(--ink);padding:9px 12px;font-family:inherit;font-size:13px;}
 .clean-chat-input-row input:focus{outline:none;border-color:var(--accent);}
@@ -437,7 +441,9 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <option value="integer">Integer</option>
           <option value="text">Text</option>
           <option value="category">Category</option>
-          <option value="datetime">Date / time</option>
+          <option value="date">Date only (e.g. 2024-06-15)</option>
+          <option value="time">Time only (e.g. 14:30:00)</option>
+          <option value="datetime">Date &amp; time (e.g. 2024-06-15 14:30)</option>
           <option value="boolean">Boolean</option>
         </select>
       </div>
@@ -560,6 +566,8 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="ct-btn" data-type="violin" onclick="selectChartType(this)"><div class="ct-name">Violin plot</div><div class="ct-desc">Distribution with density shape</div></div>
       <div class="ct-btn" data-type="density" onclick="selectChartType(this)"><div class="ct-name">Density plot</div><div class="ct-desc">Smoothed distribution curve</div></div>
       <div class="ct-btn" data-type="scatter_map" onclick="selectChartType(this)"><div class="ct-name">Scatter Map</div><div class="ct-desc">Points on an interactive map (lat/lon)</div></div>
+      <div class="ct-btn" data-type="heatmap_map" onclick="selectChartType(this)"><div class="ct-name">Density Heatmap</div><div class="ct-desc">Hotspot map — where points cluster</div></div>
+      <div class="ct-btn" data-type="choropleth" onclick="selectChartType(this)"><div class="ct-name">Choropleth Map</div><div class="ct-desc">Colour regions by a numeric value (GeoJSON)</div></div>
       <div class="ct-btn" data-type="word_frequency" onclick="selectChartType(this)"><div class="ct-name">Word frequency</div><div class="ct-desc">Most common words in a text column</div></div>
       <div class="ct-btn" data-type="wordcloud" onclick="selectChartType(this)"><div class="ct-name">Word cloud</div><div class="ct-desc">Text column, sized by how often each word appears</div></div>
     </div>
@@ -870,15 +878,22 @@ function _doAutoSave(){
     const saveable = {};
     Object.entries(dsState).forEach(([id, st]) => {
       saveable[id] = {
-        sessionId:        st.sessionId        || null,
-        allColumns:       st.allColumns        || [],
-        profile:          st.profile           || null,
-        lastProfile:      st.lastProfile       || null,
-        cleanLog:         st.cleanLog          || null,
-        chatLogHtml:      st.chatLogHtml       || "",
-        training:         st.training          || null,
-        savedRuns:        st.savedRuns         || [],
-        savedPredictions: st.savedPredictions  || [],
+        sessionId:          st.sessionId          || null,
+        allColumns:         st.allColumns          || [],
+        profile:            st.profile             || null,
+        lastProfile:        st.lastProfile         || null,
+        cleanLog:           st.cleanLog            || null,
+        cleanLogHtml:       st.cleanLogHtml        || "",
+        panelCleanVisible:  st.panelCleanVisible   || false,
+        panelVizVisible:    st.panelVizVisible     || false,
+        panelTrainVisible:  st.panelTrainVisible   || false,
+        vizSuggestionsData: st.vizSuggestionsData  || [],
+        customChartSpecs:   st.customChartSpecs    || [],
+        chatLogHtml:        st.chatLogHtml         || "",
+        training:           st.training            || null,
+        modelCards:         st.modelCards          || [],
+        savedRuns:          st.savedRuns           || [],
+        savedPredictions:   st.savedPredictions    || [],
       };
     });
     const payload = {
@@ -1085,17 +1100,19 @@ function switchDataset(id){
   // Save the current tab's state before switching away
   if(activeDs && dsState[activeDs]){
     dsState[activeDs].chatLogHtml = $("cleanChatLog")?.innerHTML || "";
+    // Persist chart specs so they can be re-drawn when returning to this tab
+    dsState[activeDs].customChartSpecs = [...customChartSpecs];
     // Preserve any in-progress or completed training state so it survives tab switches
-    // (training is already written to dsState when it completes, but if the UI has
-    // a training object that dsState doesn't reflect yet, capture it now)
     const currentTraining = dsState[activeDs].training;
     if(currentTraining){
-      // Ensure it stays saved — no-op if already equal, safe to re-assign
       dsState[activeDs].training = currentTraining;
     }
   }
   activeDs = id;
   renderDsTabs();
+  // Immediately sync allColumns to the incoming dataset so any DOM reads
+  // (targetSelect, typeCol etc.) are correct before restoreDataset populates them.
+  allColumns = dsState[id]?.allColumns || [];
   const state = dsState[id] || {};
   if(state.sessionId){
     restoreDataset(state);
@@ -1238,45 +1255,106 @@ function resetPanels(){
 function restoreDataset(state){
   resetPanels();
   show("panelEDA"); show("panelAssistant"); setStep(2);
-  if(state.profile) renderEDA(state.profile);
 
-  // Restore the clean panel state for this specific dataset
-  if(state.cleanLog){
-    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + state.cleanLog.map(p=>`<p>${p}</p>`).join("");
-    show("cleanLog"); show("panelClean");
+  // Always sync the allColumns global to this dataset before doing anything else.
+  // If allColumns is stale (from a previous tab), targetSelect will show wrong
+  // columns and training will get "column not found" errors.
+  if(state.allColumns && state.allColumns.length){
+    allColumns = state.allColumns;
+  } else {
+    allColumns = [];
   }
 
-  // Restore this dataset's chat log (each dataset keeps its own history)
+  if(state.profile){
+    renderEDA(state.profile);
+  } else if(state.sessionId){
+    // Profile not cached yet — fetch it now so allColumns and targetSelect are correct
+    loadEDA(activeDs, state.sessionId);
+  }
+
+  // Restore the clean panel
+  // cleanLogHtml: the rendered log from structured cleaning buttons
+  // chatLogHtml:  the rendered chat log from the clean-chat interface
+  // panelCleanVisible: whether the clean panel was open when the user switched away
+  let cleanPanelNeeded = false;
+
+  if(state.cleanLogHtml){
+    $("cleanLog").innerHTML = state.cleanLogHtml;
+    show("cleanLog");
+    cleanPanelNeeded = true;
+  } else if(state.cleanLog && state.cleanLog.length){
+    // Backward-compat: rebuild from the raw log array if html wasn't saved yet
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + state.cleanLog.map(p=>`<p>${p}</p>`).join("");
+    show("cleanLog");
+    cleanPanelNeeded = true;
+  }
+
   const chatLog = $("cleanChatLog");
   if(chatLog){
     chatLog.innerHTML = state.chatLogHtml || "";
-    if(chatLog.innerHTML) {
-      show("panelClean");
+    if(chatLog.innerHTML){
+      cleanPanelNeeded = true;
       chatLog.scrollTop = chatLog.scrollHeight;
     }
   }
 
+  if(cleanPanelNeeded || state.panelCleanVisible){
+    show("panelClean");
+    // If there's a clean log, re-show the download bar too
+    if(cleanPanelNeeded) show("dlBarClean");
+  }
+
   if(state.training){
-    renderTrainingState(state.training);
+    show("panelTrain");
+    // Delay render so panel is visible and importanceCanvas has dimensions
+    setTimeout(() => renderTrainingState(state.training), 80);
+  } else if(state.panelTrainVisible){
     show("panelTrain");
   } else {
     clearTrainingUI();
   }
+
+  if(state.panelVizVisible){
+    show("panelViz");
+    // Restore chart specs for this dataset into the global
+    customChartSpecs.length = 0;
+    if(state.customChartSpecs && state.customChartSpecs.length){
+      state.customChartSpecs.forEach(s => customChartSpecs.push(s));
+    }
+    // Re-draw viz suggestions from saved data — no API call needed
+    if(state.vizSuggestionsData && state.vizSuggestionsData.length){
+      // Use setTimeout so the panel is visible and canvases have dimensions
+      setTimeout(() => renderVizSuggestions(state.vizSuggestionsData), 80);
+    } else {
+      $("vizSuggestions").innerHTML = `<p class="hint" style="margin-top:8px;">Charts were cleared — click <strong>Suggest charts</strong> to reload.</p>`;
+    }
+  }
+
   renderSavedRunsList();
   renderPredictSourceOptions();
   refreshSavedRuns(activeDs, state.sessionId);
   renderSavedPredictionsList();
   refreshSavedPredictions(activeDs, state.sessionId);
+
   // Restore persistent model cards for all trained targets
   renderModelCards();
   if((state.modelCards && state.modelCards.length) || state.training){
     show("panelModelCards");
+  }
+
+  // Set the stepper to the most advanced step the user had reached
+  if((state.modelCards && state.modelCards.length) || state.training){
     setStep(6);
+  } else if(state.panelTrainVisible){
+    setStep(5);
+  } else if(state.panelVizVisible){
+    setStep(4);
+  } else if(cleanPanelNeeded || state.panelCleanVisible){
+    setStep(3);
+  } else if(state.profile){
+    setStep(2);
   }
 }
-
-// Initialize with one dataset slot
-// (deferred to DOMContentLoaded so all event listeners attach before any scrolling)
 
 // ---------- DOWNLOAD DATA ----------
 function dlData(fmt){
@@ -1439,7 +1517,7 @@ async function loadEDA(datasetId = activeDs, sid = getState().sessionId){
     const profile = await res.json();
     if(!res.ok) throw new Error(profile.detail || "Could not profile this dataset.");
     setDatasetState(datasetId, {profile});
-    if(activeDs === datasetId) renderEDA(profile);
+    if(activeDs === datasetId) renderEDA(profile, datasetId);
   }catch(err){
     if(activeDs === datasetId){
       $("edaStats").innerHTML = `<div class="error-box">${escapeHtml(err.message || "Could not profile this dataset.")}</div>`;
@@ -1450,9 +1528,14 @@ async function loadEDA(datasetId = activeDs, sid = getState().sessionId){
   }
 }
 
-function renderEDA(profile){
+function renderEDA(profile, datasetId){
+  // datasetId defaults to activeDs. Always write state to the originating dataset,
+  // not blindly to activeDs — training on A can trigger renderEDA while on tab B.
+  const targetDs = datasetId || activeDs;
   allColumns = profile.columns.map(c => c.name);
-  setState({allColumns, lastProfile: profile});
+  setDatasetState(targetDs, {allColumns, lastProfile: profile});
+  // Only update the DOM if this is still the active tab
+  if(targetDs !== activeDs) return;
   showNarrative("edaNarrative", profile.narrative);
   show("dlBarEDA");
   if("can_undo" in profile){
@@ -1513,16 +1596,45 @@ function clearVisualizationUIAfterDataChange(){
 
 function handleDataChanged(profile, opts = {}){
   if(profile?.data_changed === false) return;
-  // Re-fetch saved runs BEFORE clearing training state so the backend's
-  // auto-saved snapshot (created when data changed) appears in the list
-  // immediately — without this, the user sees a blank "Saved runs" section
-  // until the next manual refresh.
-  refreshSavedRuns();
-  setState({training: null});
-  clearTrainingUI();
+
+  // Only wipe training state if the cleaning actually removed columns the
+  // trained model depends on. If all feature columns are still present,
+  // the trained model is still valid and should stay visible.
+  const currentTraining = getState().training;
+  let trainingInvalidated = false;
+  if(currentTraining?.feedColumns?.length && profile?.columns){
+    const newCols = new Set(profile.columns.map(c => c.name || c));
+    const missingCols = currentTraining.feedColumns.filter(c => !newCols.has(c));
+    trainingInvalidated = missingCols.length > 0;
+  } else if(!currentTraining) {
+    trainingInvalidated = false; // nothing to invalidate
+  } else {
+    trainingInvalidated = true; // no column info available — be safe and clear
+  }
+
+  if(trainingInvalidated){
+    // Re-fetch saved runs BEFORE clearing so the backend's auto-saved snapshot
+    // appears in the list immediately without a blank flash.
+    refreshSavedRuns();
+    setState({training: null});
+    clearTrainingUI();
+    // Also clear model cards whose feature columns are now missing
+    const existingCards = dsState[activeDs]?.modelCards || [];
+    if(existingCards.length && profile?.columns){
+      const newCols = new Set(profile.columns.map(c => c.name || c));
+      const validCards = existingCards.filter(card =>
+        !card.feedColumns || card.feedColumns.every(c => newCols.has(c))
+      );
+      if(validCards.length !== existingCards.length){
+        dsState[activeDs].modelCards = validCards;
+      }
+    }
+  }
+
   clearVisualizationUIAfterDataChange();
   renderSavedRunsList();
   renderPredictSourceOptions();
+  renderModelCards();
   if(opts.reloadViz && !$("panelViz").classList.contains("hidden")){
     loadVizSuggestions();
   }
@@ -1662,7 +1774,10 @@ $("corrPairBtn").addEventListener("click", updateCorrelationPair);
 $("corrColA").addEventListener("change", updateCorrelationPair);
 $("corrColB").addEventListener("change", updateCorrelationPair);
 
-$("goCleanBtn").addEventListener("click", () => { show("panelClean"); setStep(3); scrollPanel("panelClean"); });
+$("goCleanBtn").addEventListener("click", () => {
+  show("panelClean"); setStep(3); scrollPanel("panelClean");
+  if(dsState[activeDs]){ dsState[activeDs].panelCleanVisible = true; autoSave(); }
+});
 
 // ---------- CLEAN ----------
 function showCleaningResult(data){
@@ -1670,11 +1785,25 @@ function showCleaningResult(data){
   renderCleanPreview(data);
   handleDataChanged(data, {reloadViz: true});
   if(data.cleaning_log?.length){
-    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div>` + data.cleaning_log.map(p=>`<p>${p}</p>`).join("");
+    const logHtml = `<div class="nlabel">Cleaning report</div>` + data.cleaning_log.map(p=>`<p>${p}</p>`).join("");
+    $("cleanLog").innerHTML = logHtml;
     show("cleanLog");
+    // Persist the log HTML so it survives tab switches
+    if(dsState[activeDs]){
+      dsState[activeDs].cleanLog    = data.cleaning_log;
+      dsState[activeDs].cleanLogHtml = logHtml;
+      dsState[activeDs].panelCleanVisible = true;
+      autoSave();
+    }
   }
   showNarrative("cleanNarrative", data.narrative);
   show("dlBarClean");
+  show("panelClean");
+  // Save that the clean panel is now open for this dataset
+  if(dsState[activeDs]){
+    dsState[activeDs].panelCleanVisible = true;
+    autoSave();
+  }
 }
 
 $("cleanBtn").addEventListener("click", async () => {
@@ -1726,11 +1855,37 @@ async function sendCleanChat(){
     appendChatMessage(command, "No active session — please re-upload your file or use the fresh reload button.", true);
     return;
   }
+
   input.value = "";
   $("cleanChatSendBtn").disabled = true;
+  $("cleanChatSendBtn").textContent = "Working…";
+  $("cleanChatInput").disabled = true;
+
+  // 1. Show the user's message immediately with a "thinking" indicator
+  //    so they know the request landed and processing has started.
+  const thinkingRow = document.createElement("div");
+  thinkingRow.className = "clean-chat-msg cc-thinking";
+  thinkingRow.innerHTML = `
+    <div class="cc-you">You</div>
+    <div class="cc-you-text"></div>
+    <div class="cc-reply">
+      <span>Cleaning your data</span><span class="cc-dots"></span>
+      <span style="display:block;font-size:11px;margin-top:4px;opacity:0.7;">
+        This may take a moment on large datasets — please wait
+      </span>
+    </div>`;
+  thinkingRow.querySelector(".cc-you-text").textContent = command;
+  const chatLog = $("cleanChatLog");
+  chatLog.appendChild(thinkingRow);
+  chatLog.scrollTop = chatLog.scrollHeight;
+
   try{
     const res = await fetch(`${API}/clean_chat/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command})});
     const data = await res.json();
+
+    // 2. Remove the thinking row — we'll replace it with the real reply
+    thinkingRow.remove();
+
     if(!res.ok) throw new Error(data.detail || "That command failed.");
 
     // Special: the assistant wants to create a new dataset tab
@@ -1738,7 +1893,6 @@ async function sendCleanChat(){
       appendChatMessage(command, data.chat_message, false);
       const newId = "ds_" + Date.now();
       datasets.push({id: newId, name: data.tab_name, sessionId: data.new_session_id});
-      // Initialise FULL state so the new tab can be cleaned immediately
       dsState[newId] = {
         sessionId:        data.new_session_id,
         allColumns:       data.columns,
@@ -1765,10 +1919,15 @@ async function sendCleanChat(){
     handleDataChanged(data, {reloadViz: true});
     showNarrative("cleanNarrative", data.narrative);
     show("dlBarClean");
+    show("panelClean");
+    if(dsState[activeDs]){ dsState[activeDs].panelCleanVisible = true; autoSave(); }
   }catch(err){
+    thinkingRow.remove();
     appendChatMessage(command, err.message || "That command failed.", true);
   }finally{
     $("cleanChatSendBtn").disabled = false;
+    $("cleanChatSendBtn").textContent = "Send";
+    $("cleanChatInput").disabled = false;
     input.focus();
   }
 }
@@ -1857,6 +2016,7 @@ $("changeTypeBtn").addEventListener("click", async () => {
 
 $("goVizBtn").addEventListener("click", () => {
   show("panelViz"); setStep(4); scrollPanel("panelViz"); loadVizSuggestions();
+  if(dsState[activeDs]){ dsState[activeDs].panelVizVisible = true; autoSave(); }
 });
 
 // ---------- VISUALISE ----------
@@ -1903,9 +2063,9 @@ function selectChartType(el){
 function updateVizFieldVisibility(){
   const t = selectedChartType;
   $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) ? "" : "none";
-  $("groupWrap").style.display = "";   // always visible — group by works with most chart types
+  $("groupWrap").style.display = t === "choropleth" ? "none" : "";   // group by works with most chart types
   $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
-  $("xLabel").textContent = t === "boxplot" ? "Numeric column" : "Column (X)";
+  $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : "Column (X)";
   $("groupLabel").textContent = t === "bubble" ? "Size column" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
 
 }
@@ -1917,30 +2077,39 @@ async function loadVizSuggestions(){
     const res = await fetch(`${API}/visualize/suggestions/${getSid()}`);
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail);
-    for(let i = customChartSpecs.length - 1; i >= 0; i--){
-      if(customChartSpecs[i]._reportSource === "auto") customChartSpecs.splice(i, 1);
-    }
-    if(!data.charts.length){ $("vizSuggestions").innerHTML = `<p class="hint">Not enough data variety to suggest charts.</p>`; return; }
-    $("vizSuggestions").innerHTML = "";
-    data.charts.forEach((ch,idx) => {
-      const id = `sc${idx}`;
-      const card = document.createElement("div"); card.className = "viz-card";
-      card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div>`;
-      const reportSpec = {...ch, title: ch.title || chartTitle(ch), reason: "", _reportSource: "auto"};
-      customChartSpecs.push(reportSpec);
-      card.querySelector(".close").addEventListener("click", () => {
-        destroyChart(id);
-        card.remove();
-        const specIdx = customChartSpecs.indexOf(reportSpec);
-        if(specIdx > -1) customChartSpecs.splice(specIdx, 1);
-        if(!$("vizSuggestions").children.length){
-          $("vizSuggestions").innerHTML = `<p class="hint">All suggested charts closed.</p>`;
-        }
-      });
-      $("vizSuggestions").appendChild(card);
-      setTimeout(() => drawChart(id, ch), 0);
-    });
+    // Save raw chart specs to dsState so they survive tab switches
+    if(dsState[activeDs]) dsState[activeDs].vizSuggestionsData = data.charts || [];
+    renderVizSuggestions(data.charts || []);
   }catch(err){ $("vizSuggestions").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+function renderVizSuggestions(charts){
+  for(let i = customChartSpecs.length - 1; i >= 0; i--){
+    if(customChartSpecs[i]._reportSource === "auto") customChartSpecs.splice(i, 1);
+  }
+  if(!charts.length){ $("vizSuggestions").innerHTML = `<p class="hint">Not enough data variety to suggest charts.</p>`; return; }
+  $("vizSuggestions").innerHTML = "";
+  charts.forEach((ch,idx) => {
+    const id = `sc${idx}`;
+    const card = document.createElement("div"); card.className = "viz-card";
+    card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div>`;
+    const reportSpec = {...ch, title: ch.title || chartTitle(ch), reason: "", _reportSource: "auto"};
+    customChartSpecs.push(reportSpec);
+    card.querySelector(".close").addEventListener("click", () => {
+      destroyChart(id);
+      card.remove();
+      const specIdx = customChartSpecs.indexOf(reportSpec);
+      if(specIdx > -1) customChartSpecs.splice(specIdx, 1);
+      // Update saved specs after closing a chart
+      if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
+      if(!$("vizSuggestions").children.length){
+        $("vizSuggestions").innerHTML = `<p class="hint">All suggested charts closed.</p>`;
+        if(dsState[activeDs]) dsState[activeDs].vizSuggestionsData = [];
+      }
+    });
+    $("vizSuggestions").appendChild(card);
+    setTimeout(() => drawChart(id, ch), 0);
+  });
 }
 
 $("vizBtn").addEventListener("click", async () => {
@@ -1978,6 +2147,7 @@ function chartTitle(ch){
   if(ch.type === "radar") return `Radar chart: ${ch.labels?.join(", ")}`;
   if(ch.type === "violin") return ch.group ? `Violin plot of ${ch.x} by ${ch.group}` : `Violin plot of ${ch.x}`;
   if(ch.type === "density") return `Density plot of ${ch.x}`;
+  if(ch.type === "choropleth") return `Choropleth - ${ch.value_col || ch.x}`;
   if(ch.type === "word_frequency") return `Most frequent words in ${ch.x}`;
   if(ch.type === "wordcloud") return `Word cloud of ${ch.x}`;
   return `Chart of ${ch.x}`;
@@ -2560,52 +2730,271 @@ function drawChart(canvasId, ch){
     return;
   }
   
-  if(ch.type === "scatter_map" && ch.points){
+  // ── Choropleth map (GeoJSON regions coloured by a numeric column) ──────────
+  if(ch.type === "choropleth" && ch.value_col){
+    const canvas = $(canvasId);
+    const box = canvas ? canvas.closest(".chart-box") : null;
+    if(!box) return;
+
+    canvas.style.display = "none";
+    const old = box.querySelector(".map-container");
+    if(old){ if(old._leafletMap) old._leafletMap.remove(); old.remove(); }
+
+    const mapDiv = document.createElement("div");
+    mapDiv.className = "map-container";
+    mapDiv.style.cssText = "width:100%;height:100%;min-height:560px;border-radius:4px;overflow:hidden;position:relative;background:#eef3f7;";
+    box.appendChild(mapDiv);
+
+    const loadingBadge = document.createElement("div");
+    loadingBadge.style.cssText = "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(15,25,44,0.88);color:#5fd4d6;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:10px 18px;border-radius:4px;z-index:999;";
+    loadingBadge.textContent = "Loading map…";
+    mapDiv.appendChild(loadingBadge);
+
+    const sid = getSid();
+    fetch(`${API}/geojson/${sid}`)
+      .then(r => { if(!r.ok) throw new Error("GeoJSON not available"); return r.json(); })
+      .then(geojson => {
+        loadingBadge.remove();
+
+        const map = L.map(mapDiv, {preferCanvas: false, zoomControl: true, scrollWheelZoom: false}).setView([20, 15], 2);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OpenStreetMap contributors", maxZoom: 19, opacity: 0.72
+        }).addTo(map);
+
+        // Build value lookup: feature index → value
+        const valueCol = ch.value_col;
+        const rows = ch.rows || [];          // array of {_feature_index, <valueCol>}
+        const valueMap = {};
+        rows.forEach(r => { valueMap[r._feature_index] = r[valueCol]; });
+
+        // Also build a name lookup for popups
+        const nameMap = {};
+        (ch.name_rows || rows).forEach(r => {
+          const idx = r._feature_index;
+          // Pick the best name column automatically
+          const nameKey = ch.name_col || Object.keys(r).find(k =>
+            k !== '_feature_index' && k !== '_geometry_type' &&
+            typeof r[k] === 'string' && r[k].length > 1
+          );
+          if(nameKey) nameMap[idx] = r[nameKey];
+        });
+
+        // Compute colour scale
+        const vals = Object.values(valueMap).map(Number).filter(v => Number.isFinite(v));
+        const minVal = vals.length ? Math.min(...vals) : 0;
+        const maxVal = vals.length ? Math.max(...vals) : 1;
+        const rng = maxVal - minVal || 1;
+        const fmtValue = v => {
+          const n = Number(v);
+          if(!Number.isFinite(n)) return "No data";
+          return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined,{maximumFractionDigits:3});
+        };
+
+        // High-contrast choropleth ramp: light cyan -> yellow -> red.
+        function getColor(v){
+          const n = Number(v);
+          if(!Number.isFinite(n)) return "#b8c1cc";
+          const t = Math.max(0, Math.min(1, (n - minVal) / rng));
+          if(t < 0.33){ const s=t/0.33; return `rgb(${lerp(207,255,s)},${lerp(244,214,s)},${lerp(255,102,s)})`; }
+          if(t < 0.66){ const s=(t-0.33)/0.33; return `rgb(${lerp(255,249,s)},${lerp(214,115,s)},${lerp(102,22,s)})`; }
+          const s=(t-0.66)/0.34; return `rgb(${lerp(249,126,s)},${lerp(115,23,s)},${lerp(22,45,s)})`;
+        }
+        function lerp(a,b,t){ return Math.round(a+(b-a)*t); }
+
+        function style(feature){
+          const idx = feature.properties?._feature_index ?? feature._autodsFeatureIndex;
+          const v   = valueMap[idx];
+          return {
+            fillColor:   getColor(v),
+            fillOpacity: 0.86,
+            color:       "#17263a",
+            weight:      0.9,
+            opacity:     0.9,
+          };
+        }
+
+        function onEach(feature, layer){
+          const idx  = feature.properties?._feature_index ?? feature._autodsFeatureIndex;
+          const v    = valueMap[idx];
+          const name = nameMap[idx] || feature.properties?.NAME || feature.properties?.name || `Feature ${idx}`;
+          layer.bindTooltip(
+            `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.45;color:#17263a;">
+               <strong style="color:#0d1b2e;">${escapeHtml(String(name))}</strong><br>
+               <span style="color:#556575;">${escapeHtml(valueCol)}:</span> <strong>${fmtValue(v)}</strong>
+             </div>`,
+            {sticky: true}
+          );
+          layer.on({
+            mouseover(e){ e.target.setStyle({weight:2.3,color:"#0d1b2e",fillOpacity:0.98}); e.target.bringToFront?.(); },
+            mouseout(e){ geoLayer.resetStyle(e.target); },
+          });
+        }
+
+        (geojson.features || []).forEach((feature, idx) => {
+          if(feature.properties && feature.properties._feature_index == null){
+            feature.properties._feature_index = idx;
+          }
+          feature._autodsFeatureIndex = idx;
+        });
+        const geoLayer = L.geoJSON(geojson, {style, onEachFeature: onEach}).addTo(map);
+        try{ map.fitBounds(geoLayer.getBounds(), {padding:[24,24]}); }catch(_){}
+
+        const featureCount = geojson.features?.length || 0;
+        const mappedCount = vals.length;
+        const status = L.control({position:"topleft"});
+        status.onAdd = () => {
+          const d = L.DomUtil.create("div");
+          d.style.cssText = "background:rgba(13,27,46,0.92);border:1px solid rgba(255,255,255,0.16);padding:7px 10px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.45;color:#e9eef5;";
+          d.innerHTML = `<strong style="color:#5fd4d6;">${escapeHtml(valueCol)}</strong><br>${mappedCount.toLocaleString()} / ${featureCount.toLocaleString()} regions mapped`;
+          return d;
+        };
+        status.addTo(map);
+
+        // Legend
+        const legend = L.control({position:"bottomright"});
+        legend.onAdd = () => {
+          const d = L.DomUtil.create("div");
+          d.style.cssText = "background:rgba(255,255,255,0.96);box-shadow:0 8px 24px rgba(0,0,0,0.18);padding:10px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.55;color:#17263a;min-width:190px;";
+          const steps = 5;
+          d.innerHTML = `<div style="font-weight:bold;margin-bottom:6px;color:#0d1b2e;">${escapeHtml(valueCol)}</div>
+            <div style="height:10px;border-radius:2px;background:linear-gradient(90deg,#cff4ff,#ffd666,#f97316,#7e172d);border:1px solid #d0d7de;margin-bottom:5px;"></div>
+            <div style="display:flex;justify-content:space-between;color:#556575;margin-bottom:7px;"><span>${fmtValue(minVal)}</span><span>${fmtValue(maxVal)}</span></div>` +
+            Array.from({length:steps}, (_,i) => {
+              const v   = minVal + (maxVal - minVal) * (steps-1-i) / (steps-1);
+              const col = getColor(v);
+              return `<div style="display:flex;align-items:center;gap:6px;">
+                <span style="width:18px;height:12px;background:${col};display:inline-block;border:1px solid #9aa7b4;"></span>
+                <span>${fmtValue(v)}</span></div>`;
+            }).join("") +
+            `<div style="display:flex;align-items:center;gap:6px;margin-top:5px;color:#556575;">
+              <span style="width:18px;height:12px;background:#b8c1cc;display:inline-block;border:1px solid #9aa7b4;"></span>
+              <span>No data</span></div>`;
+          return d;
+        };
+        legend.addTo(map);
+
+        mapDiv._leafletMap = map;
+        setTimeout(() => {
+          map.invalidateSize();
+          try{ map.fitBounds(geoLayer.getBounds(), {padding:[24,24]}); }catch(_){}
+        }, 180);
+      })
+      .catch(err => {
+        loadingBadge.style.color = "#e63946";
+        loadingBadge.textContent = `Map error: ${err.message}`;
+      });
+    return;
+  }
+
+  if((ch.type === "scatter_map" || ch.type === "heatmap_map") && ch.points){
     const canvas = $(canvasId);
     const box = canvas ? canvas.closest(".chart-box") : null;
     if(!box || !ch.points.length) return;
-    
-    // Hide the canvas and create a Leaflet map
+
     canvas.style.display = "none";
+
+    // Remove any previous map in this box
+    const old = box.querySelector(".map-container");
+    if(old){ if(old._leafletMap) old._leafletMap.remove(); old.remove(); }
+
     const mapDiv = document.createElement("div");
     mapDiv.className = "map-container";
-    mapDiv.style.cssText = "width:100%;height:100%;min-height:400px;border-radius:4px;overflow:hidden;";
+    mapDiv.style.cssText = "width:100%;height:100%;min-height:420px;border-radius:4px;overflow:hidden;";
     box.appendChild(mapDiv);
-    
-    // Initialize Leaflet map
-    const map = L.map(mapDiv).setView([0, 0], 2);
-    
-    // Add tile layer (OpenStreetMap)
+
+    const map = L.map(mapDiv, {preferCanvas: true}).setView([0, 0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors",
-      maxZoom: 18
+      attribution: "© OpenStreetMap contributors", maxZoom: 19
     }).addTo(map);
-    
-    // Add markers
-    const markers = L.markerClusterGroup ? L.markerClusterGroup() : L.layerGroup();
-    ch.points.forEach(pt => {
-      const marker = L.circleMarker([pt.lat, pt.lon], {
-        radius: pt.size ? Math.max(5, Math.min(20, pt.size / 10)) : 6,
-        fillColor: pt.color || "#5fd4d6",
-        color: "#fff",
-        weight: 1,
-        opacity: 0.8,
-        fillOpacity: 0.7
+
+    if(ch.type === "heatmap_map"){
+      // Simple heatmap using circle density
+      const lats = ch.points.map(p => p.lat);
+      const lons = ch.points.map(p => p.lon);
+      const layer = L.layerGroup();
+      ch.points.forEach(pt => {
+        L.circleMarker([pt.lat, pt.lon], {
+          radius: 4, fillColor: "#ff6b35", color: "none",
+          fillOpacity: 0.18, weight: 0
+        }).addTo(layer);
       });
-      marker.bindPopup(`<b>${ch.lat_col || "Lat"}:</b> ${pt.lat.toFixed(4)}<br><b>${ch.lon_col || "Lon"}:</b> ${pt.lon.toFixed(4)}`);
-      markers.addLayer(marker);
-    });
-    map.addLayer(markers);
-    
-    // Fit bounds to show all points
-    const bounds = markers.getBounds();
-    if(bounds.isValid()){
-      map.fitBounds(bounds, {padding: [20, 20]});
+      layer.addTo(map);
+      // Fit map to points
+      const bounds = L.latLngBounds(ch.points.map(p => [p.lat, p.lon]));
+      if(bounds.isValid()) map.fitBounds(bounds, {padding: [20, 20]});
+    } else {
+      // Scatter map — rich popups with all columns
+      const markers = L.layerGroup();
+      // Build a colour legend if color values are strings
+      const colorCats = {};
+      const palette = ["#5fd4d6","#ff9f1c","#e63946","#06d6a0","#9b5de5","#f77f00","#118ab2","#ffd166"];
+      ch.points.forEach(pt => {
+        if(pt.color && isNaN(Number(pt.color)) && !(pt.color.startsWith("#"))){
+          if(!(pt.color in colorCats)){
+            colorCats[pt.color] = palette[Object.keys(colorCats).length % palette.length];
+          }
+        }
+      });
+
+      ch.points.forEach(pt => {
+        const radius = pt.size ? Math.max(5, Math.min(22, Math.sqrt(pt.size) * 1.5)) : 7;
+        let fillColor = "#5fd4d6";
+        if(pt.color){
+          fillColor = pt.color.startsWith("#") ? pt.color
+            : (colorCats[pt.color] || "#5fd4d6");
+        }
+
+        // Build popup HTML from popup object
+        let popupHtml = `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;min-width:140px;">`;
+        popupHtml += `<div style="color:#5fd4d6;font-weight:bold;margin-bottom:4px;">📍 ${pt.lat.toFixed(5)}, ${pt.lon.toFixed(5)}</div>`;
+        if(pt.popup){
+          Object.entries(pt.popup).forEach(([k, v]) => {
+            popupHtml += `<div><span style="color:#8fa3bc;">${escapeHtml(k)}:</span> <strong>${escapeHtml(String(v))}</strong></div>`;
+          });
+        }
+        popupHtml += `</div>`;
+
+        L.circleMarker([pt.lat, pt.lon], {
+          radius, fillColor, color: "#1a2940",
+          weight: 1, opacity: 0.9, fillOpacity: 0.75
+        }).bindPopup(popupHtml).addTo(markers);
+      });
+      markers.addTo(map);
+
+      // Fit map to all points
+      const allLatLons = ch.points.map(p => [p.lat, p.lon]);
+      const bounds = L.latLngBounds(allLatLons);
+      if(bounds.isValid()) map.fitBounds(bounds, {padding: [30, 30]});
+
+      // Add colour legend if categorical
+      if(Object.keys(colorCats).length > 1 && Object.keys(colorCats).length <= 8){
+        const legend = L.control({position: "bottomright"});
+        legend.onAdd = () => {
+          const d = L.DomUtil.create("div");
+          d.style.cssText = "background:rgba(15,25,44,0.88);padding:8px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#c8d8e8;";
+          d.innerHTML = Object.entries(colorCats).map(([k,v]) =>
+            `<div style="display:flex;align-items:center;gap:6px;margin:2px 0;">
+              <span style="width:10px;height:10px;border-radius:50%;background:${v};display:inline-block;"></span>${escapeHtml(k)}
+            </div>`).join("");
+          return d;
+        };
+        legend.addTo(map);
+      }
+
+      // Add point count badge
+      const info = L.control({position:"topleft"});
+      info.onAdd = () => {
+        const d = L.DomUtil.create("div");
+        d.style.cssText = "background:rgba(15,25,44,0.85);padding:4px 10px;border-radius:3px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5fd4d6;";
+        d.innerHTML = `${ch.points.length.toLocaleString()} points`;
+        return d;
+      };
+      info.addTo(map);
     }
-    
-    // Store map reference for cleanup
+
     mapDiv._leafletMap = map;
-    
+    // Force resize after render so tiles load correctly
+    setTimeout(() => map.invalidateSize(), 150);
     return;
   }
   
@@ -2621,11 +3010,13 @@ function drawChart(canvasId, ch){
 
 $("goTrainBtn").addEventListener("click", () => { 
   show("panelTrain"); setStep(5); scrollPanel("panelTrain"); 
-  setTimeout(populatePcaColorCol, 0);  // Ensure PCA color dropdown is populated when entering Train section
+  setTimeout(populatePcaColorCol, 0);
+  if(dsState[activeDs]){ dsState[activeDs].panelTrainVisible = true; autoSave(); }
 });
 $("supervisedLearningBtn").addEventListener("click", () => {
   show("panelTrain"); setStep(5); scrollPanel("panelTrain");
   setTimeout(populatePcaColorCol, 0);
+  if(dsState[activeDs]){ dsState[activeDs].panelTrainVisible = true; autoSave(); }
 });
 $("unsupervisedLearningBtn").addEventListener("click", () => {
   show("panelUnsupervised"); setStep(5); scrollPanel("panelUnsupervised");

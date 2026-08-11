@@ -515,6 +515,74 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
         return df.drop(columns=[col]), f"Dropped column '{col}'."
 
+    # ---- decimal separator fix: replace , with . (European/African number format) ----
+    # MUST be before the rename handler — "change comma to dot in price" is otherwise
+    # caught by the rename pattern "change <col> to <name>".
+    # Handles all natural phrasings:
+    #   "replace , with . in price"           → convert price to float
+    #   "replace , with . in all columns"     → all eligible columns
+    #   "replace comma with dot in price"     → convert price to float
+    #   "fix decimal separator in price"      → convert price to float
+    #   "change comma to dot in revenue"      → convert revenue to float
+    #   "convert comma decimal to dot"        → all eligible columns
+    _is_comma_to_dot = (
+        re.search(r"\breplace\s+,\s+with\s+\.", ql)
+        or re.search(r"\breplace\s+comma\s+with\s+(?:dot|period|point)", ql)
+        or re.search(r"\bfix\s+decimal\s+separator\b", ql)
+        or re.search(r"\bconvert\s+(?:comma|,)\s+decimal", ql)
+        or re.search(r"\bdecimal\s+(?:separator|delimiter)\b", ql)
+        or re.search(r"\bchange\s+(?:comma|,)\s+(?:decimal\s+)?to\s+(?:dot|period|point|\.)\b", ql)
+        or re.search(r"\bchange\s+comma\s+to\s+dot\b", ql)
+    )
+
+    if _is_comma_to_dot:
+        _all_scope = bool(
+            re.search(r"\ball\s+(?:numeric\s+)?columns?\b", ql)
+            or re.search(r"\beverything\b", ql)
+            or not re.search(r"\bin\s+\w", ql)
+        )
+        if _all_scope:
+            candidate_cols = columns
+        else:
+            _mentioned = _match_col(ql, columns)
+            candidate_cols = [_mentioned] if _mentioned else columns
+
+        new_df = df.copy()
+        converted, skipped = [], []
+
+        for col in candidate_cols:
+            series = new_df[col]
+            if pd.api.types.is_numeric_dtype(series):
+                skipped.append(col)
+                continue
+            s_str = series.astype(str)
+            has_comma_decimal = s_str.str.contains(r'\d,\d', regex=True, na=False).any()
+            if not has_comma_decimal:
+                skipped.append(col)
+                continue
+            # Strip thousand-dot separators first (e.g. "1.234,56" → "1234,56")
+            cleaned = s_str.str.replace(r'(?<=\d)\.(?=\d{3}(?:[,\s]|$))', '', regex=True)
+            cleaned = cleaned.str.replace(',', '.', regex=False)
+            numeric = pd.to_numeric(cleaned, errors='coerce')
+            before_valid = int(series.notna().sum())
+            after_valid  = int(numeric.notna().sum())
+            if after_valid >= max(before_valid * 0.7, 1):
+                new_df[col] = numeric
+                converted.append(col)
+            else:
+                skipped.append(col)
+
+        if not converted:
+            return df, (
+                "No columns appeared to contain comma-decimal numbers (like '1,23' or '1.234,56'). "
+                "Make sure the column is stored as text, not already numeric."
+            )
+        parts = [f"'{c}'" for c in converted]
+        msg = f"Replaced comma decimals with dots and converted to numeric: {', '.join(parts)}."
+        if skipped:
+            msg += f" Skipped: {', '.join(skipped)} (already numeric or no comma-decimals found)."
+        return new_df, msg
+
     # ---- rename column ----
     m = re.search(rf"\b{RENAME_VERB_RE}\s+(?:the\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql) or \
         re.search(rf"change\s+(?:the\s+)?(?:name\s+of\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql)

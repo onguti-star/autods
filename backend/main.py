@@ -218,30 +218,27 @@ def _df_from_bytes(contents: bytes, name: str) -> pd.DataFrame:
     if n.endswith((".xlsx", ".xls")):
         df = pd.read_excel(io.BytesIO(contents))
         return _optimize_dtypes(df)
-    if n.endswith(".json"):
-        df = pd.read_json(io.BytesIO(contents))
-        return _optimize_dtypes(df)
     if n.endswith(".geojson"):
-        # Parse GeoJSON and extract properties into a DataFrame
         try:
             geojson = json.loads(contents)
             features = geojson.get("features", [])
             if not features:
                 raise ValueError("GeoJSON file contains no features.")
-            
-            # Extract properties from all features
             rows = []
-            for feature in features:
-                props = feature.get("properties", {})
-                # Add geometry type as a column
-                geom = feature.get("geometry", {})
+            for i, feature in enumerate(features):
+                props = dict(feature.get("properties", {}))
+                props["_feature_index"] = i          # used by choropleth to join back
+                feature["properties"] = props
+                geom  = feature.get("geometry", {})
                 props["_geometry_type"] = geom.get("type", "Unknown")
                 rows.append(props)
-            
             df = pd.DataFrame(rows)
-            return _optimize_dtypes(df)
+            return _optimize_dtypes(df), geojson     # return tuple so upload handler can store raw
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid GeoJSON: {e}")
+    if n.endswith(".json"):
+        df = pd.read_json(io.BytesIO(contents))
+        return _optimize_dtypes(df)
     if n.endswith((".tsv", ".txt")):
         df = pd.read_csv(io.BytesIO(contents), sep="\t", on_bad_lines="skip")
         return _optimize_dtypes(df)
@@ -268,9 +265,10 @@ def _df_from_bytes(contents: bytes, name: str) -> pd.DataFrame:
 def _session_response(session, df):
     return {
         "session_id": session.id,
-        "filename": session.filename,
-        "columns": list(df.columns),
-        "shape": {"rows": df.shape[0], "columns": df.shape[1]},
+        "filename":   session.filename,
+        "columns":    list(df.columns),
+        "shape":      {"rows": df.shape[0], "columns": df.shape[1]},
+        "has_geojson": bool(getattr(session, "geojson", None)),
     }
 
 
@@ -281,7 +279,8 @@ async def upload(file: UploadFile = File(...)):
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, f"File is too large. Maximum upload size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     try:
-        df = _df_from_bytes(contents, name)
+        result = _df_from_bytes(contents, name)
+        df, raw_geojson = result if isinstance(result, tuple) else (result, None)
     except HTTPException:
         raise
     except Exception as e:
@@ -290,6 +289,8 @@ async def upload(file: UploadFile = File(...)):
         raise HTTPException(400, "Uploaded file has no rows.")
     _validate_dataframe_size(df)
     session = create_session(df, name)
+    if raw_geojson:
+        session.geojson = raw_geojson
     return _session_response(session, df)
 
 
@@ -351,7 +352,8 @@ def upload_url(req: UrlUploadRequest):
             )
     
     try:
-        df = _df_from_bytes(contents, name)
+        result = _df_from_bytes(contents, name)
+        df, raw_geojson = result if isinstance(result, tuple) else (result, None)
     except HTTPException:
         raise
     except Exception as e:
@@ -360,6 +362,8 @@ def upload_url(req: UrlUploadRequest):
         raise HTTPException(400, "No rows found at that URL.")
     _validate_dataframe_size(df)
     session = create_session(df, name)
+    if raw_geojson:
+        session.geojson = raw_geojson
     return _session_response(session, df)
 
 
@@ -554,7 +558,7 @@ def clean_chat_help(session_id: str):
 
 class TypeChangeRequest(BaseModel):
     column: str = Field(min_length=1)
-    dtype: Literal["integer", "float", "text", "category", "datetime", "boolean"]
+    dtype: Literal["integer", "float", "text", "category", "datetime", "date", "time", "boolean"]
 
 
 def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFrame, str]:
@@ -562,13 +566,35 @@ def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.
         raise HTTPException(400, f"Column '{column}' not found.")
 
     dtype = dtype.lower().strip()
-    allowed = {"integer", "float", "text", "category", "datetime", "boolean"}
+    allowed = {"integer", "float", "text", "category", "datetime", "date", "time", "boolean"}
     if dtype not in allowed:
         raise HTTPException(400, f"Unsupported data type '{dtype}'.")
 
     out = df.copy()
     before = str(out[column].dtype)
     before_missing = int(out[column].isna().sum())
+
+    # Common date formats including Kenyan/African conventions (DD/MM/YYYY, DD-MM-YYYY)
+    DATE_FORMATS = [
+        "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
+        "%d %b %Y", "%d %B %Y", "%Y/%m/%d",
+        "%d/%m/%y", "%d-%m-%y",
+    ]
+
+    def _parse_dates(series):
+        """Try pandas auto-parse first, then fall back through common formats."""
+        # Try dayfirst=True by default — matches DD/MM/YYYY used in Kenya
+        result = pd.to_datetime(series, dayfirst=True, errors="coerce")
+        if result.notna().sum() >= series.notna().sum() * 0.5:
+            return result
+        for fmt in DATE_FORMATS:
+            try:
+                candidate = pd.to_datetime(series, format=fmt, errors="coerce")
+                if candidate.notna().sum() > result.notna().sum():
+                    result = candidate
+            except Exception:
+                continue
+        return result
 
     try:
         if dtype == "integer":
@@ -587,7 +613,26 @@ def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.
         elif dtype == "category":
             out[column] = out[column].astype("category")
         elif dtype == "datetime":
-            out[column] = pd.to_datetime(out[column], errors="coerce")
+            out[column] = _parse_dates(out[column])
+        elif dtype == "date":
+            # Parse to datetime first, then keep only the date part as a string
+            # (pandas date objects don't have a single clean dtype, so we store
+            # as a formatted string "YYYY-MM-DD" which is unambiguous and sorts correctly)
+            parsed = _parse_dates(out[column])
+            out[column] = parsed.dt.strftime("%Y-%m-%d").astype("string")
+            out[column] = out[column].where(parsed.notna(), pd.NA)
+        elif dtype == "time":
+            # Parse as datetime then extract time-of-day as "HH:MM:SS" string
+            parsed = _parse_dates(out[column])
+            # If parsing yielded all-midnight (failed), try direct time extraction
+            if parsed.isna().all() or (parsed.dt.hour == 0).all():
+                # Try treating raw values as time strings directly
+                try:
+                    parsed = pd.to_datetime("2000-01-01 " + out[column].astype(str), errors="coerce")
+                except Exception:
+                    pass
+            out[column] = parsed.dt.strftime("%H:%M:%S").astype("string")
+            out[column] = out[column].where(parsed.notna(), pd.NA)
         elif dtype == "boolean":
             truthy = {"true", "t", "yes", "y", "1"}
             falsy = {"false", "f", "no", "n", "0"}
@@ -613,7 +658,8 @@ def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.
     after = str(out[column].dtype)
     after_missing = int(out[column].isna().sum())
     introduced = after_missing - before_missing
-    note = f"Changed column '{column}' from {before} to {after}."
+    type_label = {"date": "date only", "time": "time only", "datetime": "date & time"}.get(dtype, dtype)
+    note = f"Changed column '{column}' from {before} to {type_label}."
     if introduced > 0:
         note += f" {introduced:,} value(s) could not be converted and became missing."
     return out, note
@@ -656,7 +702,7 @@ def undo_last_change(session_id: str):
 def visualize_suggestions(session_id: str):
     session = _get_session_or_404(session_id)
     try:
-        charts = viz.suggest_visuals(session.df)
+        charts = viz.suggest_visuals(session.df, has_geojson=bool(session.geojson))
         if charts:
             session.last_visualization = charts[0]
         return {"charts": charts}
@@ -669,6 +715,47 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
                      y: str | None = None, group: str | None = None):
     session = _get_session_or_404(session_id)
     try:
+        if chart_type == "choropleth":
+            if not session.geojson:
+                raise ValueError("Choropleth maps require an uploaded .geojson dataset.")
+            if x not in session.df.columns:
+                raise ValueError(f"Column '{x}' not found.")
+            if not pd.api.types.is_numeric_dtype(session.df[x]):
+                raise ValueError(f"'{x}' is not numeric. Choose a numeric value column for the choropleth.")
+
+            skip_cols = {"_geometry_type", "_feature_index", x}
+            text_cols = [
+                c for c in session.df.columns
+                if c not in skip_cols and not pd.api.types.is_numeric_dtype(session.df[c])
+            ]
+            name_hints = ("admin", "name", "country", "region", "county", "province", "state", "district", "city")
+
+            def name_score(col: str) -> float:
+                hint = 3 if any(h in col.lower() for h in name_hints) else 0
+                non_empty = session.df[col].dropna().astype(str).str.strip()
+                non_empty = non_empty[non_empty != ""]
+                return hint + (len(non_empty) / max(len(session.df), 1))
+
+            name_col = max(text_cols, key=name_score) if text_cols else None
+            row_cols = ["_feature_index", x] + ([name_col] if name_col else [])
+            rows = []
+            for row in session.df[row_cols].to_dict("records"):
+                cleaned = {}
+                for key, value in row.items():
+                    cleaned[key] = None if pd.isna(value) else value
+                rows.append(cleaned)
+
+            chart = {
+                "type": "choropleth",
+                "title": f"Choropleth - {x}",
+                "reason": f"Colour each GeoJSON region by {x}.",
+                "value_col": x,
+                "name_col": name_col,
+                "rows": rows,
+            }
+            session.last_visualization = chart
+            return chart
+
         chart = viz.chart_data(session.df, x, chart_type, y, group)
         session.last_visualization = chart
         return chart
@@ -939,6 +1026,15 @@ def _build_work_report(session) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+@app.get("/api/geojson/{session_id}")
+def get_geojson(session_id: str):
+    """Return the raw GeoJSON stored on the session (uploaded .geojson file)."""
+    session = get_session(session_id)
+    if not session.geojson:
+        raise HTTPException(404, "No GeoJSON available for this session.")
+    return session.geojson
 
 
 @app.get("/api/download_data/{session_id}")

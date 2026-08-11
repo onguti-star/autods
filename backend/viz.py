@@ -210,64 +210,129 @@ def _detect_coordinate_columns(df: pd.DataFrame) -> dict:
     """Detect latitude and longitude columns in the dataframe."""
     lat_candidates = []
     lon_candidates = []
-    
+
+    LAT_NAMES = {'lat', 'latitude', 'latitud', 'breite', 'lat_deg', 'y_coord', 'ylat'}
+    LON_NAMES = {'lon', 'lng', 'longitude', 'longitud', 'laenge', 'lon_deg', 'x_coord', 'xlon', 'long'}
+
     for col in df.columns:
-        col_lower = col.lower()
-        # Check column names
-        if col_lower in ['lat', 'latitude', 'y', 'latitud', 'breite']:
+        col_lower = col.lower().strip()
+        if col_lower in LAT_NAMES:
             lat_candidates.append(col)
-        elif col_lower in ['lon', 'lng', 'longitude', 'x', 'longitud', 'laenge']:
+        elif col_lower in LON_NAMES:
             lon_candidates.append(col)
-        # Check if column contains coordinate-like values
-        elif pd.api.types.is_numeric_dtype(df[col]):
+        # Only auto-detect from value ranges for columns with geo-sounding names
+        # Avoid grabbing generic 'x', 'y' or any numeric column by value alone
+        elif pd.api.types.is_numeric_dtype(df[col]) and any(hint in col_lower for hint in ('lat', 'lon', 'lng', 'coord', 'geo')):
             values = df[col].dropna()
             if len(values) > 0:
-                # Latitude ranges from -90 to 90
                 if values.min() >= -90 and values.max() <= 90:
                     lat_candidates.append(col)
-                # Longitude ranges from -180 to 180
                 elif values.min() >= -180 and values.max() <= 180:
                     lon_candidates.append(col)
-    
+
     return {
         "lat": lat_candidates[0] if lat_candidates else None,
         "lon": lon_candidates[0] if lon_candidates else None
     }
 
 
-def _scatter_map_data(df: pd.DataFrame, lat_col: str, lon_col: str, size_col: str = None, color_col: str = None, max_points: int = 1000) -> dict:
-    """Generate data for scatter map visualization."""
-    cols = [lat_col, lon_col]
-    if size_col:
-        cols.append(size_col)
-    if color_col and color_col not in cols:
-        cols.append(color_col)
-    
-    sub = df[cols].dropna()
+def _scatter_map_data(df: pd.DataFrame, lat_col: str, lon_col: str,
+                      size_col: str = None, color_col: str = None,
+                      label_col: str = None, max_points: int = 2000) -> dict:
+    """Generate data for scatter map — includes popup labels for all non-geo cols."""
+    geo_cols = {lat_col, lon_col}
+    needed = [lat_col, lon_col]
+    if size_col and size_col not in geo_cols:
+        needed.append(size_col)
+    if color_col and color_col not in geo_cols:
+        needed.append(color_col)
+
+    # Pick a label column: prefer explicit, then a text/name column, then nothing
+    if not label_col:
+        for c in df.columns:
+            if c in geo_cols:
+                continue
+            if df[c].dtype == object or str(df[c].dtype) == 'string':
+                label_col = c
+                break
+
+    # All extra columns to include in the popup (up to 6)
+    popup_cols = [c for c in df.columns if c not in geo_cols][:6]
+    for c in popup_cols:
+        if c not in needed:
+            needed.append(c)
+
+    sub = df[needed].dropna(subset=[lat_col, lon_col])
     if len(sub) > max_points:
         sub = sub.sample(max_points, random_state=42)
-    
+
+    # Build color scale if color_col is numeric
+    color_map = {}
+    if color_col and color_col in sub.columns:
+        if pd.api.types.is_numeric_dtype(sub[color_col]):
+            mn, mx = sub[color_col].min(), sub[color_col].max()
+            rng = mx - mn if mx != mn else 1
+            # map 0→1 to a cyan→orange gradient
+            def _hex(v):
+                t = (v - mn) / rng
+                r = int(255 * t)
+                g = int(180 * (1 - t) + 212 * t)
+                b = int(214 * (1 - t) + 0 * t)
+                return f"#{r:02x}{g:02x}{b:02x}"
+            color_map = {i: _hex(row[color_col]) for i, row in sub.iterrows()}
+
     points = []
-    for _, r in sub.iterrows():
-        point = {
-            "lat": float(r[lat_col]),
-            "lon": float(r[lon_col])
-        }
-        if size_col and pd.api.types.is_numeric_dtype(df[size_col]):
-            point["size"] = float(r[size_col])
-        if color_col:
-            point["color"] = str(r[color_col])
-        points.append(point)
-    
+    for i, r in sub.iterrows():
+        pt = {"lat": float(r[lat_col]), "lon": float(r[lon_col])}
+        if size_col and size_col in r.index and pd.notna(r[size_col]):
+            pt["size"] = float(r[size_col])
+        if color_col and color_col in r.index:
+            if color_map:
+                pt["color"] = color_map.get(i, "#5fd4d6")
+            else:
+                pt["color"] = str(r[color_col])
+        # Popup: all extra columns as key→value pairs
+        popup = {}
+        for c in popup_cols:
+            if c in r.index and pd.notna(r[c]):
+                popup[c] = str(r[c]) if not isinstance(r[c], (int, float)) else round(float(r[c]), 4)
+        if popup:
+            pt["popup"] = popup
+        points.append(pt)
+
     return {
         "type": "scatter_map",
         "points": points,
         "lat_col": lat_col,
-        "lon_col": lon_col
+        "lon_col": lon_col,
+        "popup_cols": popup_cols,
     }
 
 
-def _choropleth_data(geojson: dict, df: pd.DataFrame, region_id_col: str, value_col: str) -> dict:
+def suggest_choropleth_columns(df: pd.DataFrame) -> list[dict]:
+    """For a GeoJSON-backed dataframe, suggest numeric columns to choropleth by.
+    Returns list of {col, title, reason} dicts — one per good numeric column."""
+    # Skip internal/geo columns
+    skip = {'_geometry_type', '_feature_index'}
+    numeric_cols = [c for c in df.select_dtypes(include='number').columns if c not in skip]
+    # Prefer columns that look like meaningful measures
+    priority_hints = ('pop', 'gdp', 'income', 'area', 'density', 'count',
+                      'rate', 'index', 'score', 'total', 'value', 'hdi', 'pct', 'percent')
+    priority = [c for c in numeric_cols if any(h in c.lower() for h in priority_hints)]
+    rest = [c for c in numeric_cols if c not in priority]
+    ordered = priority + rest
+
+    suggestions = []
+    for col in ordered[:6]:            # at most 6 suggestions
+        non_null = df[col].dropna()
+        if len(non_null) < 2:
+            continue
+        suggestions.append({
+            "col": col,
+            "title": f"Choropleth — {col}",
+            "reason": f"Colour each region by {col} (range: {non_null.min():.3g} – {non_null.max():.3g}).",
+        })
+    return suggestions
     """Generate data for choropleth map (colored regions)."""
     return {
         "type": "choropleth",
@@ -394,8 +459,60 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
     raise ValueError(f"Unknown chart type '{chart_type}'.")
 
 
-def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 6) -> list:
+def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 6, has_geojson: bool = False) -> list:
     suggestions = []
+
+    # ── Choropleth suggestions (highest priority when GeoJSON is present) ──────
+    if has_geojson:
+        # Find the best name column (longest non-numeric string column)
+        skip_cols = {'_geometry_type', '_feature_index'}
+        # Detect text columns regardless of whether they're object, string, or category
+        str_cols = [
+            c for c in df.columns
+            if c not in skip_cols and
+            str(df[c].dtype) not in ('int8','int16','int32','int64',
+                                     'Int8','Int16','Int32','Int64',
+                                     'float32','float64','bool','boolean') and
+            not str(df[c].dtype).startswith('float') and
+            not str(df[c].dtype).startswith('int')
+        ]
+        PRIORITY_HINTS = ('admin', 'name', 'country', 'region', 'county',
+                          'province', 'state', 'district', 'city', 'sovereignt')
+
+        def _name_score(c):
+            hint_score = 3 if any(h in c.lower() for h in PRIORITY_HINTS) else 0
+            try:
+                non_null = df[c].dropna()
+                # For category/string dtype, also filter out empty strings
+                if hasattr(non_null, 'astype'):
+                    non_null = non_null.astype(str)
+                    non_null = non_null[non_null.str.strip() != '']
+                    non_null = non_null[non_null != 'nan']
+                fill_score = len(non_null) / max(len(df), 1)
+            except Exception:
+                fill_score = 0
+            return hint_score + fill_score
+
+        name_col = max(str_cols, key=_name_score) if str_cols else None
+
+        # Rows to send with each choropleth spec (feature_index + value + name)
+        keep_cols = [c for c in ['_feature_index', name_col] if c] if name_col else ['_feature_index']
+
+        for spec in suggest_choropleth_columns(df):
+            row_cols = keep_cols + [spec["col"]]
+            rows = df[row_cols].dropna(subset=[spec["col"]]).to_dict('records')
+            suggestions.append({
+                "title":    spec["title"],
+                "reason":   spec["reason"],
+                "type":     "choropleth",
+                "value_col": spec["col"],
+                "name_col": name_col,
+                "rows":     rows,
+            })
+        if len(suggestions) >= max_suggestions:
+            return suggestions[:max_suggestions]
+        max_suggestions -= len(suggestions)
+
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     remaining_cols = [c for c in df.columns if c not in numeric_cols]
     text_cols = [c for c in remaining_cols if nlp.is_text_column(df[c])]
@@ -497,15 +614,38 @@ def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 6) -> list:
         except Exception:
             pass
 
-    # 9. Scatter map if lat/lon columns detected
+    # 9. Scatter map / heatmap if lat/lon columns detected — insert at front so
+    #    the cap doesn't cut them off when there are many other chart types.
     coords = _detect_coordinate_columns(df)
     if coords["lat"] and coords["lon"]:
         try:
-            suggestions.append({
-                "title": f"Geographic scatter map ({coords['lat']} vs {coords['lon']})",
-                "reason": "Interactive map showing the geographic distribution of your data points.",
-                **chart_data(df, coords["lat"], "scatter_map", coords["lon"]),
-            })
+            num_cols_for_map = [c for c in numeric_cols if c not in {coords["lat"], coords["lon"]}]
+            size_col  = num_cols_for_map[0] if num_cols_for_map else None
+            color_col = categorical_cols[0] if categorical_cols else (num_cols_for_map[1] if len(num_cols_for_map) > 1 else size_col)
+
+            map_data = _scatter_map_data(df, coords["lat"], coords["lon"],
+                                         size_col=size_col, color_col=color_col)
+            geo_suggestions = [{
+                "title": f"Map — {coords['lat']} / {coords['lon']}",
+                "reason": (
+                    f"Your data has geographic coordinates — plotted as an interactive map. "
+                    + (f"Markers sized by {size_col}. " if size_col else "")
+                    + "Click any marker to see all column values."
+                ),
+                **map_data,
+            }]
+
+            if len(df) > 200:
+                heatmap_data = _scatter_map_data(df, coords["lat"], coords["lon"], max_points=5000)
+                heatmap_data["type"] = "heatmap_map"
+                geo_suggestions.append({
+                    "title": f"Density heatmap — {coords['lat']} / {coords['lon']}",
+                    "reason": "Shows where data points are densest — useful for spotting hotspots.",
+                    **heatmap_data,
+                })
+
+            # Put geo charts first so they're never cut off by the cap
+            suggestions = geo_suggestions + suggestions
         except Exception:
             pass
 

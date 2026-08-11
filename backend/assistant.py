@@ -50,7 +50,8 @@ CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
     "duplicates", "emails", "export", "extract", "fill", "first", "float", "greater",
     "integer", "keep", "lowercase", "missing", "move", "multiply", "numbers",
     "outliers", "punctuation", "push", "rename", "replace", "reset", "rows",
-    "product", "send", "separate", "split", "stopwords", "strip", "tab", "text", "trim",
+    "product", "send", "separate", "separator", "decimal", "comma", "dot", "period",
+    "split", "stopwords", "strip", "tab", "text", "trim",
     "uppercase", "urls", "whitespace",
 }
 
