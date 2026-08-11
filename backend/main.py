@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Literal
 
 import pandas as pd
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -297,6 +298,17 @@ async def upload(file: UploadFile = File(...)):
 class UrlUploadRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     name: str = Field(default="", max_length=120)
+
+
+class SimulationRequest(BaseModel):
+    outcome: str = Field(min_length=1, max_length=200)
+    driver: str = Field(min_length=1, max_length=200)
+    mode: Literal["percent", "fixed", "uniform_percent", "normal_percent"] = "percent"
+    amount: float = 10.0
+    low: float = -10.0
+    high: float = 10.0
+    trials: int = Field(default=1000, ge=100, le=10000)
+    aggregate: Literal["sum", "mean", "median"] = "sum"
 
 
 @app.post("/api/upload_url")
@@ -761,6 +773,115 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
         return chart
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ---------- Simulate ----------
+
+def _aggregate_series(series: pd.Series, aggregate: str) -> float:
+    if aggregate == "mean":
+        return float(series.mean())
+    if aggregate == "median":
+        return float(series.median())
+    return float(series.sum())
+
+
+@app.post("/api/simulate/{session_id}")
+def simulate_scenario(session_id: str, req: SimulationRequest):
+    session = _get_session_or_404(session_id)
+    df = session.df
+    if req.outcome not in df.columns:
+        raise HTTPException(400, f"Outcome column '{req.outcome}' not found.")
+    if req.driver not in df.columns:
+        raise HTTPException(400, f"Driver column '{req.driver}' not found.")
+    if not pd.api.types.is_numeric_dtype(df[req.outcome]):
+        raise HTTPException(400, f"Outcome column '{req.outcome}' must be numeric.")
+    if not pd.api.types.is_numeric_dtype(df[req.driver]):
+        raise HTTPException(400, f"Driver column '{req.driver}' must be numeric.")
+
+    sim_cols = [req.outcome] if req.outcome == req.driver else [req.outcome, req.driver]
+    working = df[sim_cols].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(working) < 5:
+        raise HTTPException(400, "Simulation needs at least 5 complete numeric rows.")
+
+    y = working[req.outcome].astype(float)
+    x = y if req.driver == req.outcome else working[req.driver].astype(float)
+    baseline = _aggregate_series(y, req.aggregate)
+
+    x_var = float(x.var(ddof=0))
+    if req.driver == req.outcome:
+        beta = 1.0
+        method_note = "Scenario changes were applied directly to the outcome column."
+    elif x_var > 0:
+        beta = float(x.cov(y) / x.var())
+        method_note = (
+            "Driver impact is estimated from the observed linear relationship "
+            f"between '{req.driver}' and '{req.outcome}', not proven causality."
+        )
+    else:
+        beta = 0.0
+        method_note = f"'{req.driver}' has no variance, so estimated driver impact is zero."
+
+    rng = pd.Series(range(req.trials)).sample(frac=1, random_state=None).index
+    results: list[float] = []
+    n = len(working)
+    base_y = y.reset_index(drop=True)
+    base_x = x.reset_index(drop=True)
+
+    for seed in rng:
+        sampled_idx = pd.Series(range(n)).sample(n=n, replace=True, random_state=int(seed)).to_numpy()
+        sample_y = base_y.iloc[sampled_idx].reset_index(drop=True)
+        sample_x = base_x.iloc[sampled_idx].reset_index(drop=True)
+
+        if req.mode == "percent":
+            delta_x = sample_x * (req.amount / 100.0)
+        elif req.mode == "fixed":
+            delta_x = pd.Series(req.amount, index=sample_x.index, dtype=float)
+        elif req.mode == "uniform_percent":
+            low, high = sorted([req.low, req.high])
+            pct = pd.Series(np.random.default_rng(int(seed)).uniform(low, high, size=n)) / 100.0
+            delta_x = sample_x * pct
+        else:
+            std = abs(req.high) if req.high else 5.0
+            pct = pd.Series(np.random.default_rng(int(seed)).normal(req.amount, std, size=n)) / 100.0
+            delta_x = sample_x * pct
+
+        scenario_y = sample_y + (delta_x if req.driver == req.outcome else beta * delta_x)
+        results.append(_aggregate_series(scenario_y, req.aggregate))
+
+    dist = pd.Series(results, dtype=float)
+    q05, q50, q95 = dist.quantile([0.05, 0.5, 0.95]).tolist()
+    min_v, max_v = float(dist.min()), float(dist.max())
+    if min_v == max_v:
+        labels = [f"{min_v:,.3g}"]
+        counts = [len(dist)]
+    else:
+        bins = pd.cut(dist, bins=20)
+        counts = bins.value_counts(sort=False)
+        labels = [f"{interval.left:,.3g} to {interval.right:,.3g}" for interval in counts.index]
+        counts = [int(v) for v in counts.values]
+
+    mean_v = float(dist.mean())
+    delta = mean_v - baseline
+    pct_delta = (delta / baseline * 100.0) if baseline else None
+
+    return {
+        "outcome": req.outcome,
+        "driver": req.driver,
+        "mode": req.mode,
+        "aggregate": req.aggregate,
+        "trials": req.trials,
+        "rows_used": int(n),
+        "baseline": baseline,
+        "mean": mean_v,
+        "median": float(q50),
+        "p05": float(q05),
+        "p95": float(q95),
+        "delta": float(delta),
+        "pct_delta": None if pct_delta is None else float(pct_delta),
+        "labels": labels,
+        "counts": counts,
+        "method_note": method_note,
+    }
 
 
 # ---------- Download current data ----------

@@ -271,8 +271,9 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="step" id="step2" onclick="scrollPanel('panelEDA')"><span class="n">02</span> Profile</div>
       <div class="step" id="step3" onclick="scrollPanel('panelClean')"><span class="n">03</span> Clean</div>
       <div class="step" id="step4" onclick="scrollPanel('panelViz')"><span class="n">04</span> Visualise</div>
-      <div class="step" id="step5" onclick="scrollPanel('panelTrain')"><span class="n">05</span> Training</div>
-      <div class="step" id="step6" onclick="scrollPanel('panelModelCards')"><span class="n">06</span> Models</div>
+      <div class="step" id="step5" onclick="scrollPanel('panelSim')"><span class="n">05</span> Simulate</div>
+      <div class="step" id="step6" onclick="scrollPanel('panelTrain')"><span class="n">06</span> Training</div>
+      <div class="step" id="step7" onclick="scrollPanel('panelModelCards')"><span class="n">07</span> Models</div>
     </div>
   </div>
 
@@ -582,6 +583,22 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <option value="full">Statistical (Q1/Median/Q3)</option>
         </select>
       </div>
+      <div class="pred-field" id="choroplethScaleWrap"><label>Color scale</label>
+        <select id="choroplethScale">
+          <option value="viridis">Viridis</option>
+          <option value="ylorrd">Yellow to red</option>
+          <option value="blues">Blues</option>
+          <option value="greens">Greens</option>
+          <option value="purple_orange">Purple to orange</option>
+          <option value="red_blue">Red to blue</option>
+        </select>
+      </div>
+      <div class="pred-field" id="choroplethValueScaleWrap"><label>Value scaling</label>
+        <select id="choroplethValueScale">
+          <option value="log">Log - best for GDP/population</option>
+          <option value="linear">Linear</option>
+        </select>
+      </div>
       <div class="pred-field"><button id="vizBtn" style="margin-top:13px;">Plot it</button></div>
       <label class="inline-option" style="margin-bottom:8px;"><input type="checkbox" id="keepCharts" checked> Keep existing charts</label>
       <div class="pred-field"><button class="sec" id="clearChartsBtn" style="margin-top:13px;">Clear charts</button></div>
@@ -590,13 +607,62 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <div id="vizResult" class="chart-gallery hidden"></div>
 
     <div class="actions">
+      <button id="goSimBtn">Continue to simulation →</button>
+    </div>
+  </section>
+
+  <!-- 05 SIMULATE -->
+  <section class="panel hidden" id="panelSim">
+    <h2><span class="idx">05 /</span> Simulate</h2>
+    <div class="ds-selector" id="simDsSelector"></div>
+    <p class="hint">Run a what-if scenario on numeric columns. If the driver is different from the outcome, AutoDS estimates the response from the observed linear relationship.</p>
+
+    <div class="pred-row">
+      <div class="pred-field"><label>Outcome column</label><select id="simOutcome"></select></div>
+      <div class="pred-field"><label>Driver column</label><select id="simDriver"></select></div>
+      <div class="pred-field">
+        <label>Scenario</label>
+        <select id="simMode">
+          <option value="percent">Percent change</option>
+          <option value="fixed">Fixed change</option>
+          <option value="uniform_percent">Random percent range</option>
+          <option value="normal_percent">Random normal percent</option>
+        </select>
+      </div>
+      <div class="pred-field"><label id="simAmountLabel">Change</label><input type="number" id="simAmount" value="10" step="0.1"></div>
+      <div class="pred-field" id="simRangeWrap">
+        <label>Range / spread</label>
+        <div style="display:flex;gap:6px;">
+          <input type="number" id="simLow" value="-10" step="0.1" style="width:86px;">
+          <input type="number" id="simHigh" value="10" step="0.1" style="width:86px;">
+        </div>
+      </div>
+      <div class="pred-field">
+        <label>Aggregate</label>
+        <select id="simAggregate">
+          <option value="sum">Sum</option>
+          <option value="mean">Mean</option>
+          <option value="median">Median</option>
+        </select>
+      </div>
+      <div class="pred-field"><label>Trials</label><input type="number" id="simTrials" value="1000" min="100" max="10000" step="100"></div>
+      <div class="pred-field"><button id="simBtn" style="margin-top:13px;">Run simulation</button></div>
+    </div>
+
+    <div id="simError" class="error-box hidden"></div>
+    <div id="simResult" class="hidden">
+      <div class="stat-row" id="simStats"></div>
+      <div class="narrative" id="simNarrative"></div>
+      <div class="chart-box" style="height:62vh;min-height:320px;"><canvas id="simCanvas"></canvas></div>
+    </div>
+    <div class="actions">
       <button id="goTrainBtn">Continue to training →</button>
     </div>
   </section>
 
-  <!-- 05 TRAIN -->
+  <!-- 06 TRAIN -->
   <section class="panel hidden" id="panelTrain">
-    <h2><span class="idx">05 /</span> Training</h2>
+    <h2><span class="idx">06 /</span> Training</h2>
     <div class="ds-selector" id="trainDsSelector"></div>
     <p class="hint">Choose supervised learning when you have a target column to predict, or unsupervised learning when you want to discover clusters, patterns, or unusual rows.</p>
 
@@ -694,9 +760,9 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     </div>
   </section>
 
-  <!-- 06 TRAINED MODELS — one persistent card per trained target -->
+  <!-- 07 TRAINED MODELS — one persistent card per trained target -->
   <section class="panel hidden" id="panelModelCards">
-    <h2><span class="idx">06 /</span> Trained Models</h2>
+    <h2><span class="idx">07 /</span> Trained Models</h2>
     <p class="hint">Every model you train gets its own card here with its own prediction form. Train on <strong>price</strong>, then train on <strong>quantity</strong> — both cards stay open so you can predict freely on either one at any time.</p>
     <div id="modelCardsList"></div>
     <div class="actions" style="margin-top:6px;">
@@ -719,7 +785,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
   <!-- UNSUPERVISED -->
   <section class="panel hidden" id="panelUnsupervised">
-    <h2><span class="idx">05 /</span> Unsupervised Learning</h2>
+    <h2><span class="idx">06 /</span> Unsupervised Learning</h2>
     <p class="hint">Discover patterns without a target column — clustering, anomaly detection, dimensionality reduction, and association rules.</p>
     <p class="hint">Numeric unsupervised methods use median imputation plus StandardScaler before distance-based analysis, so columns with large values do not dominate the result.</p>
 
@@ -886,7 +952,9 @@ function _doAutoSave(){
         cleanLogHtml:       st.cleanLogHtml        || "",
         panelCleanVisible:  st.panelCleanVisible   || false,
         panelVizVisible:    st.panelVizVisible     || false,
+        panelSimVisible:    st.panelSimVisible     || false,
         panelTrainVisible:  st.panelTrainVisible   || false,
+        simulationResult:   st.simulationResult    || null,
         vizSuggestionsData: st.vizSuggestionsData  || [],
         customChartSpecs:   st.customChartSpecs    || [],
         chatLogHtml:        st.chatLogHtml         || "",
@@ -1061,7 +1129,7 @@ const hide = id => $(id).classList.add("hidden");
 function scrollPanel(id){ $(id).scrollIntoView({behavior:"smooth"}); }
 
 function setStep(n){
-  for(let i=1;i<=6;i++){
+  for(let i=1;i<=7;i++){
     const el = $("step"+i); if(!el) continue;
     el.classList.remove("active","done");
     if(i < n) el.classList.add("done");
@@ -1163,6 +1231,7 @@ function renderDsTabs(){
 function renderDsSelectors(){
   const configs = [
     { id: "edaDsSelector",    action: "eda"    },
+    { id: "simDsSelector",    action: "sim"    },
     { id: "trainDsSelector",  action: "train"  },
   ];
 
@@ -1195,6 +1264,7 @@ function _onDsSelectorChange(radio){
     if(r.value === id) r.checked = true;
   });
   if(action === "eda")    scrollPanel("panelEDA");
+  if(action === "sim")    scrollPanel("panelSim");
   if(action === "train")  scrollPanel("panelTrain");
 }
 
@@ -1211,13 +1281,13 @@ function clearAnalysisUI(){
     "savedRunsList","predictFields","predictResult","savedPredictionsList",
     "chatWrap","corrFallback","corrPairSummary","pcaResult",
     "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
-    "anomalyResult","reduceResult","assocResult"
+    "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError"
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
 
   if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
   ["cleanPreviewSection","cleanLog","cleanNarrative","dlBarClean","dlBarEDA",
    "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint",
-   "pcaResult","corrPicker","clusterAnalysisResult","clusterResult",
+   "pcaResult","corrPicker","clusterAnalysisResult","clusterResult","simResult",
    "anomalyResult","reduceResult","assocResult"].forEach(id => { if($(id)) hide(id); });
 
   ["vizCleanStatus","trainCleanStatus"].forEach(id => {
@@ -1229,7 +1299,7 @@ function clearAnalysisUI(){
   ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName"].forEach(id => {
     if($(id)) $(id).value = "";
   });
-  ["vizColX","vizColY","vizGroup","targetSelect","typeCol","pcaColorCol","predictSourceSelect"].forEach(id => {
+  ["vizColX","vizColY","vizGroup","targetSelect","typeCol","pcaColorCol","predictSourceSelect","simOutcome","simDriver"].forEach(id => {
     if($(id)) $(id).innerHTML = "";
   });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
@@ -1239,12 +1309,13 @@ function clearAnalysisUI(){
   if($("savedPredictionsHead")) $("savedPredictionsHead").style.display = "none";
   if($("undoCleanBtn")) $("undoCleanBtn").disabled = true;
   destroyChart("importanceCanvas");
+  destroyChart("simCanvas");
   destroyChart("corrCanvas");
   destroyChart("corrPairCanvas");
 }
 
 function resetPanels(){
-  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards"].forEach(hide);
+  ["panelEDA","panelClean","panelViz","panelSim","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -1330,6 +1401,14 @@ function restoreDataset(state){
     }
   }
 
+  if(state.panelSimVisible){
+    show("panelSim");
+    populateSimulationSelects();
+    if(state.simulationResult){
+      setTimeout(() => renderSimulationResult(state.simulationResult), 80);
+    }
+  }
+
   renderSavedRunsList();
   renderPredictSourceOptions();
   refreshSavedRuns(activeDs, state.sessionId);
@@ -1344,8 +1423,10 @@ function restoreDataset(state){
 
   // Set the stepper to the most advanced step the user had reached
   if((state.modelCards && state.modelCards.length) || state.training){
-    setStep(6);
+    setStep(7);
   } else if(state.panelTrainVisible){
+    setStep(6);
+  } else if(state.panelSimVisible){
     setStep(5);
   } else if(state.panelVizVisible){
     setStep(4);
@@ -1425,9 +1506,9 @@ function _onUploaded(data){
   const name = data.filename;
   const loadedMessage = `<p style="color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;">✓ Loaded ${data.shape.rows.toLocaleString()} rows × ${data.shape.columns} columns</p>`;
   clearAnalysisUI();
-  ["panelClean","panelViz","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
+  ["panelClean","panelViz","panelSim","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
   datasets.find(d => d.id === activeDs).name = name;
-  setState({sessionId: data.session_id, allColumns: data.columns, savedRuns: [], savedPredictions: [], training: null, profile: null, cleanLog: null});
+  setState({sessionId: data.session_id, allColumns: data.columns, savedRuns: [], savedPredictions: [], training: null, profile: null, cleanLog: null, simulationResult: null});
   autoSave(); // capture dataset name change (datasets array is not watched by setState)
   clearPredictionsUI();
   $("sessionTag").textContent = `${name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
@@ -2019,11 +2100,90 @@ $("goVizBtn").addEventListener("click", () => {
   if(dsState[activeDs]){ dsState[activeDs].panelVizVisible = true; autoSave(); }
 });
 
+$("goSimBtn").addEventListener("click", () => {
+  show("panelSim"); setStep(5); scrollPanel("panelSim");
+  populateSimulationSelects();
+  if(dsState[activeDs]){ dsState[activeDs].panelSimVisible = true; autoSave(); }
+});
+
+function updateSimulationModeUI(){
+  const mode = $("simMode").value;
+  $("simRangeWrap").style.display = ["uniform_percent","normal_percent"].includes(mode) ? "" : "none";
+  $("simAmountLabel").textContent = mode === "fixed" ? "Fixed change" : mode === "normal_percent" ? "Mean %" : "Change %";
+}
+
+$("simMode").addEventListener("change", updateSimulationModeUI);
+updateSimulationModeUI();
+
+function fmtSim(v){
+  const n = Number(v);
+  if(!Number.isFinite(n)) return "n/a";
+  return n.toLocaleString(undefined, {maximumFractionDigits: Math.abs(n) >= 100 ? 1 : 3});
+}
+
+function renderSimulationResult(data){
+  show("simResult");
+  $("simStats").innerHTML = `
+    <div class="stat"><div class="v">${fmtSim(data.baseline)}</div><div class="l">baseline ${escapeHtml(data.aggregate)}</div></div>
+    <div class="stat"><div class="v">${fmtSim(data.mean)}</div><div class="l">scenario mean</div></div>
+    <div class="stat"><div class="v">${fmtSim(data.delta)}</div><div class="l">average delta</div></div>
+    <div class="stat"><div class="v">${data.pct_delta == null ? "n/a" : fmtSim(data.pct_delta) + "%"}</div><div class="l">delta %</div></div>
+    <div class="stat"><div class="v">${fmtSim(data.p05)} - ${fmtSim(data.p95)}</div><div class="l">90% interval</div></div>
+  `;
+  $("simNarrative").innerHTML = `<div class="nlabel">Simulation readout</div>
+    <p>${escapeHtml(data.trials.toLocaleString())} trials used ${escapeHtml(data.rows_used.toLocaleString())} rows. ${escapeHtml(data.method_note)}</p>`;
+  makeChart("simCanvas", {
+    type: "bar",
+    data: {labels: data.labels, datasets: [{label: "Trials", data: data.counts, backgroundColor: "#5fd4d6bb"}]},
+    options: {
+      plugins: {legend: {display: false}},
+      scales: {
+        x: {ticks: {color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45}, grid:{color:"#1f3a5f"}},
+        y: {ticks: {color:"#8fa3bc"}, grid:{color:"#1f3a5f"}}
+      }
+    }
+  });
+}
+
+$("simBtn").addEventListener("click", async () => {
+  hide("simError");
+  const body = {
+    outcome: $("simOutcome").value,
+    driver: $("simDriver").value,
+    mode: $("simMode").value,
+    amount: Number($("simAmount").value || 0),
+    low: Number($("simLow").value || 0),
+    high: Number($("simHigh").value || 0),
+    aggregate: $("simAggregate").value,
+    trials: Number($("simTrials").value || 1000),
+  };
+  $("simBtn").disabled = true;
+  $("simBtn").textContent = "Simulating...";
+  try{
+    const res = await fetch(`${API}/simulate/${getSid()}`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Simulation failed");
+    setState({simulationResult: data, panelSimVisible: true});
+    renderSimulationResult(data);
+  }catch(err){
+    $("simError").textContent = err.message;
+    show("simError");
+  }finally{
+    $("simBtn").disabled = false;
+    $("simBtn").textContent = "Run simulation";
+  }
+});
+
 // ---------- VISUALISE ----------
 function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
-  ["vizColX","vizColY","targetSelect","typeCol"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  ["vizColX","vizColY","targetSelect","typeCol","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
+  populateSimulationSelects();
   // Prefer the previously trained target so switching tabs doesn't reset the
   // dropdown to the EDA suggestion and make it look like training was lost.
   const trainedTarget = getState().training?.target;
@@ -2034,6 +2194,23 @@ function populateSelects(){
   }
   // Populate PCA color column dropdown with categorical/text columns
   populatePcaColorCol();
+}
+
+function numericColumnNames(){
+  const profile = getState().lastProfile || getState().profile;
+  const cols = profile?.columns || [];
+  const numeric = cols.filter(c => c.type === "numeric" || String(c.dtype || "").includes("int") || String(c.dtype || "").includes("float")).map(c => c.name);
+  return numeric.length ? numeric : allColumns;
+}
+
+function populateSimulationSelects(){
+  const numeric = numericColumnNames();
+  const opts = numeric.map(c => `<option value="${c}">${c}</option>`).join("");
+  if($("simOutcome")) $("simOutcome").innerHTML = opts;
+  if($("simDriver")) $("simDriver").innerHTML = opts;
+  const preferred = numeric.find(c => /revenue|sales|profit|gdp|income|amount|price|cost|pop/i.test(c)) || numeric[0];
+  if(preferred && $("simOutcome")) $("simOutcome").value = preferred;
+  if(preferred && $("simDriver")) $("simDriver").value = preferred;
 }
 
 function populatePcaColorCol(){
@@ -2065,6 +2242,8 @@ function updateVizFieldVisibility(){
   $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) ? "" : "none";
   $("groupWrap").style.display = t === "choropleth" ? "none" : "";   // group by works with most chart types
   $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
+  $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
+  $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : "Column (X)";
   $("groupLabel").textContent = t === "bubble" ? "Size column" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
 
@@ -2126,6 +2305,10 @@ $("vizBtn").addEventListener("click", async () => {
     // Capture the upfront box plot mode selector so it travels with the chart object
     if(t === "boxplot"){
       ch._boxplotMode = $("boxplotMode").value;
+    }
+    if(t === "choropleth"){
+      ch._colorScale = $("choroplethScale").value;
+      ch._valueScale = $("choroplethValueScale").value;
     }
     if(!$("keepCharts").checked) clearCustomCharts();
     addCustomChart(ch);
@@ -2732,6 +2915,8 @@ function drawChart(canvasId, ch){
   
   // ── Choropleth map (GeoJSON regions coloured by a numeric column) ──────────
   if(ch.type === "choropleth" && ch.value_col){
+    ch._colorScale = ch._colorScale || "viridis";
+    ch._valueScale = ch._valueScale || "log";
     const canvas = $(canvasId);
     const box = canvas ? canvas.closest(".chart-box") : null;
     if(!box) return;
@@ -2781,25 +2966,76 @@ function drawChart(canvasId, ch){
 
         // Compute colour scale
         const vals = Object.values(valueMap).map(Number).filter(v => Number.isFinite(v));
+        const valueScale = ch._valueScale || "log";
+        const transformValue = v => {
+          const n = Number(v);
+          if(!Number.isFinite(n)) return null;
+          if(valueScale === "log") return Math.log10(Math.max(0, n) + 1);
+          return n;
+        };
+        const untransformValue = v => {
+          if(valueScale === "log") return Math.pow(10, v) - 1;
+          return v;
+        };
+        const scaledVals = vals.map(transformValue).filter(v => Number.isFinite(v));
         const minVal = vals.length ? Math.min(...vals) : 0;
         const maxVal = vals.length ? Math.max(...vals) : 1;
-        const rng = maxVal - minVal || 1;
+        const minScaled = scaledVals.length ? Math.min(...scaledVals) : 0;
+        const maxScaled = scaledVals.length ? Math.max(...scaledVals) : 1;
+        const rng = maxScaled - minScaled || 1;
         const fmtValue = v => {
           const n = Number(v);
           if(!Number.isFinite(n)) return "No data";
           return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined,{maximumFractionDigits:3});
         };
 
-        // High-contrast choropleth ramp: light cyan -> yellow -> red.
+        const colorScale = ch._colorScale || "viridis";
+        const ramps = {
+          viridis:        ["#440154", "#31688e", "#35b779", "#fde725"],
+          ylorrd:         ["#ffffcc", "#fed976", "#fd8d3c", "#bd0026"],
+          blues:          ["#eff6ff", "#93c5fd", "#2563eb", "#172554"],
+          greens:         ["#f0fdf4", "#86efac", "#16a34a", "#14532d"],
+          purple_orange:  ["#542788", "#b35806", "#fdb863", "#f7f7f7"],
+          red_blue:       ["#b2182b", "#ef8a62", "#67a9cf", "#2166ac"],
+        };
+        const scaleNames = {
+          viridis: "Viridis",
+          ylorrd: "Yellow to red",
+          blues: "Blues",
+          greens: "Greens",
+          purple_orange: "Purple to orange",
+          red_blue: "Red to blue",
+        };
+        const ramp = ramps[colorScale] || ramps.viridis;
+
         function getColor(v){
           const n = Number(v);
           if(!Number.isFinite(n)) return "#b8c1cc";
-          const t = Math.max(0, Math.min(1, (n - minVal) / rng));
-          if(t < 0.33){ const s=t/0.33; return `rgb(${lerp(207,255,s)},${lerp(244,214,s)},${lerp(255,102,s)})`; }
-          if(t < 0.66){ const s=(t-0.33)/0.33; return `rgb(${lerp(255,249,s)},${lerp(214,115,s)},${lerp(102,22,s)})`; }
-          const s=(t-0.66)/0.34; return `rgb(${lerp(249,126,s)},${lerp(115,23,s)},${lerp(22,45,s)})`;
+          const scaled = transformValue(n);
+          if(!Number.isFinite(scaled)) return "#b8c1cc";
+          const t = Math.max(0, Math.min(1, (scaled - minScaled) / rng));
+          return interpolateRamp(ramp, t);
         }
         function lerp(a,b,t){ return Math.round(a+(b-a)*t); }
+        function hexToRgb(hex){
+          const clean = hex.replace("#", "");
+          return [
+            parseInt(clean.slice(0, 2), 16),
+            parseInt(clean.slice(2, 4), 16),
+            parseInt(clean.slice(4, 6), 16),
+          ];
+        }
+        function interpolateRamp(colors, t){
+          const stops = colors.map(hexToRgb);
+          const scaled = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+          const i = Math.min(stops.length - 2, Math.floor(scaled));
+          const localT = scaled - i;
+          const a = stops[i], b = stops[i + 1];
+          return `rgb(${lerp(a[0], b[0], localT)},${lerp(a[1], b[1], localT)},${lerp(a[2], b[2], localT)})`;
+        }
+        function rampGradient(colors){
+          return `linear-gradient(90deg, ${colors.join(",")})`;
+        }
 
         function style(feature){
           const idx = feature.properties?._feature_index ?? feature._autodsFeatureIndex;
@@ -2839,6 +3075,48 @@ function drawChart(canvasId, ch){
         const geoLayer = L.geoJSON(geojson, {style, onEachFeature: onEach}).addTo(map);
         try{ map.fitBounds(geoLayer.getBounds(), {padding:[24,24]}); }catch(_){}
 
+        const labelLayer = L.layerGroup().addTo(map);
+        const labelItems = [];
+        geoLayer.eachLayer(layer => {
+          const feature = layer.feature || {};
+          const props = feature.properties || {};
+          const idx = props._feature_index ?? feature._autodsFeatureIndex;
+          const name = nameMap[idx] || props.ADMIN || props.NAME_LONG || props.NAME || props.name;
+          if(!name || !layer.getBounds) return;
+          const bounds = layer.getBounds();
+          if(!bounds.isValid()) return;
+          const span = Math.abs(bounds.getEast() - bounds.getWest()) * Math.abs(bounds.getNorth() - bounds.getSouth());
+          const center = props.LABEL_X != null && props.LABEL_Y != null && Number.isFinite(Number(props.LABEL_X)) && Number.isFinite(Number(props.LABEL_Y))
+            ? L.latLng(Number(props.LABEL_Y), Number(props.LABEL_X))
+            : bounds.getCenter();
+          labelItems.push({name: String(name), center, span});
+        });
+        labelItems.sort((a, b) => b.span - a.span);
+
+        function updateCountryLabels(){
+          labelLayer.clearLayers();
+          const zoom = map.getZoom();
+          const maxLabels = zoom <= 2 ? 42 : zoom === 3 ? 82 : 180;
+          const minSpan = zoom <= 2 ? 35 : zoom === 3 ? 10 : 0;
+          labelItems
+            .filter(item => item.span >= minSpan)
+            .slice(0, maxLabels)
+            .forEach(item => {
+              const shortName = item.name.length > 18 ? item.name.slice(0, 16) + "." : item.name;
+              L.marker(item.center, {
+                interactive: false,
+                icon: L.divIcon({
+                  className: "",
+                  html: `<div style="transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;font-family:'IBM Plex Mono',monospace;font-size:${zoom <= 2 ? 9 : 10}px;font-weight:700;color:#07131f;text-shadow:0 1px 0 rgba(255,255,255,0.95),1px 0 0 rgba(255,255,255,0.95),0 -1px 0 rgba(255,255,255,0.95),-1px 0 0 rgba(255,255,255,0.95),0 2px 5px rgba(255,255,255,0.8);">${escapeHtml(shortName)}</div>`,
+                  iconSize: [0, 0],
+                  iconAnchor: [0, 0],
+                })
+              }).addTo(labelLayer);
+            });
+        }
+        updateCountryLabels();
+        map.on("zoomend moveend", updateCountryLabels);
+
         const featureCount = geojson.features?.length || 0;
         const mappedCount = vals.length;
         const status = L.control({position:"topleft"});
@@ -2856,11 +3134,13 @@ function drawChart(canvasId, ch){
           const d = L.DomUtil.create("div");
           d.style.cssText = "background:rgba(255,255,255,0.96);box-shadow:0 8px 24px rgba(0,0,0,0.18);padding:10px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.55;color:#17263a;min-width:190px;";
           const steps = 5;
-          d.innerHTML = `<div style="font-weight:bold;margin-bottom:6px;color:#0d1b2e;">${escapeHtml(valueCol)}</div>
-            <div style="height:10px;border-radius:2px;background:linear-gradient(90deg,#cff4ff,#ffd666,#f97316,#7e172d);border:1px solid #d0d7de;margin-bottom:5px;"></div>
+          d.innerHTML = `<div style="font-weight:bold;margin-bottom:2px;color:#0d1b2e;">${escapeHtml(valueCol)}</div>
+            <div style="color:#556575;margin-bottom:6px;">${escapeHtml(scaleNames[colorScale] || "Viridis")} · ${valueScale === "log" ? "Log" : "Linear"} scale</div>
+            <div style="height:10px;border-radius:2px;background:${rampGradient(ramp)};border:1px solid #d0d7de;margin-bottom:5px;"></div>
             <div style="display:flex;justify-content:space-between;color:#556575;margin-bottom:7px;"><span>${fmtValue(minVal)}</span><span>${fmtValue(maxVal)}</span></div>` +
             Array.from({length:steps}, (_,i) => {
-              const v   = minVal + (maxVal - minVal) * (steps-1-i) / (steps-1);
+              const scaled = minScaled + (maxScaled - minScaled) * (steps-1-i) / (steps-1);
+              const v   = untransformValue(scaled);
               const col = getColor(v);
               return `<div style="display:flex;align-items:center;gap:6px;">
                 <span style="width:18px;height:12px;background:${col};display:inline-block;border:1px solid #9aa7b4;"></span>
@@ -3009,17 +3289,17 @@ function drawChart(canvasId, ch){
 }
 
 $("goTrainBtn").addEventListener("click", () => { 
-  show("panelTrain"); setStep(5); scrollPanel("panelTrain"); 
+  show("panelTrain"); setStep(6); scrollPanel("panelTrain"); 
   setTimeout(populatePcaColorCol, 0);
   if(dsState[activeDs]){ dsState[activeDs].panelTrainVisible = true; autoSave(); }
 });
 $("supervisedLearningBtn").addEventListener("click", () => {
-  show("panelTrain"); setStep(5); scrollPanel("panelTrain");
+  show("panelTrain"); setStep(6); scrollPanel("panelTrain");
   setTimeout(populatePcaColorCol, 0);
   if(dsState[activeDs]){ dsState[activeDs].panelTrainVisible = true; autoSave(); }
 });
 $("unsupervisedLearningBtn").addEventListener("click", () => {
-  show("panelUnsupervised"); setStep(5); scrollPanel("panelUnsupervised");
+  show("panelUnsupervised"); setStep(6); scrollPanel("panelUnsupervised");
   loadUnsupervisedSuggestions();
 });
 
@@ -3308,7 +3588,7 @@ $("downloadModelBtn").addEventListener("click", () => window.open(`${API}/downlo
 // "Train another target" — scroll back up to the target selector so the user
 // can pick a new column and run AutoML again. Model cards remain visible below.
 $("trainAnotherBtn").addEventListener("click", () => {
-  show("panelTrain"); setStep(5); scrollPanel("panelTrain");
+  show("panelTrain"); setStep(6); scrollPanel("panelTrain");
   show("panelModelCards"); // keep model cards panel visible so user can see prior models
   const targetSelect = $("targetSelect");
   if(targetSelect){
@@ -3319,7 +3599,7 @@ $("trainAnotherBtn").addEventListener("click", () => {
 
 // ---------- PREDICT ----------
 $("goPredictBtn").addEventListener("click", () => { openModelCards(); });
-$("goPredictFromUnsupervisedBtn").addEventListener("click", () => { show("panelPredict"); setStep(6); scrollPanel("panelPredict"); });
+$("goPredictFromUnsupervisedBtn").addEventListener("click", () => { show("panelPredict"); setStep(7); scrollPanel("panelPredict"); });
 
 // ---------- UNSUPERVISED ----------
 async function loadUnsupervisedSuggestions(){
@@ -4004,12 +4284,12 @@ function renderModelCards(){
 function openModelCards(){
   renderModelCards();
   show("panelModelCards");
-  setStep(6);
+  setStep(7);
   scrollPanel("panelModelCards");
 }
 
 $("goTrainFromModelsBtn").addEventListener("click", () => {
-  show("panelTrain"); setStep(5); scrollPanel("panelTrain");
+  show("panelTrain"); setStep(6); scrollPanel("panelTrain");
   const targetSelect = $("targetSelect");
   if(targetSelect) targetSelect.focus({preventScroll:true});
 });
