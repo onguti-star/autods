@@ -1,0 +1,1 @@
+/api/*  http://YOUR_ORACLE_IP:8000/api/:splat  200
