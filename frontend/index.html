@@ -116,6 +116,11 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .use-case{border:1px solid var(--panel-border);padding:10px 12px;background:rgba(95,212,214,0.035);}
 .use-case .uc-title{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--accent);margin-bottom:4px;}
 .use-case .uc-copy{font-size:11px;color:var(--ink-dim);line-height:1.45;}
+.sim-guide{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:0 0 14px;}
+.sim-guide-step{border:1px solid var(--panel-border);padding:10px 12px;background:rgba(255,255,255,0.025);}
+.sim-guide-step .sg-title{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--cyan);margin-bottom:4px;}
+.sim-guide-step .sg-copy{font-size:11px;color:var(--ink-dim);line-height:1.45;}
+.sim-note{font-size:11px;color:var(--ink-dim);line-height:1.55;margin-top:8px;border-left:2px solid var(--accent);padding-left:10px;}
 .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px;}
 .hidden{display:none!important;}
 .viz-grid{display:grid;grid-template-columns:1fr;gap:20px;margin-bottom:16px;}
@@ -608,10 +613,15 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <details id="simDropdown" style="margin-top:20px;margin-bottom:18px;">
       <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
         <span id="simDropdownArrow" style="font-size:14px;transition:transform .2s;">▶</span>
-        ◇ What-if simulation — test numeric scenarios
+        ◇ What-if simulation — estimate numeric scenarios
       </summary>
       <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
-        <p class="hint" style="margin:0 0 14px;">Run a what-if scenario on numeric columns. If the driver is different from the outcome, AutoDS estimates the response from the observed linear relationship.</p>
+        <p class="hint" style="margin:0 0 14px;">Ask: “If this driver changed, what would probably happen to this outcome?” AutoDS resamples your rows many times, applies the scenario, and reports the likely range of answers.</p>
+        <div class="sim-guide">
+          <div class="sim-guide-step"><div class="sg-title">1. Outcome</div><div class="sg-copy">The number you care about, such as revenue, profit, cost, units sold, GDP, or population.</div></div>
+          <div class="sim-guide-step"><div class="sg-title">2. Driver</div><div class="sg-copy">The number you want to change. If it is not the outcome, AutoDS estimates its linear relationship to the outcome.</div></div>
+          <div class="sim-guide-step"><div class="sg-title">3. Trials</div><div class="sg-copy">Repeated what-if runs. More trials make the range steadier, but take a little longer.</div></div>
+        </div>
 
         <div class="pred-row">
           <div class="pred-field"><label>Outcome column</label><select id="simOutcome"></select></div>
@@ -642,8 +652,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
             </select>
           </div>
           <div class="pred-field"><label>Trials</label><input type="number" id="simTrials" value="1000" min="100" max="10000" step="100"></div>
+          <div class="pred-field"><label>Seed</label><input type="number" id="simSeed" value="42" min="0" max="2147483647" step="1"></div>
           <div class="pred-field"><button id="simBtn" style="margin-top:13px;">Run simulation</button></div>
         </div>
+        <div class="sim-note" id="simModeHelp"></div>
 
         <div id="simError" class="error-box hidden"></div>
         <div id="simResult" class="hidden">
@@ -2106,7 +2118,10 @@ $("goVizBtn").addEventListener("click", () => {
 });
 
 $("goSimBtn").addEventListener("click", () => {
-  show("panelSim"); setStep(5); scrollPanel("panelSim");
+  show("panelViz");
+  if($("simDropdown")) $("simDropdown").open = true;
+  setStep(4);
+  scrollPanel("simDropdown");
   populateSimulationSelects();
   if(dsState[activeDs]){ dsState[activeDs].panelSimVisible = true; autoSave(); }
 });
@@ -2115,6 +2130,15 @@ function updateSimulationModeUI(){
   const mode = $("simMode").value;
   $("simRangeWrap").style.display = ["uniform_percent","normal_percent"].includes(mode) ? "" : "none";
   $("simAmountLabel").textContent = mode === "fixed" ? "Fixed change" : mode === "normal_percent" ? "Mean %" : "Change %";
+  if($("simModeHelp")){
+    const help = {
+      percent: "Percent change: every selected driver value is increased or decreased by the same percent.",
+      fixed: "Fixed change: the same numeric amount is added to every selected driver value.",
+      uniform_percent: "Random percent range: each row gets a random percent change between the two range values.",
+      normal_percent: "Random normal percent: each row gets a random percent change centered on Mean %, using the right-hand spread value."
+    };
+    $("simModeHelp").textContent = help[mode] || "";
+  }
 }
 
 $("simMode").addEventListener("change", updateSimulationModeUI);
@@ -2128,15 +2152,21 @@ function fmtSim(v){
 
 function renderSimulationResult(data){
   show("simResult");
+  const deltaInterval = data.delta_p05 == null || data.delta_p95 == null
+    ? "n/a"
+    : `${fmtSim(data.delta_p05)} to ${fmtSim(data.delta_p95)}`;
   $("simStats").innerHTML = `
     <div class="stat"><div class="v">${fmtSim(data.baseline)}</div><div class="l">baseline ${escapeHtml(data.aggregate)}</div></div>
     <div class="stat"><div class="v">${fmtSim(data.mean)}</div><div class="l">scenario mean</div></div>
     <div class="stat"><div class="v">${fmtSim(data.delta)}</div><div class="l">average delta</div></div>
     <div class="stat"><div class="v">${data.pct_delta == null ? "n/a" : fmtSim(data.pct_delta) + "%"}</div><div class="l">delta %</div></div>
-    <div class="stat"><div class="v">${fmtSim(data.p05)} - ${fmtSim(data.p95)}</div><div class="l">90% interval</div></div>
+    <div class="stat"><div class="v">${deltaInterval}</div><div class="l">likely delta range</div></div>
   `;
   $("simNarrative").innerHTML = `<div class="nlabel">Simulation readout</div>
-    <p>${escapeHtml(data.trials.toLocaleString())} trials used ${escapeHtml(data.rows_used.toLocaleString())} rows. ${escapeHtml(data.method_note)}</p>`;
+    <p><strong>${escapeHtml(data.scenario_description || "Scenario complete.")}</strong></p>
+    <p>${escapeHtml(data.interpretation || "")}</p>
+    <p>${escapeHtml(data.trials.toLocaleString())} trials used ${escapeHtml(data.rows_used.toLocaleString())} complete numeric rows. The chart shows the distribution of scenario ${escapeHtml(data.aggregate)} values; the likely delta range compares each trial to its matching sampled baseline.</p>
+    <p>${escapeHtml(data.method_note)}</p>`;
   makeChart("simCanvas", {
     type: "bar",
     data: {labels: data.labels, datasets: [{label: "Trials", data: data.counts, backgroundColor: "#5fd4d6bb"}]},
@@ -2161,6 +2191,7 @@ $("simBtn").addEventListener("click", async () => {
     high: Number($("simHigh").value || 0),
     aggregate: $("simAggregate").value,
     trials: Number($("simTrials").value || 1000),
+    seed: Number($("simSeed").value || 42),
   };
   $("simBtn").disabled = true;
   $("simBtn").textContent = "Simulating...";

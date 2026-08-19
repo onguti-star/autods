@@ -134,7 +134,8 @@ def test_result_keys_present():
     required = {
         "outcome", "driver", "mode", "aggregate", "trials", "rows_used",
         "baseline", "mean", "median", "p05", "p95", "delta", "pct_delta",
-        "labels", "counts", "method_note",
+        "delta_median", "delta_p05", "delta_p95", "labels", "counts",
+        "scenario_description", "interpretation", "method_note",
     }
     assert required <= result.keys()
 
@@ -147,6 +148,18 @@ def test_labels_and_counts_same_length():
 def test_p05_le_median_le_p95():
     result = run_simulation(_df(), _req())
     assert result["p05"] <= result["median"] <= result["p95"]
+
+
+def test_same_seed_repeats_result():
+    first = run_simulation(_df(), _req(seed=7))
+    second = run_simulation(_df(), _req(seed=7))
+    assert first["delta"] == second["delta"]
+    assert first["counts"] == second["counts"]
+
+
+def test_delta_interval_is_ordered():
+    result = run_simulation(_df(), _req())
+    assert result["delta_p05"] <= result["delta_median"] <= result["delta_p95"]
 
 
 # ── error paths ───────────────────────────────────────────────────────────────

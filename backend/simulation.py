@@ -25,6 +25,7 @@ class SimulationRequest(BaseModel):
     high: float = 10.0
     trials: int = Field(default=1000, ge=100, le=10000)
     aggregate: Literal["sum", "mean", "median"] = "sum"
+    seed: int = Field(default=42, ge=0, le=2_147_483_647)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ def _apply_delta(
     low: float,
     high: float,
     n: int,
-    seed: int,
+    rng: np.random.Generator,
 ) -> pd.Series:
     """Compute the per-row change to the driver column for one trial."""
     if mode == "percent":
@@ -76,8 +77,6 @@ def _apply_delta(
 
     if mode == "fixed":
         return pd.Series(amount, index=sample_x.index, dtype=float)
-
-    rng = np.random.default_rng(seed)
 
     if mode == "uniform_percent":
         lo, hi = sorted([low, high])
@@ -88,6 +87,35 @@ def _apply_delta(
     std = abs(high) if high else 5.0
     pct = pd.Series(rng.normal(amount, std, size=n)) / 100.0
     return sample_x * pct
+
+
+def _scenario_description(req: SimulationRequest) -> str:
+    """Return a short user-facing description of the requested scenario."""
+    if req.mode == "fixed":
+        return f"Add {req.amount:,.3g} to '{req.driver}' for every row."
+    if req.mode == "uniform_percent":
+        lo, hi = sorted([req.low, req.high])
+        return f"Randomly change '{req.driver}' between {lo:,.3g}% and {hi:,.3g}% for each row."
+    if req.mode == "normal_percent":
+        std = abs(req.high) if req.high else 5.0
+        return f"Randomly change '{req.driver}' around {req.amount:,.3g}% with about {std:,.3g}% spread."
+    return f"Change '{req.driver}' by {req.amount:,.3g}% for every row."
+
+
+def _interpret_delta(delta: float, pct_delta: float | None, aggregate: str, outcome: str) -> str:
+    """Turn the numeric result into a concise plain-English interpretation."""
+    if abs(delta) < 1e-12:
+        return f"The scenario is estimated to leave the {aggregate} of '{outcome}' essentially unchanged."
+
+    direction = "increase" if delta > 0 else "decrease"
+    abs_delta = abs(delta)
+    if pct_delta is None:
+        return f"The scenario is estimated to {direction} the {aggregate} of '{outcome}' by about {abs_delta:,.3g}."
+
+    return (
+        f"The scenario is estimated to {direction} the {aggregate} of '{outcome}' "
+        f"by about {abs_delta:,.3g} ({abs(pct_delta):,.3g}%)."
+    )
 
 
 # ── Core simulation function ─────────────────────────────────────────────────
@@ -122,21 +150,21 @@ def run_simulation(df: pd.DataFrame, req: SimulationRequest) -> dict:
     n = len(working)
     base_y = y.reset_index(drop=True)
     base_x = x.reset_index(drop=True)
-    seeds = pd.Series(range(req.trials)).sample(frac=1, random_state=None).index
+    rng = np.random.default_rng(req.seed)
 
     results: list[float] = []
-    for seed in seeds:
-        sampled_idx = (
-            pd.Series(range(n))
-            .sample(n=n, replace=True, random_state=int(seed))
-            .to_numpy()
-        )
+    deltas: list[float] = []
+    for _ in range(req.trials):
+        sampled_idx = rng.integers(0, n, size=n)
         sample_y = base_y.iloc[sampled_idx].reset_index(drop=True)
         sample_x = base_x.iloc[sampled_idx].reset_index(drop=True)
 
-        delta_x = _apply_delta(sample_x, req.mode, req.amount, req.low, req.high, n, int(seed))
+        delta_x = _apply_delta(sample_x, req.mode, req.amount, req.low, req.high, n, rng)
         scenario_y = sample_y + (delta_x if req.driver == req.outcome else beta * delta_x)
-        results.append(aggregate_series(scenario_y, req.aggregate))
+        trial_baseline = aggregate_series(sample_y, req.aggregate)
+        trial_scenario = aggregate_series(scenario_y, req.aggregate)
+        results.append(trial_scenario)
+        deltas.append(trial_scenario - trial_baseline)
 
     # Summarise distribution
     dist = pd.Series(results, dtype=float)
@@ -153,7 +181,9 @@ def run_simulation(df: pd.DataFrame, req: SimulationRequest) -> dict:
         counts = [int(v) for v in freq.values]
 
     mean_v = float(dist.mean())
-    delta = mean_v - baseline
+    delta_dist = pd.Series(deltas, dtype=float)
+    delta = float(delta_dist.mean())
+    delta_p05, delta_p50, delta_p95 = delta_dist.quantile([0.05, 0.5, 0.95]).tolist()
     pct_delta = (delta / baseline * 100.0) if baseline else None
 
     return {
@@ -162,6 +192,7 @@ def run_simulation(df: pd.DataFrame, req: SimulationRequest) -> dict:
         "mode": req.mode,
         "aggregate": req.aggregate,
         "trials": req.trials,
+        "seed": req.seed,
         "rows_used": int(n),
         "baseline": baseline,
         "mean": mean_v,
@@ -169,8 +200,14 @@ def run_simulation(df: pd.DataFrame, req: SimulationRequest) -> dict:
         "p05": float(q05),
         "p95": float(q95),
         "delta": float(delta),
+        "delta_median": float(delta_p50),
+        "delta_p05": float(delta_p05),
+        "delta_p95": float(delta_p95),
         "pct_delta": None if pct_delta is None else float(pct_delta),
         "labels": labels,
         "counts": counts,
+        "beta": float(beta),
+        "scenario_description": _scenario_description(req),
+        "interpretation": _interpret_delta(delta, pct_delta, req.aggregate, req.outcome),
         "method_note": method_note,
     }
