@@ -4856,5 +4856,522 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 </script>
+
+<!-- ═══════════════════════════════════════════════════════
+     FLOATING ASSISTANT WIDGET
+     ═══════════════════════════════════════════════════════ -->
+<style>
+/* ── FAB button ── */
+#fab {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  width: 52px;
+  height: 52px;
+  background: var(--accent);
+  color: #1a1300;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  transition: transform .18s, box-shadow .18s, background .15s;
+  z-index: 9999;
+  user-select: none;
+}
+#fab:hover { transform: scale(1.1); box-shadow: 0 6px 24px rgba(0,0,0,0.55); }
+#fab.open  { background: var(--cyan); }
+#fab .fab-icon { pointer-events: none; line-height: 1; }
+
+/* ── notification dot ── */
+#fabDot {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 10px; height: 10px;
+  background: var(--bad);
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  display: none;
+}
+
+/* ── floating panel ── */
+#floatPanel {
+  position: fixed;
+  bottom: 92px;
+  right: 28px;
+  width: 370px;
+  max-height: 520px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+  z-index: 9998;
+  /* corner marks matching .panel */
+  transition: opacity .18s, transform .18s;
+  transform-origin: bottom right;
+}
+#floatPanel.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.92);
+}
+/* corner marks */
+#floatPanel::before {
+  content: "";
+  position: absolute;
+  width: 9px; height: 9px;
+  border-top: 2px solid var(--accent-dim);
+  border-left: 2px solid var(--accent-dim);
+  top: -1px; left: -1px;
+}
+#floatPanel::after {
+  content: "";
+  position: absolute;
+  width: 9px; height: 9px;
+  border-bottom: 2px solid var(--accent-dim);
+  border-right: 2px solid var(--accent-dim);
+  bottom: -1px; right: -1px;
+}
+
+/* ── panel header (drag handle) ── */
+#floatHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+#floatHeader:active { cursor: grabbing; }
+#floatHeaderTitle {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--cyan);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#floatHeaderTitle .fab-label { color: var(--accent); }
+#floatCloseBtn {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--ink-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+#floatCloseBtn:hover { color: var(--bad); border-color: var(--bad); }
+
+/* ── chat history ── */
+#floatChatWrap {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#floatChatWrap:empty::after {
+  content: "No messages yet. Ask something about your data.";
+  color: var(--ink-dim);
+  font-size: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  text-align: center;
+  margin: auto;
+  padding: 20px 0;
+}
+
+/* ── individual messages ── */
+.fc-msg {
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 8px 11px;
+  max-width: 100%;
+  word-break: break-word;
+}
+.fc-msg.user {
+  background: rgba(255,182,39,0.07);
+  border-left: 2px solid var(--accent);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11.5px;
+  color: var(--ink);
+  align-self: flex-end;
+  max-width: 88%;
+}
+.fc-msg.bot {
+  background: rgba(95,212,214,0.06);
+  border-left: 2px solid var(--cyan);
+  color: var(--ink);
+  align-self: flex-start;
+}
+.fc-msg.bot.error { color: var(--bad); border-color: var(--bad); }
+.fc-msg pre {
+  margin: 7px 0 0;
+  padding: 10px;
+  overflow: auto;
+  background: #081421;
+  border: 1px solid var(--panel-border);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+/* table inside float chat */
+.fc-table-wrap { overflow-x: auto; margin-top: 8px; max-height: 200px; overflow-y: auto; }
+.fc-table-wrap .preview-table { font-size: 10px; }
+
+/* ── input row ── */
+#floatInputRow {
+  display: flex;
+  gap: 7px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--panel-border);
+  flex-shrink: 0;
+}
+#floatInput {
+  flex: 1;
+  background: #0d1b2e;
+  border: 1px solid var(--panel-border);
+  color: var(--ink);
+  padding: 8px 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+#floatInput:focus { outline: none; border-color: var(--accent); }
+#floatSendBtn {
+  background: var(--accent);
+  color: #1a1300;
+  border: none;
+  padding: 8px 13px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#floatSendBtn:hover { filter: brightness(1.1); }
+#floatSendBtn:disabled { background: #3a4357; color: var(--ink-dim); cursor: not-allowed; }
+
+/* ── status bar ── */
+#floatStatus {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--ink-dim);
+  padding: 0 14px 6px;
+  flex-shrink: 0;
+}
+
+/* ── no dataset warning ── */
+#floatNoDs {
+  font-size: 11.5px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--bad);
+  padding: 14px;
+  text-align: center;
+  display: none;
+}
+
+/* ── resize handle ── */
+#floatResizeHandle {
+  position: absolute;
+  top: 0; left: 0;
+  width: 16px; height: 16px;
+  cursor: nwse-resize;
+}
+#floatResizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 4px; left: 4px;
+  width: 8px; height: 8px;
+  border-top: 2px solid var(--panel-border);
+  border-left: 2px solid var(--panel-border);
+}
+
+/* small screens */
+@media (max-width: 440px) {
+  #floatPanel { width: calc(100vw - 20px); right: 10px; bottom: 80px; }
+  #fab { bottom: 18px; right: 14px; }
+}
+</style>
+
+<!-- FAB button -->
+<button id="fab" title="Ask about your data (AI assistant)">
+  <span class="fab-icon">⌘</span>
+  <span id="fabDot"></span>
+</button>
+
+<!-- Floating panel -->
+<div id="floatPanel" class="hidden">
+  <!-- resize corner (top-left) -->
+  <div id="floatResizeHandle"></div>
+
+  <!-- drag header -->
+  <div id="floatHeader">
+    <div id="floatHeaderTitle">
+      <span class="fab-label">⌘</span> Ask about your data
+    </div>
+    <button id="floatCloseBtn" onclick="toggleFloat()">✕ close</button>
+  </div>
+
+  <!-- no dataset message -->
+  <div id="floatNoDs">⚠ Load a dataset first to use the assistant.</div>
+
+  <!-- chat history -->
+  <div id="floatChatWrap"></div>
+
+  <!-- status line -->
+  <div id="floatStatus" id="floatStatus"></div>
+
+  <!-- input -->
+  <div id="floatInputRow">
+    <input id="floatInput" type="text" placeholder="Ask a question about your data…" autocomplete="off">
+    <button id="floatSendBtn">Ask</button>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   FLOATING ASSISTANT — logic
+   ═══════════════════════════════════════════════════════ */
+(function(){
+  const fab        = document.getElementById("fab");
+  const panel      = document.getElementById("floatPanel");
+  const dot        = document.getElementById("fabDot");
+  const chatWrap   = document.getElementById("floatChatWrap");
+  const input      = document.getElementById("floatInput");
+  const sendBtn    = document.getElementById("floatSendBtn");
+  const noDs       = document.getElementById("floatNoDs");
+  const statusBar  = document.getElementById("floatStatus");
+
+  // ── open / close ──────────────────────────────────────
+  let isOpen = false;
+  function toggleFloat(){
+    isOpen = !isOpen;
+    panel.classList.toggle("hidden", !isOpen);
+    fab.classList.toggle("open", isOpen);
+    dot.style.display = "none";
+    if(isOpen){
+      checkDataset();
+      input.focus();
+    }
+  }
+  fab.addEventListener("click", toggleFloat);
+  window.toggleFloat = toggleFloat; // expose for close button onclick
+
+  // ── dataset check ─────────────────────────────────────
+  function checkDataset(){
+    // getSid() is defined in the main app
+    const sid = (typeof getSid === "function") ? getSid() : null;
+    const hasSid = sid && sid.length > 0;
+    noDs.style.display   = hasSid ? "none" : "block";
+    chatWrap.style.display = hasSid ? "" : "none";
+    document.getElementById("floatInputRow").style.display = hasSid ? "" : "none";
+    statusBar.textContent = hasSid ? "session · " + sid.slice(0,8) + "…" : "";
+  }
+
+  // ── send message ──────────────────────────────────────
+  async function floatSend(){
+    const q = input.value.trim();
+    if(!q) return;
+    const sid = (typeof getSid === "function") ? getSid() : null;
+    if(!sid){ checkDataset(); return; }
+
+    input.value = "";
+    addFloatMsg(q, "user");
+
+    sendBtn.disabled = true;
+    const bot = addFloatMsg("Thinking…", "bot");
+    statusBar.textContent = "thinking…";
+
+    try{
+      // Use the same API base as the main app
+      const apiBase = (typeof API !== "undefined") ? API : "";
+      const res  = await fetch(`${apiBase}/ask/${sid}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q })
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail || "Request failed");
+
+      renderFloatContent(bot, data.answer);
+
+      // Table
+      if(data.table && data.table.rows && data.table.rows.length){
+        bot.appendChild(buildFloatTable(data.table));
+      }
+
+      // If data was modified → refresh main panels
+      if(data.modified && data.profile){
+        setDatasetState && setDatasetState(activeDs, { profile: data.profile });
+        if(!document.getElementById("panelEDA").classList.contains("hidden")){
+          renderEDA && renderEDA(data.profile);
+        }
+        const notif = document.createElement("div");
+        notif.style.cssText = "margin-top:6px;font-size:11px;color:var(--good);font-family:'IBM Plex Mono',monospace;";
+        notif.textContent = "✓ Data modified";
+        bot.appendChild(notif);
+
+        // pulse the FAB so user notices even when panel is closed
+        if(!isOpen){ dot.style.display = "block"; }
+      }
+
+      statusBar.textContent = "session · " + sid.slice(0,8) + "…";
+    } catch(err){
+      bot.textContent = err.message || "Something went wrong.";
+      bot.classList.add("error");
+      statusBar.textContent = "error";
+    } finally {
+      sendBtn.disabled = false;
+      chatWrap.scrollTop = chatWrap.scrollHeight;
+    }
+  }
+
+  sendBtn.addEventListener("click", floatSend);
+  input.addEventListener("keydown", e => { if(e.key === "Enter") floatSend(); });
+
+  // ── message helpers ───────────────────────────────────
+  function addFloatMsg(text, role){
+    const el = document.createElement("div");
+    el.className = "fc-msg " + role;
+    el.textContent = text;
+    chatWrap.appendChild(el);
+    chatWrap.scrollTop = chatWrap.scrollHeight;
+    return el;
+  }
+
+  function renderFloatContent(el, answer){
+    if(!answer){ el.textContent = "(no response)"; return; }
+    // Reuse the same markdown-ish renderer used by the main chat
+    if(typeof renderAssistantContent === "function"){
+      renderAssistantContent(el, answer);
+    } else {
+      // Fallback: plain text, code blocks as <pre>
+      el.innerHTML = "";
+      const parts = answer.split(/```([\s\S]*?)```/g);
+      parts.forEach((part, i) => {
+        if(i % 2 === 1){
+          const pre = document.createElement("pre");
+          pre.textContent = part.replace(/^\w+\n/, "");
+          el.appendChild(pre);
+        } else {
+          const span = document.createElement("span");
+          span.textContent = part;
+          el.appendChild(span);
+        }
+      });
+    }
+  }
+
+  function buildFloatTable(table){
+    const wrap = document.createElement("div");
+    wrap.className = "fc-table-wrap";
+    let html = `<table class="preview-table"><thead><tr>` +
+      table.columns.map(c => `<th><span class="col-name">${escHtml(String(c))}</span></th>`).join("") +
+      `</tr></thead><tbody>`;
+    table.rows.forEach(row => {
+      html += "<tr>" + table.columns.map((c, i) => {
+        const v = row[c];
+        if(i === 0) return `<td style="color:var(--ink-dim);text-align:center;">${escHtml(String(v))}</td>`;
+        if(v === null || v === undefined) return `<td class="null-val">null</td>`;
+        const text = String(v);
+        return `<td>${escHtml(text.length > 40 ? text.slice(0,40)+"…" : text)}</td>`;
+      }).join("") + "</tr>";
+    });
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    return wrap;
+  }
+
+  function escHtml(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // ── drag to reposition ────────────────────────────────
+  const header = document.getElementById("floatHeader");
+  let dragging = false, dragOX = 0, dragOY = 0;
+
+  header.addEventListener("mousedown", e => {
+    if(e.target === document.getElementById("floatCloseBtn")) return;
+    dragging = true;
+    const r = panel.getBoundingClientRect();
+    dragOX = e.clientX - r.left;
+    dragOY = e.clientY - r.top;
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", e => {
+    if(!dragging) return;
+    let x = e.clientX - dragOX;
+    let y = e.clientY - dragOY;
+    // clamp inside viewport
+    x = Math.max(0, Math.min(x, window.innerWidth  - panel.offsetWidth));
+    y = Math.max(0, Math.min(y, window.innerHeight - panel.offsetHeight));
+    panel.style.left   = x + "px";
+    panel.style.top    = y + "px";
+    panel.style.right  = "auto";
+    panel.style.bottom = "auto";
+  });
+  document.addEventListener("mouseup", () => { dragging = false; });
+
+  // ── resize from top-left corner ───────────────────────
+  const resizeHandle = document.getElementById("floatResizeHandle");
+  let resizing = false, resOX = 0, resOY = 0, resW0 = 0, resH0 = 0, resPX = 0, resPY = 0;
+
+  resizeHandle.addEventListener("mousedown", e => {
+    resizing = true;
+    resOX = e.clientX; resOY = e.clientY;
+    const r = panel.getBoundingClientRect();
+    resW0 = r.width; resH0 = r.height;
+    resPX = r.left;  resPY = r.top;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  document.addEventListener("mousemove", e => {
+    if(!resizing) return;
+    const dx = resOX - e.clientX;
+    const dy = resOY - e.clientY;
+    const newW = Math.max(280, resW0 + dx);
+    const newH = Math.max(240, resH0 + dy);
+    panel.style.width     = newW + "px";
+    panel.style.maxHeight = newH + "px";
+    panel.style.left      = (resPX + resW0 - newW) + "px";
+    panel.style.top       = (resPY + resH0 - newH) + "px";
+    panel.style.right     = "auto";
+    panel.style.bottom    = "auto";
+  });
+  document.addEventListener("mouseup", () => { resizing = false; });
+
+  // ── keyboard shortcut: Ctrl+K or Cmd+K ───────────────
+  document.addEventListener("keydown", e => {
+    if((e.ctrlKey || e.metaKey) && e.key === "k"){
+      e.preventDefault();
+      toggleFloat();
+    }
+  });
+
+  // ── re-check dataset whenever panel opens ─────────────
+  // (handles the case where user loads data after opening the widget)
+  const origShow = window.show;
+  if(typeof origShow === "function"){
+    window.show = function(id){
+      origShow(id);
+      if(isOpen) checkDataset();
+    };
+  }
+
+})();
+</script>
 </body>
 </html>
