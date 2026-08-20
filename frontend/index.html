@@ -374,6 +374,11 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="subhead">Original data — first 15 rows (unchanged)</div>
       <div id="previewWrap" style="overflow-x:auto;"></div>
     </div>
+    <div class="hidden" id="edaUpdatedSection" style="margin-top:20px;">
+      <div class="subhead">Updated data — current state <span id="edaUpdatedBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
+      <p class="hint" style="margin-top:0;">Reflects your latest cleaning changes for this dataset. Stays put even if you switch to another dataset tab and come back.</p>
+      <div id="edaUpdatedPreviewWrap" style="overflow-x:auto;"></div>
+    </div>
     <div class="stat-row" id="edaStats"></div>
     <div class="narrative hidden" id="edaNarrative"></div>
     <div class="narrative hidden" id="learningRecommendation"></div>
@@ -1297,7 +1302,7 @@ function clearAnalysisUI(){
   customChartSpecs.length = 0;
 
   [
-    "edaStats","colList","describeWrap","previewWrap","cleanPreviewWrap",
+    "edaStats","colList","describeWrap","previewWrap","cleanPreviewWrap","edaUpdatedPreviewWrap",
     "cleanLog","cleanNarrative","cleanChatLog","vizResult","vizError",
     "trainStatus","trainNarrative","leaderboardTable","saveRunStatus",
     "savedRunsList","predictFields","predictResult","savedPredictionsList",
@@ -1307,7 +1312,7 @@ function clearAnalysisUI(){
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
 
   if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
-  ["cleanPreviewSection","cleanLog","cleanNarrative","dlBarClean","dlBarEDA",
+  ["cleanPreviewSection","edaUpdatedSection","cleanLog","cleanNarrative","dlBarClean","dlBarEDA",
    "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint",
    "pcaResult","corrPicker","clusterAnalysisResult","clusterResult","simResult",
    "anomalyResult","reduceResult","assocResult"].forEach(id => { if($(id)) hide(id); });
@@ -1363,6 +1368,15 @@ function restoreDataset(state){
   } else if(state.sessionId){
     // Profile not cached yet — fetch it now so allColumns and targetSelect are correct
     loadEDA(activeDs, state.sessionId);
+  }
+
+  // Restore the "Updated data — current state" table (just below the original-data
+  // table) from whatever cleaning state this dataset last had. Without this, switching
+  // dataset tabs would silently drop the live/updated view and only show the frozen original.
+  if(state.liveProfile){
+    renderUpdatedPreview(state.liveProfile);
+  } else {
+    hide("edaUpdatedSection");
   }
 
   // Restore the clean panel
@@ -1680,12 +1694,33 @@ function renderEDA(profile, datasetId){
   }
 }
 
-function renderCleanPreview(profile){
+function renderCleanPreview(profile, datasetId){
   if(!profile.preview || !profile.preview.length) return;
+  // Persist the profile behind this update so the "Updated data" table survives
+  // switching to another dataset tab and back — see restoreDataset().
+  const targetDs = datasetId || activeDs;
+  if(dsState[targetDs]){
+    dsState[targetDs].liveProfile = profile;
+    autoSave();
+  }
+  // Only touch the DOM if this dataset is still the one on screen
+  if(targetDs !== activeDs) return;
   renderPreview(profile.columns, profile.preview, "cleanPreviewWrap");
   const badge = $("cleanPreviewBadge");
   if(badge) badge.textContent = `${profile.shape.rows.toLocaleString()} rows · ${profile.shape.columns} cols`;
   show("cleanPreviewSection");
+  renderUpdatedPreview(profile);
+}
+
+// The "Updated data — current state" table lives just below the original-data
+// table on the Profile panel, so the live version is visible without switching
+// to the Clean panel — and, unlike before, it no longer disappears on tab switch.
+function renderUpdatedPreview(profile){
+  if(!profile.preview || !profile.preview.length) return;
+  renderPreview(profile.columns, profile.preview, "edaUpdatedPreviewWrap");
+  const badge = $("edaUpdatedBadge");
+  if(badge) badge.textContent = `${profile.shape.rows.toLocaleString()} rows · ${profile.shape.columns} cols`;
+  show("edaUpdatedSection");
 }
 
 function clearVisualizationUIAfterDataChange(){
