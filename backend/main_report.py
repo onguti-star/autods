@@ -57,6 +57,83 @@ def _has_cleaning_history(session) -> bool:
     return bool(session.cleaning_log or session.chat_clean_log)
 
 
+def _column_type_counts(profile: dict) -> dict[str, int]:
+    counts = {"numeric": 0, "categorical": 0, "text": 0}
+    for col in profile.get("columns", []):
+        col_type = col.get("type") or "other"
+        counts[col_type] = counts.get(col_type, 0) + 1
+    return counts
+
+
+def _quality_flags(profile: dict) -> list[dict[str, str]]:
+    rows = profile.get("shape", {}).get("rows", 0) or 0
+    cols = profile.get("columns", []) or []
+    flags: list[dict[str, str]] = []
+
+    duplicate_rows = int(profile.get("duplicate_rows", 0) or 0)
+    if duplicate_rows:
+        pct = duplicate_rows / max(rows, 1) * 100
+        flags.append({
+            "issue": "Duplicate rows",
+            "severity": "Review",
+            "detail": f"{duplicate_rows:,} duplicate row(s), about {pct:.2f}% of the dataset.",
+        })
+
+    high_missing = [col for col in cols if float(col.get("missing_pct", 0) or 0) >= 30]
+    if high_missing:
+        names = ", ".join(str(col.get("name", "")) for col in high_missing[:8])
+        more = f" (+{len(high_missing) - 8} more)" if len(high_missing) > 8 else ""
+        flags.append({
+            "issue": "High missingness",
+            "severity": "Review",
+            "detail": f"{len(high_missing)} column(s) are at least 30% missing: {names}{more}.",
+        })
+
+    constant = [col for col in cols if int(col.get("unique", 0) or 0) <= 1]
+    if constant:
+        names = ", ".join(str(col.get("name", "")) for col in constant[:8])
+        more = f" (+{len(constant) - 8} more)" if len(constant) > 8 else ""
+        flags.append({
+            "issue": "Constant columns",
+            "severity": "Low value",
+            "detail": f"{len(constant)} column(s) have one or fewer non-missing unique values: {names}{more}.",
+        })
+
+    mostly_unique_text = [
+        col for col in cols
+        if col.get("type") in {"text", "categorical"}
+        and rows
+        and int(col.get("unique", 0) or 0) / max(rows - int(col.get("missing", 0) or 0), 1) >= 0.95
+    ]
+    if mostly_unique_text:
+        names = ", ".join(str(col.get("name", "")) for col in mostly_unique_text[:8])
+        more = f" (+{len(mostly_unique_text) - 8} more)" if len(mostly_unique_text) > 8 else ""
+        flags.append({
+            "issue": "Identifier-like text",
+            "severity": "Check",
+            "detail": f"{len(mostly_unique_text)} text/category column(s) are mostly unique: {names}{more}.",
+        })
+
+    return flags
+
+
+def _cleaning_command_type(command: str, message: str) -> str:
+    text = f"{command} {message}".lower()
+    if "created empty column" in text:
+        return "Created empty column"
+    if "created new column" in text or "filled column" in text:
+        return "Derived column"
+    if "removed" in text or "dropped" in text:
+        return "Removed data"
+    if "renamed" in text:
+        return "Renamed column"
+    if "converted" in text or "changed column" in text:
+        return "Type conversion"
+    if "filled" in text:
+        return "Filled missing values"
+    return "Cleaning command"
+
+
 def _report_pca_result(session) -> dict:
     result = getattr(session, "pca_result", {}) or {}
     if result:
@@ -90,6 +167,8 @@ def _build_html_report(session, extra_charts=None) -> str:
     """Build a styled HTML presentation report."""
     profile = eda.profile_dataframe(session.df)
     narrative = narrate.narrate_eda(profile)
+    type_counts = _column_type_counts(profile)
+    quality_flags = _quality_flags(profile)
     charts = list(extra_charts or [])
     chart_data_json = json.dumps(charts)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -102,7 +181,7 @@ def _build_html_report(session, extra_charts=None) -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoDS Presentation Report</title>
+    <title>AutoDS Detailed HTML Report</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
@@ -215,6 +294,12 @@ def _build_html_report(session, extra_charts=None) -> str:
             margin: 10px 0;
             border-radius: 4px;
         }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            margin: 15px 0 25px;
+        }
         .stat-value {
             font-size: 1.4em;
             font-weight: 700;
@@ -293,6 +378,30 @@ def _build_html_report(session, extra_charts=None) -> str:
             background-color: #d4edda;
             border-left: 3px solid #198754;
             border-radius: 4px;
+        }
+        .cleaning-type {
+            display: inline-block;
+            margin-bottom: 5px;
+            padding: 2px 7px;
+            border-radius: 3px;
+            background-color: rgba(25,135,84,0.14);
+            color: #146c43;
+            font-size: 0.78em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        .quality-item {
+            padding: 12px 14px;
+            margin: 10px 0;
+            background-color: #fff8e1;
+            border-left: 4px solid #ffc107;
+            border-radius: 4px;
+        }
+        .quality-meta {
+            color: #6c757d;
+            font-size: 0.9em;
+            margin-top: 3px;
         }
         .prediction-item {
             padding: 14px 16px;
@@ -481,6 +590,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             <ul>
                 <li><a href="#dataset">Dataset Overview</a></li>
                 <li><a href="#summary">EDA Summary</a></li>
+                <li><a href="#quality">Data Quality Details</a></li>
                 <li><a href="#describe">Data Describe Summary</a></li>
                 <li><a href="#columns">Column Analysis</a></li>
                 <li><a href="#correlations">Correlations</a></li>""")
@@ -502,6 +612,7 @@ def _build_html_report(session, extra_charts=None) -> str:
     
     # Dataset Overview Section
     html_parts.append(f"""        <h2 class="section-title" id="dataset">📈 Dataset Overview</h2>
+        <div class="summary-grid">
         <div class="stat-box">
             <div class="stat-label">Total Rows</div>
             <div class="stat-value">{profile['shape']['rows']:,}</div>
@@ -518,6 +629,23 @@ def _build_html_report(session, extra_charts=None) -> str:
             <div class="stat-label">Missing Cells</div>
             <div class="stat-value">{profile['total_missing_cells']:,}</div>
             <span style="color: #6c757d; font-size: 0.9em;">of {profile['total_cells']:,} total</span>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Missing Cell Rate</div>
+            <div class="stat-value">{(profile['total_missing_cells'] / max(profile['total_cells'], 1) * 100):.2f}%</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Numeric Columns</div>
+            <div class="stat-value">{type_counts.get('numeric', 0):,}</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Categorical Columns</div>
+            <div class="stat-value">{type_counts.get('categorical', 0):,}</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Text Columns</div>
+            <div class="stat-value">{type_counts.get('text', 0):,}</div>
+        </div>
         </div>""")
     
     # EDA Summary Section
@@ -528,6 +656,58 @@ def _build_html_report(session, extra_charts=None) -> str:
         html_parts.append(f"            <p>• {note}</p>\n")
     
     html_parts.append("        </div>")
+
+    # Data Quality Section
+    html_parts.append("""        <h2 class="section-title" id="quality">Data Quality Details</h2>""")
+    if quality_flags:
+        for flag in quality_flags:
+            html_parts.append(f"""        <div class="quality-item">
+            <strong>{html.escape(flag["issue"])}</strong>
+            <div class="quality-meta"><strong>{html.escape(flag["severity"])}:</strong> {html.escape(flag["detail"])}</div>
+        </div>""")
+    else:
+        html_parts.append("""        <div class="analysis-item">
+            No major duplicate-row, high-missingness, constant-column, or identifier-like text issues were detected by the automatic checks.
+        </div>""")
+
+    missing_columns = sorted(
+        [col for col in profile.get("columns", []) if int(col.get("missing", 0) or 0) > 0],
+        key=lambda col: float(col.get("missing_pct", 0) or 0),
+        reverse=True,
+    )
+    if missing_columns:
+        html_parts.append("""        <h3 class="subsection-title">Columns With Missing Values</h3>
+        <table class="table">
+            <thead><tr><th>Column</th><th>Missing</th><th>Missing %</th><th>Type</th></tr></thead>
+            <tbody>""")
+        for col in missing_columns[:20]:
+            html_parts.append(f"""                <tr>
+                    <td><strong>{html.escape(str(col.get("name", "")))}</strong></td>
+                    <td>{int(col.get("missing", 0) or 0):,}</td>
+                    <td>{_fmt_report_value(col.get("missing_pct", 0))}%</td>
+                    <td>{html.escape(str(col.get("type", "")))}</td>
+                </tr>""")
+        html_parts.append("""            </tbody>
+        </table>""")
+
+    numeric_columns = [col for col in profile.get("columns", []) if col.get("type") == "numeric" and col.get("stats")]
+    if numeric_columns:
+        html_parts.append("""        <h3 class="subsection-title">Numeric Column Ranges</h3>
+        <table class="table">
+            <thead><tr><th>Column</th><th>Mean</th><th>Std</th><th>Min</th><th>Median</th><th>Max</th></tr></thead>
+            <tbody>""")
+        for col in numeric_columns[:30]:
+            stats = col.get("stats", {})
+            html_parts.append(f"""                <tr>
+                    <td><strong>{html.escape(str(col.get("name", "")))}</strong></td>
+                    <td>{html.escape(_fmt_report_value(stats.get("mean")))}</td>
+                    <td>{html.escape(_fmt_report_value(stats.get("std")))}</td>
+                    <td>{html.escape(_fmt_report_value(stats.get("min")))}</td>
+                    <td>{html.escape(_fmt_report_value(stats.get("50%")))}</td>
+                    <td>{html.escape(_fmt_report_value(stats.get("max")))}</td>
+                </tr>""")
+        html_parts.append("""            </tbody>
+        </table>""")
 
     describe = profile.get("describe") or {}
     if describe.get("columns") and describe.get("index"):
@@ -572,15 +752,15 @@ def _build_html_report(session, extra_charts=None) -> str:
         top_values_str = ""
         top_values = col.get("top_values")
         if top_values:
-            top = ", ".join(f"{v['value']} ({v['count']:,})" for v in top_values[:3])
+            top = ", ".join(f"{html.escape(str(v['value']))} ({v['count']:,})" for v in top_values[:3])
             top_values_str = f"<br><small style='color:#6c757d;'>Top: {top}</small>"
         
         html_parts.append(f"""                <tr>
-                    <td><strong>{col['name']}</strong></td>
-                    <td>{col['type']}</td>
+                    <td><strong>{html.escape(str(col['name']))}</strong></td>
+                    <td>{html.escape(str(col['type']))}</td>
                     <td>{col['unique']:,}</td>
                     <td>{col['missing']:,} ({col['missing_pct']}%)</td>
-                    <td>{stats_str}{top_values_str}</td>
+                    <td>{html.escape(stats_str)}{top_values_str}</td>
                 </tr>""")
     
     html_parts.append("""            </tbody>
@@ -602,7 +782,7 @@ def _build_html_report(session, extra_charts=None) -> str:
         for a, b, val in pairs[:10]:
             color = "#0d6efd" if val > 0 else "#dc3545"
             html_parts.append(f"""        <div class="correlation-item">
-            <span><strong>{a}</strong> ↔ <strong>{b}</strong></span>
+            <span><strong>{html.escape(str(a))}</strong> ↔ <strong>{html.escape(str(b))}</strong></span>
             <span class="correlation-value" style="color: {color};">{val:+.3f}</span>
         </div>""")
 
@@ -674,14 +854,21 @@ def _build_html_report(session, extra_charts=None) -> str:
     # Cleaning Log Section
     if _has_cleaning_history(session):
         html_parts.append("""        <h2 class="section-title" id="cleaning">✨ Data Cleaning Log</h2>""")
+        html_parts.append(f"""        <div class="summary-grid">
+            <div class="stat-box"><div class="stat-value">{len(session.cleaning_log):,}</div><div class="stat-label">structured cleaning entries</div></div>
+            <div class="stat-box"><div class="stat-value">{len(session.chat_clean_log):,}</div><div class="stat-label">Clean Assist commands</div></div>
+        </div>""")
         for entry in session.cleaning_log:
             html_parts.append(f"""        <div class="cleaning-item">
+            <span class="cleaning-type">Structured clean</span><br>
             ✓ {html.escape(str(entry))}
         </div>""")
         for entry in session.chat_clean_log:
             command = html.escape(str(entry.get("command", "")))
             message = html.escape(str(entry.get("message", "")))
+            command_type = html.escape(_cleaning_command_type(str(entry.get("command", "")), str(entry.get("message", ""))))
             html_parts.append(f"""        <div class="cleaning-item">
+            <span class="cleaning-type">{command_type}</span><br>
             ✓ <strong>{command}</strong><br>
             <span>{message}</span>
         </div>""")

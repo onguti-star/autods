@@ -51,6 +51,7 @@ CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
     "integer", "keep", "lowercase", "missing", "move", "multiply", "numbers",
     "outliers", "punctuation", "push", "rename", "replace", "reset", "rows",
     "product", "send", "separate", "separator", "decimal", "comma", "dot", "period",
+    "round", "rounding", "decimals", "decimal",
     "split", "stopwords", "strip", "tab", "text", "trim",
     "uppercase", "urls", "whitespace",
 }

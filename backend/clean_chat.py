@@ -415,6 +415,7 @@ HELP_TEXT = (
     "• keep only rows where country is Kenya\n"
     "• convert price to number  (or: integer / text / category / date / time / boolean)\n"
     "• change ORDER_DATE to date / time\n"
+    "• round price to 2 decimal places  (also: round latitude to 2 dp / keep 2 decimals in longitude / round all numeric columns to 3 decimals)\n"
     "• reset  (undoes every chat cleaning command and restores the original upload)\n"
     "\n"
     "Math operations: +, -, *, /, ** (power), % (modulo)\n"
@@ -450,6 +451,60 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if original_df is None:
             return df, "No original data is available to reset to."
         return original_df.copy(), "Restored the original uploaded data — every chat cleaning command has been undone."
+
+    # ---- round numeric column(s) to N decimal places ----
+    # "round price to 2 decimal places" / "round latitude to 2 dp" /
+    # "keep 2 decimals in longitude" / "round all numeric columns to 3 decimals"
+    _round_m = (
+        re.search(r"\bround\s+(?:off\s+|up\s+|down\s+)?(?:the\s+)?(?:column\s+)?(.+?)\s+(?:to|at|with)\s+(\d+)\s*(?:decimal|dec|dp|d\.p\.?|places?|digits?)", ql)
+        or re.search(r"\bround\s+(?:the\s+)?(?:column\s+)?(.+?)\s+(?:to|at)\s+(\d+)\b", ql)
+        or re.search(r"\b(?:keep|show|limit|reduce|set|use|leave)\s+(?:only\s+)?(\d+)\s*(?:decimal|dec|dp|d\.p\.?|places?|digits?)[a-z\s]*?\s+(?:in|for|on|of)\s+(.+)", ql)
+        or re.search(r"\b(\d+)\s*(?:decimal\s*places?|decimals?|dp)\b\s+(?:in|for|on|of)\s+(.+)", ql)
+    )
+    if _round_m:
+        g1, g2 = _round_m.group(1).strip(), _round_m.group(2).strip()
+        if g1.isdigit():                       # "keep 2 decimals in price"
+            decimals, col_text = int(g1), g2
+        else:                                  # "round price to 2 decimal places"
+            decimals, col_text = int(g2), g1
+
+        if decimals > 15:
+            return df, "Please pick a number of decimal places between 0 and 15."
+
+        col_key = re.sub(r"^(?:the\s+|all\s+)", "", col_text).strip(" '\"?.,:;-")
+        all_scope = bool(re.fullmatch(r"(?:all\s+)?(?:numeric|number|numerical|float|decimal)?\s*columns?|everything|all", col_key)) \
+            or col_key in ("all", "everything", "all columns", "numeric columns")
+
+        new_df = df.copy()
+        if all_scope:
+            targets = new_df.select_dtypes(include="number").columns.tolist()
+            if not targets:
+                return df, "There are no numeric columns to round."
+        else:
+            col = _match_col(col_text, columns)
+            if not col:
+                return df, f"I couldn't find a column matching '{col_text}'. Available columns: {', '.join(columns)}."
+            targets = [col]
+
+        rounded, skipped = [], []
+        for col in targets:
+            series = pd.to_numeric(new_df[col], errors="coerce")
+            if series.notna().sum() == 0:
+                skipped.append(col)
+                continue
+            series = series.round(decimals)
+            new_df[col] = series.astype("Int64") if decimals == 0 else series
+            rounded.append(col)
+
+        if not rounded:
+            return df, f"'{targets[0]}' isn't numeric, so it can't be rounded. Convert it to a number first."
+
+        unit = "whole number" if decimals == 0 else f"{decimals} decimal place{'s' if decimals != 1 else ''}"
+        msg = f"Rounded {', '.join(chr(39) + c + chr(39) for c in rounded)} to {unit}."
+        if skipped:
+            msg += f" Skipped (not numeric): {', '.join(skipped)}."
+        return new_df, msg
+
 
     # ---- split first word into two new columns ----
     split_patterns = [

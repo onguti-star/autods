@@ -366,7 +366,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <span>Download the current data as-is</span>
       <button class="dl" onclick="dlData('csv')">⬇ CSV</button>
       <button class="dl" onclick="dlData('excel')">⬇ Excel</button>
-      <button class="sec" onclick="dlPresentation()">📊 Presentation (HTML)</button>
+      <button class="sec" onclick="dlPresentation()">📊 Detailed HTML Report</button>
       <button class="sec" onclick="dlWork()">📄 Report (.md)</button>
       <button class="dl" onclick="dlNotebook()">📓 Notebook (.ipynb)</button>
     </div>
@@ -460,7 +460,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div id="cleanPreviewWrap" style="overflow-x:auto;"></div>
     </div>
     <div class="subhead">Clean it yourself — chat</div>
-    <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email" or "fill missing values in age with median". Type "help" to see everything I understand.</p>
+    <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email", "create a new column called revenue", or "fill revenue with price * quantity". Type "help" to see everything I understand.</p>
 
     <!-- Filter & Split — collapsible dropdown inside cleaning -->
     <details id="filterDropdown" style="margin-bottom:18px;">
@@ -513,7 +513,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="clean-chat-log" id="cleanChatLog"></div>
     <div class="clean-chat-input-row">
-      <input type="text" id="cleanChatInput" placeholder="e.g. remove rows where status is cancelled" autocomplete="off">
+      <input type="text" id="cleanChatInput" placeholder="e.g. create a new column called revenue" autocomplete="off">
       <button id="cleanChatSendBtn">Send</button>
     </div>
     <div class="actions">
@@ -528,7 +528,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <span>Download the cleaned data</span>
       <button class="dl" onclick="dlData('csv')">⬇ CSV</button>
       <button class="dl" onclick="dlData('excel')">⬇ Excel</button>
-      <button class="sec" onclick="dlPresentation()">📊 Presentation (HTML)</button>
+      <button class="sec" onclick="dlPresentation()">📊 Detailed HTML Report</button>
       <button class="sec" onclick="dlWork()">📄 Report (.md)</button>
     </div>
   </section>
@@ -755,7 +755,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="subhead">Export model</div>
           <p class="hint">Download the best trained pipeline as a .pkl — load it anywhere with pickle and call .predict().</p>
           <button class="sec" id="downloadModelBtn">Download best model (.pkl)</button>
-          <button class="sec" onclick="dlPresentation()" style="margin-left:7px;">📊 Presentation (HTML)</button>
+          <button class="sec" onclick="dlPresentation()" style="margin-left:7px;">📊 Detailed HTML Report</button>
           <button class="sec" onclick="dlWork()" style="margin-left:7px;">📄 Report (.md)</button>
         </div>
       </div>
@@ -1128,7 +1128,7 @@ function renderAssistantContent(el, text){
 }
 
 const charts = {};
-const customChartSpecs = [];   // visible charts included in the downloaded report
+const customChartSpecs = [];   // visible charts included in the downloaded detailed HTML report
 Chart.defaults.responsive = true;
 Chart.defaults.maintainAspectRatio = false;
 function makeChart(id, config){
@@ -2536,7 +2536,7 @@ function addCustomChart(ch){
     panel.querySelector(".download").style.display = "none";   // rendered as HTML, not a canvas — nothing to export as PNG
   }
   // Attach title/reason so the downloaded report can show a sensible label,
-  // and keep this spec around so "Presentation (HTML)" can include it.
+  // and keep this spec around so the detailed HTML report can include it.
   const reportSpec = {...ch, title: chartTitle(ch), reason: explainChart(ch), _reportSource: "custom"};
   customChartSpecs.push(reportSpec);
   panel.querySelector(".close").addEventListener("click", () => {
