@@ -479,8 +479,16 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           You can also type it in the chat above: <code>split rows where gender is Male and age is 3 into new tab</code>
         </p>
 
+        <!-- Rename the current dataset tab -->
+        <div class="subhead">Rename this dataset</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <input type="text" id="renameDsInput" placeholder="Dataset name" style="flex:1;min-width:160px;">
+          <button class="sec" onclick="renameActiveDataset()">Rename</button>
+        </div>
+        <p class="hint" style="margin-top:5px;">Changes the name on the tab above — handy right after a split so it's not stuck as "filtered_subset".</p>
+
         <!-- Visual condition builder -->
-        <div class="subhead">Build your filter</div>
+        <div class="subhead" style="margin-top:16px;">Build your filter</div>
         <div id="filterConditions" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
         <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
           <button class="sec" onclick="addFilterCondition()">+ Add condition</button>
@@ -509,7 +517,8 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <div id="filterError" class="hidden" style="color:var(--bad);font-size:12px;margin-top:10px;font-family:'IBM Plex Mono',monospace;"></div>
 
         <!-- Send to new tab -->
-        <div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap;">
+        <div class="subhead" style="margin-top:16px;">Name it &amp; send</div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap;">
           <input type="text" id="filterNewName" placeholder="Name for the new tab" style="flex:1;min-width:160px;">
           <button id="filterSendBtn" onclick="sendFilterToTab()">↗ Send to new tab</button>
         </div>
@@ -971,6 +980,7 @@ function _doAutoSave(){
         lastProfile:        st.lastProfile         || null,
         cleanLog:           st.cleanLog            || null,
         cleanLogHtml:       st.cleanLogHtml        || "",
+        liveProfile:        st.liveProfile         || null,
         panelCleanVisible:  st.panelCleanVisible   || false,
         panelVizVisible:    st.panelVizVisible     || false,
         panelSimVisible:    st.panelSimVisible     || false,
@@ -4687,6 +4697,7 @@ function openFilterPanel(){
   $("filterPreviewWrap").classList.add("hidden");
   $("filterError").classList.add("hidden");
   $("filterNewName").value = "";
+  _fillRenameDsInput();
   addFilterCondition();
   // Open the dropdown and scroll to the clean panel
   const dropdown = $("filterDropdown");
@@ -4698,6 +4709,32 @@ function openFilterPanel(){
   setTimeout(() => {
     if(dropdown) dropdown.scrollIntoView({behavior:"smooth", block:"start"});
   }, 300);
+}
+
+function _fillRenameDsInput(){
+  const input = $("renameDsInput");
+  if(!input) return;
+  const ds = datasets.find(d => d.id === activeDs);
+  input.value = ds?.name || "";
+}
+
+function renameActiveDataset(){
+  const input = $("renameDsInput");
+  const newName = (input?.value || "").trim();
+  if(!newName){ alert("Type a name first."); return; }
+  const ds = datasets.find(d => d.id === activeDs);
+  if(!ds){ alert("No dataset selected."); return; }
+
+  ds.name = newName;
+  renderDsTabs();
+  autoSave();
+
+  // Keep the top session tag in sync too, e.g. "my_data · 200×12"
+  const tag = $("sessionTag");
+  if(tag){
+    const rest = tag.textContent.split("·").slice(1).join("·").trim();
+    tag.textContent = rest ? `${newName} · ${rest}` : newName;
+  }
 }
 
 function _colOptions(){
@@ -4860,7 +4897,10 @@ document.addEventListener("DOMContentLoaded", () => {
     fd.addEventListener("toggle", () => {
       const arrow = $("filterDropdownArrow");
       if(arrow) arrow.style.transform = fd.open ? "rotate(90deg)" : "";
-      if(fd.open && $("filterConditions").children.length === 0) addFilterCondition();
+      if(fd.open){
+        if($("filterConditions").children.length === 0) addFilterCondition();
+        _fillRenameDsInput();
+      }
     });
   }
 
