@@ -9,18 +9,39 @@ from . import nlp
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _histogram_data(s: pd.Series, bins: int = 12):
+def _histogram_data(s: pd.Series, bins: int = 12,
+                    x_min: float = None, x_max: float = None,
+                    bin_width: float = None):
     clean = s.dropna()
+    if x_min is not None:
+        clean = clean[clean >= x_min]
+    if x_max is not None:
+        clean = clean[clean <= x_max]
     if len(clean) == 0:
         return {"labels": [], "values": []}
-    n_bins = min(bins, max(1, clean.nunique()))
-    counts, edges = np.histogram(clean, bins=n_bins)
+    if bin_width is not None:
+        start = float(x_min) if x_min is not None else float(clean.min())
+        end = float(x_max) if x_max is not None else float(clean.max())
+        if start == end:
+            end = start + bin_width
+        edge_count = int(np.ceil((end - start) / bin_width)) + 1
+        if edge_count > 501:
+            raise ValueError("Bin width creates too many bars. Use a larger bin width or narrower X range.")
+        edges = start + np.arange(edge_count) * bin_width
+        if edges[-1] < end:
+            edges = np.append(edges, edges[-1] + bin_width)
+        counts, edges = np.histogram(clean, bins=edges)
+    else:
+        n_bins = min(bins, max(1, clean.nunique()))
+        counts, edges = np.histogram(clean, bins=n_bins)
     labels = [f"{edges[i]:.2f}–{edges[i+1]:.2f}" for i in range(len(edges) - 1)]
     return {"labels": labels, "values": [int(c) for c in counts]}
 
 
-def _bar_data(s: pd.Series, top_n: int = 15):
-    counts = s.value_counts(dropna=True).head(top_n)
+def _bar_data(s: pd.Series, top_n: int = None):
+    counts = s.value_counts(dropna=True)
+    if top_n is not None:
+        counts = counts.head(top_n)
     return {"labels": [str(i) for i in counts.index], "values": [int(v) for v in counts.values]}
 
 
@@ -346,18 +367,32 @@ def suggest_choropleth_columns(df: pd.DataFrame) -> list[dict]:
 # ── public API ──────────────────────────────────────────────────────────────
 
 def chart_data(df: pd.DataFrame, x: str, chart_type: str,
-               y: str = None, group: str = None) -> dict:
+               y: str = None, group: str = None,
+               x_min: float = None, x_max: float = None,
+               bar_limit: int = None, bin_width: float = None) -> dict:
     if x not in df.columns:
         raise ValueError(f"Column '{x}' not found.")
+    if x_min is not None and x_max is not None and x_min > x_max:
+        raise ValueError("X-axis minimum must be less than or equal to the maximum.")
+    if bin_width is not None and bin_width <= 0:
+        raise ValueError("Bin width must be greater than zero.")
     s = df[x]
 
     if chart_type == "histogram":
         if not pd.api.types.is_numeric_dtype(s):
             raise ValueError(f"'{x}' is not numeric — try a bar chart instead.")
-        return {"type": "histogram", "x": x, **_histogram_data(s)}
+        return {
+            "type": "histogram",
+            "x": x,
+            "x_min": x_min,
+            "x_max": x_max,
+            "bin_width": bin_width,
+            **_histogram_data(s, x_min=x_min, x_max=x_max, bin_width=bin_width),
+        }
 
     if chart_type == "bar":
-        return {"type": "bar", "x": x, **_bar_data(s)}
+        top_n = min(max(int(bar_limit), 1), 1000) if bar_limit is not None else None
+        return {"type": "bar", "x": x, "bar_limit": top_n, **_bar_data(s, top_n=top_n)}
 
     if chart_type == "pie":
         return {"type": "pie", "x": x, **_pie_data(s)}

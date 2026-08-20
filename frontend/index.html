@@ -581,6 +581,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="pred-field"><label id="xLabel">Column (X)</label><select id="vizColX"></select></div>
       <div class="pred-field" id="yWrap"><label>Column (Y)</label><select id="vizColY"></select></div>
       <div class="pred-field" id="groupWrap"><label id="groupLabel">Group / Size column</label><select id="vizGroup"></select></div>
+      <div class="pred-field" id="histMinWrap"><label>X min</label><input type="number" id="histXMin" step="any" placeholder="auto"></div>
+      <div class="pred-field" id="histMaxWrap"><label>X max</label><input type="number" id="histXMax" step="any" placeholder="auto"></div>
+      <div class="pred-field" id="histBinWidthWrap"><label>Bin width</label><input type="number" id="histBinWidth" min="0" step="any" placeholder="auto"></div>
+      <div class="pred-field" id="barLimitWrap"><label>Top categories</label><input type="number" id="barLimit" min="1" max="1000" step="1" placeholder="all"></div>
       <div class="pred-field" id="boxplotModeWrap"><label>Box plot mode</label>
         <select id="boxplotMode">
           <option value="simple">Normal box plot</option>
@@ -1024,6 +1028,8 @@ function tryRestoreSession(){
 // FRESH RELOAD (dev helper)
 // ============================
 function clearAndReload(){
+  const ok = confirm("Fresh reload clears this tab's locally saved AutoDS state, including uploaded-session links and current UI progress. Continue?");
+  if(!ok) return;
   try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
   location.reload();
 }
@@ -2277,6 +2283,10 @@ function updateVizFieldVisibility(){
   const t = selectedChartType;
   $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) ? "" : "none";
   $("groupWrap").style.display = t === "choropleth" ? "none" : "";   // group by works with most chart types
+  $("histMinWrap").style.display = t === "histogram" ? "" : "none";
+  $("histMaxWrap").style.display = t === "histogram" ? "" : "none";
+  $("histBinWidthWrap").style.display = t === "histogram" ? "" : "none";
+  $("barLimitWrap").style.display = t === "bar" ? "" : "none";
   $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
   $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
@@ -2334,6 +2344,18 @@ $("vizBtn").addEventListener("click", async () => {
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
   if(["scatter","line","bubble","area"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
   if(["boxplot","bubble"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  if(t === "histogram"){
+    const xMin = $("histXMin").value.trim();
+    const xMax = $("histXMax").value.trim();
+    const binWidth = $("histBinWidth").value.trim();
+    if(xMin !== "") url += `&x_min=${encodeURIComponent(xMin)}`;
+    if(xMax !== "") url += `&x_max=${encodeURIComponent(xMax)}`;
+    if(binWidth !== "") url += `&bin_width=${encodeURIComponent(binWidth)}`;
+  }
+  if(t === "bar"){
+    const barLimit = $("barLimit").value.trim();
+    if(barLimit !== "") url += `&bar_limit=${encodeURIComponent(barLimit)}`;
+  }
   try{
     const res = await fetch(url);
     const ch = await res.json();

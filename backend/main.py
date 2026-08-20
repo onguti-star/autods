@@ -714,7 +714,9 @@ def visualize_suggestions(session_id: str):
 
 @app.get("/api/visualize/{session_id}")
 def visualize_custom(session_id: str, x: str, chart_type: str,
-                     y: str | None = None, group: str | None = None):
+                     y: str | None = None, group: str | None = None,
+                     x_min: float | None = None, x_max: float | None = None,
+                     bar_limit: int | None = None, bin_width: float | None = None):
     session = _get_session_or_404(session_id)
     try:
         if chart_type == "choropleth":
@@ -758,7 +760,7 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
             session.last_visualization = chart
             return chart
 
-        chart = viz.chart_data(session.df, x, chart_type, y, group)
+        chart = viz.chart_data(session.df, x, chart_type, y, group, x_min, x_max, bar_limit, bin_width)
         session.last_visualization = chart
         return chart
     except ValueError as e:

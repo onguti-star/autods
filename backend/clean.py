@@ -107,6 +107,11 @@ def _match_col(text: str, columns: list) -> str | None:
     return found[0] if found else None
 
 
+def _only_empty_column(df: pd.DataFrame) -> str | None:
+    empty_cols = [col for col in df.columns if bool(df[col].isna().all())]
+    return empty_cols[0] if len(empty_cols) == 1 else None
+
+
 def _default_text_column(df: pd.DataFrame) -> str | None:
     text_cols = df.select_dtypes(include=["object", "string", "category"]).columns.tolist()
     return text_cols[0] if len(text_cols) == 1 else None
@@ -281,6 +286,59 @@ def _parse_math_expression(text: str, df: pd.DataFrame) -> tuple[str | None, str
     return None, None
 
 
+def _parse_empty_column_name(text: str) -> str | None:
+    patterns = [
+        r"\b(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?(?:empty|blank)?\s*column\s+(?:called\s+|named\s+)?(\w+)\s*$",
+        r"\b(?:create|add|make)\s+(?:a\s+)?(?:empty|blank)\s+(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s*$",
+        r"\bnew\s+(?:empty|blank)?\s*column\s+(?:called\s+|named\s+)?(\w+)\s*$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip(" '\"?.,:;-")
+    return None
+
+
+def _parse_fill_column_expression(text: str) -> tuple[str | None, str | None]:
+    patterns = [
+        r"\b(?:fill|populate|update)\s+(?:the\s+)?(?:column\s+)?(.+?)\s+(?:with|as|from|=)\s+(.+)",
+        r"\b(?:set|calculate|compute)\s+(?:the\s+)?(?:column\s+)?(.+?)\s+(?:to|as|with|from|=)\s+(.+)",
+        r"\b(?:fill|populate|update)\s+(?:it|the\s+new\s+column|the\s+empty\s+column|the\s+blank\s+column)\s+(?:with|as|from|=)\s+(.+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if not m:
+            continue
+        if len(m.groups()) == 1:
+            return m.group(1).strip(), "it"
+        return m.group(2).strip(), m.group(1).strip()
+    return None, None
+
+
+def _apply_math_expression_to_column(
+    df: pd.DataFrame,
+    target_col: str,
+    expr: str,
+    action_word: str,
+) -> tuple[pd.DataFrame, str]:
+    if df.empty:
+        new_df = df.copy()
+        new_df[target_col] = pd.Series(dtype="float64")
+        return new_df, f"{action_word} '{target_col}' with expression: {expr}"
+
+    test_row = df.dropna().iloc[0] if len(df.dropna()) > 0 else df.iloc[0]
+    test_result = _safe_eval_math(expr, df, test_row)
+    if test_result is None:
+        return df, f"Could not evaluate the expression '{expr}'. Make sure it uses valid column names and operators (+, -, *, /, **, %)."
+
+    new_df = df.copy()
+    try:
+        new_df[target_col] = df.apply(lambda row: _safe_eval_math(expr, df, row), axis=1)
+        return new_df, f"{action_word} '{target_col}' with expression: {expr}"
+    except Exception as e:
+        return df, f"Error filling column: {e}"
+
+
 def _match_two_cols(text: str, columns: list) -> tuple[str | None, str | None]:
     found = _find_columns_in_text(text, columns)
     if len(found) >= 2:
@@ -322,6 +380,8 @@ HELP_TEXT = (
     "• remove duplicates of column age\n"
     "• drop column notes\n"
     "• rename column dob to date_of_birth\n"
+    "• create a new column called revenue  (creates an empty column)\n"
+    "• fill revenue with price * quantity  (also: populate / update / set)\n"
     "• create column total as price * quantity  (math operations)\n"
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
@@ -586,6 +646,14 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
 
     # ---- create new column with math expression ----
     if any(term in ql for term in ("create", "add", "new column")):
+        empty_col_name = _parse_empty_column_name(q)
+        if empty_col_name:
+            if empty_col_name in columns:
+                return df, f"Column '{empty_col_name}' already exists."
+            new_df = df.copy()
+            new_df[empty_col_name] = pd.NA
+            return new_df, f"Created empty column '{empty_col_name}'."
+
         # First check if this is an aggregate operation (sum/mean/multiply all columns)
         aggregate_match = re.search(
             r"(?:create|add|new)\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+|named\s+)?(\w+)\s+"
@@ -620,23 +688,14 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         expr, new_col_name = _parse_math_expression(q, df)
         
         if expr and new_col_name:
-            # Validate the expression by trying to evaluate on first non-null row
-            test_row = df.dropna().iloc[0] if len(df.dropna()) > 0 else df.iloc[0]
-            test_result = _safe_eval_math(expr, df, test_row)
-            
-            if test_result is None:
-                return df, f"Could not evaluate the expression '{expr}'. Make sure it uses valid column names and operators (+, -, *, /, **, %)."
-            
-            # Create the new column
-            new_df = df.copy()
-            try:
-                new_df[new_col_name] = df.apply(lambda row: _safe_eval_math(expr, df, row), axis=1)
-                return new_df, f"Created new column '{new_col_name}' with expression: {expr}"
-            except Exception as e:
-                return df, f"Error creating column: {e}"
+            if new_col_name in columns:
+                return df, f"Column '{new_col_name}' already exists. Use: fill {new_col_name} with {expr}"
+            return _apply_math_expression_to_column(df, new_col_name, expr, "Created new column")
         else:
             return df, (
                 "To create a new column, use formats like:\n"
+                "• create a new column called revenue  (empty column)\n"
+                "• fill revenue with price * quantity\n"
                 "• create column total as price * quantity\n"
                 "• add new column tax as price * 0.15\n"
                 "• new column profit = revenue - cost\n"
@@ -686,6 +745,24 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if not new_name:
             return df, "Tell me the new name, for example: rename dob to date_of_birth."
         return df.rename(columns={old_col: new_name}), f"Renamed column '{old_col}' to '{new_name}'."
+
+    # ---- fill/update an existing column with a math expression ----
+    if (
+        re.search(r"\b(?:fill|populate|update|set|calculate|compute)\b", ql)
+        and not re.search(r"\b(?:fill|populate|impute|replace\s+missing)\s+(?:missing|na|null|empty)\b", ql)
+    ):
+        expr, target_text = _parse_fill_column_expression(q)
+        if expr and target_text:
+            target_key = target_text.strip().lower()
+            if target_key in ("it", "new column", "empty column", "blank column", "the new column"):
+                target_col = _only_empty_column(df)
+                if not target_col:
+                    return df, "Tell me which column to fill, for example: fill revenue with price * quantity."
+            else:
+                target_col = _match_col(target_text, columns)
+                if not target_col:
+                    return df, f"I couldn't find a column matching '{target_text}'. Available columns: {', '.join(columns)}."
+            return _apply_math_expression_to_column(df, target_col, expr, "Filled column")
 
     # ---- fill missing ----
     m = re.search(r"\bfill\s+(?:missing|na|null|empty)\s*(?:values?)?\s*(?:in\s+)?(.+?)\s+with\s+(.+)", ql) or \
