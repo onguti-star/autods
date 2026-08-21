@@ -212,6 +212,34 @@ def _render_notes_html(raw: str) -> str:
     return "".join(out)
 
 
+def _render_data_preview_table_html(df, title: str, anchor_id: str, icon: str = "👀", n: int = 15) -> str:
+    """Builds one '<h2>+<table>' block for a data preview section. Used twice
+    in the HTML report: once near the top for the original/uncleaned data,
+    and once right after the Data Cleaning Log for the current/updated data."""
+    preview = eda.safe_preview(df, n)
+    parts = [f'        <h2 class="section-title" id="{anchor_id}">{icon} {html.escape(title)}</h2>',
+             '        <div class="data-preview">',
+             '            <table class="table">']
+    if preview:
+        headers = list(preview[0].keys())
+        parts.append("                <thead><tr>")
+        for h in headers:
+            parts.append(f"<th>{html.escape(str(h))}</th>")
+        parts.append("                </tr></thead>")
+        parts.append("                <tbody>")
+        for row in preview:
+            parts.append("                    <tr>")
+            for h in headers:
+                val = _fmt_report_value(row.get(h))
+                parts.append(f"<td>{html.escape(val)}</td>")
+            parts.append("                    </tr>")
+        parts.append("                </tbody>")
+    parts.append("            </table>")
+    parts.append(f'            <p class="report-meta" style="margin-top:8px;">Showing first {min(n, len(df)):,} of {len(df):,} rows.</p>')
+    parts.append("        </div>")
+    return "\n".join(parts)
+
+
 def _build_html_report(session, extra_charts=None) -> str:
     """Build a styled HTML presentation report."""
     profile = eda.profile_dataframe(session.df)
@@ -221,7 +249,6 @@ def _build_html_report(session, extra_charts=None) -> str:
     charts = list(extra_charts or [])
     chart_data_json = json.dumps(charts)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    preview_title = "Cleaned Data Preview (First 10 Rows)" if _has_cleaning_history(session) else "Data Preview (First 10 Rows)"
     
     # HTML structure with Bootstrap 5 CDN + inline styling
     html_parts = []
@@ -637,7 +664,8 @@ def _build_html_report(session, extra_charts=None) -> str:
     html_parts.append("""        <div class="toc">
             <h3>📋 Table of Contents</h3>
             <ul>
-                <li><a href="#dataset">Dataset Overview</a></li>""")
+                <li><a href="#dataset">Dataset Overview</a></li>
+                <li><a href="#original-preview">Original Data (First 15 Rows)</a></li>""")
     if getattr(session, "notes", "").strip():
         html_parts.append('                <li><a href="#notes">Notes</a></li>')
     html_parts.append("""                <li><a href="#summary">EDA Summary</a></li>
@@ -650,6 +678,7 @@ def _build_html_report(session, extra_charts=None) -> str:
     
     if _has_cleaning_history(session):
         html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
+    html_parts.append('                <li><a href="#updated-preview">Updated Data (First 15 Rows)</a></li>')
     if session.leaderboard or session.saved_runs:
         html_parts.append('                <li><a href="#training">Model Training Results</a></li>')
     if session.saved_predictions:
@@ -657,8 +686,7 @@ def _build_html_report(session, extra_charts=None) -> str:
     if session.unsupervised_results:
         html_parts.append('                <li><a href="#unsupervised">Unsupervised Learning</a></li>')
     
-    html_parts.append(f"""                <li><a href="#preview">{html.escape(preview_title)}</a></li>
-            </ul>
+    html_parts.append("""            </ul>
         </div>""")
     
     # Dataset Overview Section
@@ -698,6 +726,12 @@ def _build_html_report(session, extra_charts=None) -> str:
             <div class="stat-value">{type_counts.get('text', 0):,}</div>
         </div>
         </div>""")
+
+    # Original Data Section — the raw, untouched data before any cleaning.
+    # Placed near the top so it's the frozen "before" reference for the rest of the report.
+    html_parts.append(_render_data_preview_table_html(
+        session.original_df, "Original Data (First 15 Rows)", "original-preview", icon="🔒"
+    ))
 
     # Notes Section — free-form notes the user wrote about this dataset
     if getattr(session, "notes", "").strip():
@@ -931,7 +965,13 @@ def _build_html_report(session, extra_charts=None) -> str:
             ✓ <strong>{command}</strong><br>
             <span>{message}</span>
         </div>""")
-    
+
+    # Updated Data Section — reflects the current state of the data, right
+    # after the cleaning log so it's easy to see the "before vs. after" together.
+    html_parts.append(_render_data_preview_table_html(
+        session.df, "Updated Data (First 15 Rows)", "updated-preview", icon="✅"
+    ))
+
     # Model Training Section — covers every trained model, not just the current one
     all_runs = []
     # Saved runs first (auto-saved or manually saved)
@@ -1127,34 +1167,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                 html_parts.append("            </tbody></table>")
             html_parts.append("        </div>")
     
-    # Data Preview Section
-    html_parts.append(f"""        <h2 class="section-title" id="preview">👀 {html.escape(preview_title)}</h2>
-        <div class="data-preview">
-            <table class="table">""")
-    
-    preview = eda.safe_preview(session.df, 10)
-    if preview:
-        headers = list(preview[0].keys())
-        html_parts.append("                <thead><tr>")
-        for h in headers:
-            html_parts.append(f"<th>{html.escape(str(h))}</th>")
-        html_parts.append("                </tr></thead>")
-        html_parts.append("                <tbody>")
-        
-        for row in preview:
-            html_parts.append("                    <tr>")
-            for h in headers:
-                val = _fmt_report_value(row.get(h))
-                html_parts.append(f"<td>{html.escape(val)}</td>")
-            html_parts.append("                    </tr>")
-        
-        html_parts.append("                </tbody>")
-    else:
-        html_parts.append("        <p>No preview rows available.</p>")
-    
-    html_parts.append("""            </table>
-        </div>
-    </div>
+    html_parts.append("""    </div>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         function copyReportLink() {
