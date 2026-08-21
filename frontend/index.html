@@ -981,6 +981,7 @@ function _doAutoSave(){
         cleanLog:           st.cleanLog            || null,
         cleanLogHtml:       st.cleanLogHtml        || "",
         liveProfile:        st.liveProfile         || null,
+        notes:              st.notes               || "",
         panelCleanVisible:  st.panelCleanVisible   || false,
         panelVizVisible:    st.panelVizVisible     || false,
         panelSimVisible:    st.panelSimVisible     || false,
@@ -1193,6 +1194,7 @@ function addDataset(){
   dsState[id] = {};
   renderDsTabs();
   autoSave();
+  if(typeof window.refreshPeek === "function") window.refreshPeek();
   // Only scroll if page is already loaded (not during init)
   if(document.readyState === "complete") scrollPanel("panelUpload");
 }
@@ -4961,6 +4963,180 @@ document.addEventListener("DOMContentLoaded", () => {
 #fab.open  { background: var(--cyan); }
 #fab .fab-icon { pointer-events: none; line-height: 1; }
 
+/* ── peek FAB (updated-data preview) — sits just left of the assistant FAB ── */
+#peekFab {
+  position: fixed;
+  bottom: 28px;
+  right: 92px;
+  width: 52px;
+  height: 52px;
+  background: var(--panel);
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  transition: transform .18s, box-shadow .18s, background .15s;
+  z-index: 9999;
+  user-select: none;
+}
+#peekFab:hover { transform: scale(1.1); box-shadow: 0 6px 24px rgba(0,0,0,0.55); }
+#peekFab.open  { background: var(--cyan); color: #041014; }
+#peekFab .fab-icon { pointer-events: none; line-height: 1; }
+
+#peekPanel {
+  position: fixed;
+  bottom: 92px;
+  right: 28px;
+  width: 460px;
+  max-height: 480px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+  z-index: 9998;
+  transition: opacity .18s, transform .18s;
+  transform-origin: bottom right;
+}
+#peekPanel.hidden { opacity: 0; pointer-events: none; transform: scale(0.92); }
+#peekPanel::before {
+  content: ""; position: absolute; width: 9px; height: 9px;
+  border-top: 2px solid var(--accent-dim); border-left: 2px solid var(--accent-dim);
+  top: -1px; left: -1px;
+}
+#peekPanel::after {
+  content: ""; position: absolute; width: 9px; height: 9px;
+  border-bottom: 2px solid var(--accent-dim); border-right: 2px solid var(--accent-dim);
+  bottom: -1px; right: -1px;
+}
+#peekHeader {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px 8px; border-bottom: 1px solid var(--panel-border); flex-shrink: 0;
+}
+#peekHeaderTitle {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 1.2px; color: var(--cyan); display: flex; align-items: center; gap: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#peekHeaderTitle .fab-label { color: var(--accent); }
+#peekCloseBtn {
+  background: transparent; border: 1px solid var(--panel-border); color: var(--ink-dim);
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 3px 8px; cursor: pointer;
+  line-height: 1; flex-shrink: 0; margin-left: 8px;
+}
+#peekCloseBtn:hover { color: var(--bad); border-color: var(--bad); }
+#peekBody { flex: 1; overflow: auto; padding: 10px 14px 14px; }
+#peekBody .hint { margin: 0 0 8px; }
+#peekEmpty { padding: 20px 4px; font-size: 12px; color: var(--ink-dim); text-align: center; }
+@media (max-width: 480px) {
+  #peekPanel { width: calc(100vw - 24px); right: 12px; }
+  #peekFab { right: 78px; width: 46px; height: 46px; }
+}
+
+/* ── notes FAB (pen icon) — sits left of the peek FAB ── */
+#notesFab {
+  position: fixed;
+  bottom: 28px;
+  right: 156px;
+  width: 52px;
+  height: 52px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 19px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  transition: transform .18s, box-shadow .18s, background .15s;
+  z-index: 9999;
+  user-select: none;
+}
+#notesFab:hover { transform: scale(1.1); box-shadow: 0 6px 24px rgba(0,0,0,0.55); }
+#notesFab.open  { background: var(--accent); color: #1a1300; }
+#notesFab .fab-icon { pointer-events: none; line-height: 1; }
+#notesDot {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 10px; height: 10px;
+  background: var(--good);
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  display: none;
+}
+
+#notesPanel {
+  position: fixed;
+  bottom: 92px;
+  right: 28px;
+  width: 400px;
+  max-height: 460px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+  z-index: 9998;
+  transition: opacity .18s, transform .18s;
+  transform-origin: bottom right;
+}
+#notesPanel.hidden { opacity: 0; pointer-events: none; transform: scale(0.92); }
+#notesPanel::before {
+  content: ""; position: absolute; width: 9px; height: 9px;
+  border-top: 2px solid var(--accent-dim); border-left: 2px solid var(--accent-dim);
+  top: -1px; left: -1px;
+}
+#notesPanel::after {
+  content: ""; position: absolute; width: 9px; height: 9px;
+  border-bottom: 2px solid var(--accent-dim); border-right: 2px solid var(--accent-dim);
+  bottom: -1px; right: -1px;
+}
+#notesHeader {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px 8px; border-bottom: 1px solid var(--panel-border); flex-shrink: 0;
+}
+#notesHeaderTitle {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 1.2px; color: var(--accent); display: flex; align-items: center; gap: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#notesCloseBtn {
+  background: transparent; border: 1px solid var(--panel-border); color: var(--ink-dim);
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 3px 8px; cursor: pointer;
+  line-height: 1; flex-shrink: 0; margin-left: 8px;
+}
+#notesCloseBtn:hover { color: var(--bad); border-color: var(--bad); }
+#notesBody { flex: 1; overflow: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 8px; }
+#notesBody .hint { margin: 0; }
+#notesTextarea {
+  flex: 1;
+  min-height: 220px;
+  width: 100%;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--panel-border);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 10px;
+  box-sizing: border-box;
+}
+#notesTextarea:focus { outline: none; border-color: var(--accent); }
+#notesStatus { font-size: 10.5px; color: var(--ink-dim); font-family: 'IBM Plex Mono', monospace; min-height: 14px; }
+#notesEmpty { padding: 20px 4px; font-size: 12px; color: var(--ink-dim); text-align: center; }
+@media (max-width: 480px) {
+  #notesPanel { width: calc(100vw - 24px); right: 12px; }
+  #notesFab { right: 142px; width: 46px; height: 46px; }
+}
+
 /* ── notification dot ── */
 #fabDot {
   position: absolute;
@@ -5180,6 +5356,44 @@ document.addEventListener("DOMContentLoaded", () => {
   #fab { bottom: 18px; right: 14px; }
 }
 </style>
+
+<!-- Notes FAB — write free-form notes about the current dataset -->
+<button id="notesFab" title="Notes about this dataset">
+  <span class="fab-icon">✎</span>
+  <span id="notesDot"></span>
+</button>
+
+<!-- Notes panel -->
+<div id="notesPanel" class="hidden">
+  <div id="notesHeader">
+    <div id="notesHeaderTitle"><span class="fab-label">✎</span> <span id="notesHeaderName">Notes</span></div>
+    <button id="notesCloseBtn" onclick="toggleNotes()">✕ close</button>
+  </div>
+  <div id="notesBody">
+    <p class="hint">Your own notes about this dataset — saved automatically, and included in the downloaded work report and HTML report.</p>
+    <textarea id="notesTextarea" placeholder="e.g. Source: exported from the CRM on Aug 20. 'balance' is in GBP. Ignore rows before 2019 — bad import."></textarea>
+    <div id="notesStatus"></div>
+    <div id="notesEmpty" style="display:none;">Load a dataset first to add notes.</div>
+  </div>
+</div>
+
+<!-- Peek FAB — shows first 15 rows of the updated/live dataset -->
+<button id="peekFab" title="Peek at updated data (first 15 rows)">
+  <span class="fab-icon">⊞</span>
+</button>
+
+<!-- Peek panel -->
+<div id="peekPanel" class="hidden">
+  <div id="peekHeader">
+    <div id="peekHeaderTitle"><span class="fab-label">⊞</span> <span id="peekHeaderName">Updated data</span></div>
+    <button id="peekCloseBtn" onclick="togglePeek()">✕ close</button>
+  </div>
+  <div id="peekBody">
+    <p class="hint" style="margin-top:0;">First 15 rows of the current dataset's latest state — updates automatically as you clean or switch tabs.</p>
+    <div id="peekTableWrap"></div>
+    <div id="peekEmpty" style="display:none;">No data yet for this tab. Load or clean a dataset to see it here.</div>
+  </div>
+</div>
 
 <!-- FAB button -->
 <button id="fab" title="Ask about your data (AI assistant)">
@@ -5446,6 +5660,227 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
+})();
+</script>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   PEEK WIDGET — first 15 rows of the current tab's updated data
+   Reads from dsState directly, so switching tabs never wipes it —
+   it just re-reads whichever dataset is active at the moment.
+   ═══════════════════════════════════════════════════════ */
+(function(){
+  const peekFab   = document.getElementById("peekFab");
+  const peekPanel = document.getElementById("peekPanel");
+  const nameEl    = document.getElementById("peekHeaderName");
+  const tableWrap = document.getElementById("peekTableWrap");
+  const emptyEl   = document.getElementById("peekEmpty");
+
+  let peekOpen = false;
+
+  function togglePeek(){
+    peekOpen = !peekOpen;
+    peekPanel.classList.toggle("hidden", !peekOpen);
+    peekFab.classList.toggle("open", peekOpen);
+    if(peekOpen) refreshPeek();
+  }
+  peekFab.addEventListener("click", togglePeek);
+  window.togglePeek = togglePeek;
+
+  // Pulls straight from dsState[activeDs] every time — never caches stale
+  // data from a previously-viewed tab, and never mutates any app state.
+  function refreshPeek(){
+    if(!peekOpen) return;
+    const id = (typeof activeDs !== "undefined") ? activeDs : null;
+    const state = (typeof dsState !== "undefined" && id) ? (dsState[id] || {}) : {};
+    const ds = (typeof datasets !== "undefined") ? datasets.find(d => d.id === id) : null;
+
+    nameEl.textContent = ds ? `Updated data — ${ds.name}` : "Updated data";
+
+    // Prefer the live/cleaned profile; fall back to the original profile
+    // if nothing has been cleaned yet for this dataset.
+    const profile = state.liveProfile || state.profile;
+
+    if(!profile || !profile.preview || !profile.preview.length){
+      tableWrap.innerHTML = "";
+      emptyEl.style.display = "block";
+      return;
+    }
+    emptyEl.style.display = "none";
+    // renderPreview() is defined in the main app script and already caps at 15 rows
+    renderPreview(profile.columns, profile.preview.slice(0, 15), "peekTableWrap");
+  }
+  window.refreshPeek = refreshPeek;
+
+  // Hook into tab switching so an already-open panel updates live instead
+  // of showing the previous tab's rows until the user closes and reopens it.
+  const origSwitchDataset = window.switchDataset;
+  if(typeof origSwitchDataset === "function"){
+    window.switchDataset = function(id){
+      origSwitchDataset(id);
+      refreshPeek();
+    };
+  }
+
+  // Same idea for renaming — keep the panel title in sync immediately.
+  const origRename = window.renameActiveDataset;
+  if(typeof origRename === "function"){
+    window.renameActiveDataset = function(){
+      origRename();
+      refreshPeek();
+    };
+  }
+
+  // And whenever the "Updated data" table elsewhere on the page refreshes
+  // (after cleaning, chat edits, etc.) keep this panel in step with it.
+  const origRenderUpdated = window.renderUpdatedPreview;
+  if(typeof origRenderUpdated === "function"){
+    window.renderUpdatedPreview = function(profile){
+      origRenderUpdated(profile);
+      refreshPeek();
+    };
+  }
+  // Loading a dataset's profile (new tab created, filter-split result, etc.)
+  // is the other moment the peek panel's data can go stale — refresh it too.
+  const origLoadEDA = window.loadEDA;
+  if(typeof origLoadEDA === "function"){
+    window.loadEDA = async function(...args){
+      const result = await origLoadEDA.apply(this, args);
+      refreshPeek();
+      return result;
+    };
+  }
+})();
+</script>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   NOTES WIDGET — free-form notes per dataset.
+   Saved to dsState (survives reload via localStorage) AND to the
+   backend session (so downloaded reports can include them).
+   ═══════════════════════════════════════════════════════ */
+(function(){
+  const notesFab   = document.getElementById("notesFab");
+  const notesPanel = document.getElementById("notesPanel");
+  const nameEl     = document.getElementById("notesHeaderName");
+  const textarea   = document.getElementById("notesTextarea");
+  const statusEl   = document.getElementById("notesStatus");
+  const emptyEl    = document.getElementById("notesEmpty");
+  const dot        = document.getElementById("notesDot");
+
+  let notesOpen = false;
+  let saveTimer = null;
+  let loadedForDs = null;   // which dataset id the textarea currently reflects
+  let fetchToken = 0;       // guards against a slow fetch landing after a tab switch
+
+  function toggleNotes(){
+    notesOpen = !notesOpen;
+    notesPanel.classList.toggle("hidden", !notesOpen);
+    notesFab.classList.toggle("open", notesOpen);
+    dot.style.display = "none";
+    if(notesOpen){
+      loadNotesForActiveDs();
+      textarea.focus();
+    }
+  }
+  notesFab.addEventListener("click", toggleNotes);
+  window.toggleNotes = toggleNotes;
+
+  function currentSid(){
+    return (typeof getSid === "function") ? getSid() : null;
+  }
+
+  // Populates the textarea for whatever dataset is now active. Cheap local
+  // cache first (instant, no flicker), then reconciles with the backend copy
+  // in case the two ever drift (e.g. notes saved from a different device/tab).
+  async function loadNotesForActiveDs(){
+    const id  = (typeof activeDs !== "undefined") ? activeDs : null;
+    const sid = currentSid();
+    const ds  = (typeof datasets !== "undefined") ? datasets.find(d => d.id === id) : null;
+
+    nameEl.textContent = ds ? `Notes — ${ds.name}` : "Notes";
+    loadedForDs = id;
+
+    if(!sid){
+      textarea.style.display = "none";
+      emptyEl.style.display = "block";
+      statusEl.textContent = "";
+      return;
+    }
+    textarea.style.display = "";
+    emptyEl.style.display = "none";
+
+    const state = (typeof dsState !== "undefined" && id) ? (dsState[id] || {}) : {};
+    textarea.value = state.notes || "";
+
+    if(!notesOpen) return;
+    const myToken = ++fetchToken;
+    try{
+      const apiBase = (typeof API !== "undefined") ? API : "";
+      const res = await fetch(`${apiBase}/notes/${sid}`);
+      if(!res.ok) return;
+      const data = await res.json();
+      // Only apply if we're still looking at the same dataset/tab and the
+      // user hasn't already typed something newer in the meantime.
+      if(myToken === fetchToken && loadedForDs === id && document.activeElement !== textarea){
+        textarea.value = data.notes || "";
+        if(typeof setDatasetState === "function") setDatasetState(id, { notes: textarea.value });
+      }
+    }catch(e){ /* keep the locally-cached value on any network hiccup */ }
+  }
+  window.loadNotesForActiveDs = loadNotesForActiveDs;
+
+  // Debounced autosave: local state immediately, backend after a short pause.
+  textarea.addEventListener("input", () => {
+    const id = loadedForDs;
+    if(!id) return;
+    if(typeof setDatasetState === "function") setDatasetState(id, { notes: textarea.value });
+    statusEl.textContent = "Saving…";
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveNotesToBackend(id, textarea.value), 700);
+  });
+
+  async function saveNotesToBackend(id, value){
+    const sid = (typeof dsState !== "undefined" && dsState[id]) ? dsState[id].sessionId : null;
+    if(!sid){ statusEl.textContent = ""; return; }
+    try{
+      const apiBase = (typeof API !== "undefined") ? API : "";
+      const res = await fetch(`${apiBase}/notes/${sid}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: value })
+      });
+      if(!res.ok) throw new Error();
+      // Only update the status line if the user hasn't since switched tabs
+      if(loadedForDs === id) statusEl.textContent = "✓ Saved";
+    }catch(e){
+      if(loadedForDs === id) statusEl.textContent = "Couldn't save — will retry on next edit.";
+    }
+  }
+
+  // Keep the panel in sync with whichever tab is active, same pattern as the peek widget.
+  const origSwitchDataset = window.switchDataset;
+  if(typeof origSwitchDataset === "function"){
+    window.switchDataset = function(id){
+      origSwitchDataset(id);
+      if(notesOpen) loadNotesForActiveDs();
+    };
+  }
+  const origRename = window.renameActiveDataset;
+  if(typeof origRename === "function"){
+    window.renameActiveDataset = function(){
+      origRename();
+      if(notesOpen) loadNotesForActiveDs();
+    };
+  }
+  const origLoadEDA2 = window.loadEDA;
+  if(typeof origLoadEDA2 === "function"){
+    window.loadEDA = async function(...args){
+      const result = await origLoadEDA2.apply(this, args);
+      if(notesOpen) loadNotesForActiveDs();
+      return result;
+    };
+  }
 })();
 </script>
 </body>
