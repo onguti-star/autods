@@ -231,3 +231,31 @@ def delete_session(session_id: str):
     """Remove a session from memory and disk."""
     SESSIONS.pop(session_id, None)
     _delete_session_files(session_id)
+
+
+def purge_stale_session_files(max_age_days: int = 7) -> int:
+    """Delete .sessions/ CSV files that are (a) older than max_age_days AND
+    (b) not backing any session currently held in memory. This cleans up
+    files left behind by dataset tabs that were closed before the delete
+    endpoint existed, or sessions orphaned by a server crash/restart.
+    Returns the number of files removed."""
+    removed = 0
+    cutoff = datetime.now().timestamp() - (max_age_days * 86400)
+    try:
+        active_ids = set(SESSIONS.keys())
+        for fname in os.listdir(_SESSION_DIR):
+            if not fname.endswith(".csv"):
+                continue
+            session_id = fname.replace("_original.csv", "").replace(".csv", "")
+            if session_id in active_ids:
+                continue
+            fpath = os.path.join(_SESSION_DIR, fname)
+            try:
+                if os.path.getmtime(fpath) < cutoff:
+                    os.remove(fpath)
+                    removed += 1
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return removed

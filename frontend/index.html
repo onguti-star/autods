@@ -1085,6 +1085,14 @@ function confirmCloseDataset(){
 function _removeDataset(id){
   const idx = datasets.findIndex(d => d.id === id);
   if(idx === -1) return;
+
+  // Tell the backend to drop this session's files too, so closing a tab
+  // actually frees disk space instead of leaving orphaned CSVs behind.
+  const closingSid = dsState[id]?.sessionId;
+  if(closingSid){
+    fetch(`${API}/session/${closingSid}`, { method: "DELETE" }).catch(() => {});
+  }
+
   datasets.splice(idx, 1);
   delete dsState[id];
 

@@ -35,7 +35,7 @@ from . import simulation as simulation_module
 from . import unsupervised
 from . import viz
 from .main_report import _build_html_report
-from .store import SESSIONS, create_session, get_session
+from .store import SESSIONS, create_session, get_session, delete_session, purge_stale_session_files
 
 app = FastAPI(title="AutoDS")
 
@@ -50,6 +50,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _cleanup_stale_sessions_on_startup():
+    """Sweep .sessions/ for CSV files from long-closed or crashed sessions so
+    disk usage doesn't grow unbounded run after run."""
+    purge_stale_session_files(max_age_days=7)
+
 
 
 @app.exception_handler(500)
@@ -1724,6 +1732,15 @@ def _get_session_or_404(session_id: str):
         return get_session(session_id)
     except KeyError:
         raise HTTPException(404, "Session not found. Please re-upload your file.")
+
+
+@app.delete("/api/session/{session_id}")
+def delete_session_endpoint(session_id: str):
+    """Removes this session from memory and deletes its two on-disk CSV copies
+    (current + original) from .sessions/. Called when a dataset tab is closed
+    so storage doesn't grow forever."""
+    delete_session(session_id)
+    return {"ok": True}
 
 
 @app.get("/api/progress/{session_id}")
