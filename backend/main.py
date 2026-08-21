@@ -563,6 +563,25 @@ class TypeChangeRequest(BaseModel):
     dtype: Literal["integer", "float", "text", "category", "datetime", "date", "time", "boolean"]
 
 
+class NotesRequest(BaseModel):
+    notes: str = Field(default="", max_length=20000)
+
+
+@app.post("/api/notes/{session_id}")
+def save_notes(session_id: str, req: NotesRequest):
+    """Free-form notes the user writes about a dataset. Kept on the session so
+    the work report (.md) and HTML report can include them under a Notes section."""
+    session = _get_session_or_404(session_id)
+    session.notes = req.notes
+    return {"ok": True, "notes": session.notes}
+
+
+@app.get("/api/notes/{session_id}")
+def get_notes(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {"notes": getattr(session, "notes", "")}
+
+
 def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFrame, str]:
     if column not in df.columns:
         raise HTTPException(400, f"Column '{column}' not found.")
@@ -861,9 +880,14 @@ def _build_work_report(session) -> str:
         f"- Duplicate rows: {profile['duplicate_rows']:,}",
         f"- Missing cells: {profile['total_missing_cells']:,} of {profile['total_cells']:,}",
         "",
-        "## Summary",
-        "",
     ]
+
+    if getattr(session, "notes", "").strip():
+        lines.extend(["## Notes", ""])
+        lines.extend(session.notes.strip().splitlines())
+        lines.append("")
+
+    lines.extend(["## Summary", ""])
 
     lines.extend(f"- {note}" for note in narrative)
     lines.extend(["", "## Columns", ""])

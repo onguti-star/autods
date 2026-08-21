@@ -588,8 +588,10 @@ def _build_html_report(session, extra_charts=None) -> str:
     html_parts.append("""        <div class="toc">
             <h3>📋 Table of Contents</h3>
             <ul>
-                <li><a href="#dataset">Dataset Overview</a></li>
-                <li><a href="#summary">EDA Summary</a></li>
+                <li><a href="#dataset">Dataset Overview</a></li>""")
+    if getattr(session, "notes", "").strip():
+        html_parts.append('                <li><a href="#notes">Notes</a></li>')
+    html_parts.append("""                <li><a href="#summary">EDA Summary</a></li>
                 <li><a href="#quality">Data Quality Details</a></li>
                 <li><a href="#describe">Data Describe Summary</a></li>
                 <li><a href="#columns">Column Analysis</a></li>
@@ -647,7 +649,15 @@ def _build_html_report(session, extra_charts=None) -> str:
             <div class="stat-value">{type_counts.get('text', 0):,}</div>
         </div>
         </div>""")
-    
+
+    # Notes Section — free-form notes the user wrote about this dataset
+    if getattr(session, "notes", "").strip():
+        notes_html = html.escape(session.notes.strip()).replace("\n", "<br>")
+        html_parts.append(f"""        <h2 class="section-title" id="notes">🖊️ Notes</h2>
+        <div class="narrative-text">
+            <p>{notes_html}</p>
+        </div>""")
+
     # EDA Summary Section
     html_parts.append("""        <h2 class="section-title" id="summary">📝 EDA Summary</h2>
         <div class="narrative-text">""")

@@ -88,6 +88,7 @@ class Session:
         self.unsupervised_results: dict = {}       # latest unsupervised analysis snapshots for reports
         self.progress_messages: list = []          # progress messages for long-running operations
         self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
+        self.notes: str = ""                        # free-form user notes about this dataset, shown in downloads
         # Persist to disk immediately on creation
         _save_df_to_disk(self.id, self.df, self.original_df)
 
