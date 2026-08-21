@@ -1,6 +1,7 @@
 import io
 import html
 import json
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -161,6 +162,54 @@ def _report_feature_importance(session) -> list:
     except Exception:
         return []
     return []
+
+
+def _render_notes_html(raw: str) -> str:
+    """Render the lightweight formatting used by the notes widget's toolbar:
+    **bold**, *italic*, ~~strike~~, <u>underline</u>, '- ' bullet lists, and
+    '1. ' numbered lists. Mirrors renderNotesMarkup() in the frontend so the
+    preview there matches what shows up in this downloaded report."""
+    if not raw or not raw.strip():
+        return ""
+
+    esc = html.escape(raw)
+    esc = esc.replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>")
+    esc = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)
+    esc = re.sub(r"~~(.+?)~~", r"<del>\1</del>", esc)
+    esc = re.sub(r"(^|[^*])\*(?!\*)(.+?)\*(?!\*)", r"\1<em>\2</em>", esc)
+
+    lines = esc.split("\n")
+    out: list[str] = []
+    list_buf: list[str] = []
+    list_type: str | None = None
+
+    def flush_list():
+        nonlocal list_buf, list_type
+        if list_buf:
+            items = "".join(f"<li>{item}</li>" for item in list_buf)
+            out.append(f"<{list_type}>{items}</{list_type}>")
+            list_buf = []
+        list_type = None
+
+    for line in lines:
+        bullet_m = re.match(r"^-\s+(.*)", line)
+        number_m = re.match(r"^\d+\.\s+(.*)", line)
+        if bullet_m:
+            if list_type != "ul":
+                flush_list()
+                list_type = "ul"
+            list_buf.append(bullet_m.group(1))
+        elif number_m:
+            if list_type != "ol":
+                flush_list()
+                list_type = "ol"
+            list_buf.append(number_m.group(1))
+        else:
+            flush_list()
+            if line.strip():
+                out.append(f"<p>{line}</p>")
+    flush_list()
+    return "".join(out)
 
 
 def _build_html_report(session, extra_charts=None) -> str:
@@ -652,10 +701,10 @@ def _build_html_report(session, extra_charts=None) -> str:
 
     # Notes Section — free-form notes the user wrote about this dataset
     if getattr(session, "notes", "").strip():
-        notes_html = html.escape(session.notes.strip()).replace("\n", "<br>")
+        notes_html = _render_notes_html(session.notes)
         html_parts.append(f"""        <h2 class="section-title" id="notes">🖊️ Notes</h2>
         <div class="narrative-text">
-            <p>{notes_html}</p>
+            {notes_html}
         </div>""")
 
     # EDA Summary Section
