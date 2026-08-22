@@ -161,6 +161,40 @@ def _find_columns_in_text(text: str, columns: list) -> list:
     return found
 
 
+# Words like "starts with", "contains", etc. — used both to detect a
+# conditional lookup ("how many ... start with ... in COLUMN") and to stop
+# an unconditional "how many rows" match from firing when a condition is
+# actually present in the question.
+_CONDITION_OP_PATTERN = re.compile(
+    r"\b(?:start(?:s|ed|ing)?\s+with|begin(?:s|ning)?\s+with|end(?:s|ed|ing)?\s+with|contains?|includes?)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _correct_column_typos(text: str, columns: list) -> str:
+    """Best-effort fix for a misspelled/squashed column name in free text —
+    e.g. 'invoiveno' -> 'InvoiceNo' — so the exact-match condition parser
+    (_parse_row_conditions) can still find it. _find_columns_in_text already
+    fuzzy-*detects* mentions like this; this function actually rewrites the
+    text so downstream regex matching against the real column name works."""
+    words = re.findall(r"[A-Za-z0-9_]+", text)
+    corrected = text
+    for col in columns:
+        col_str = str(col)
+        col_squashed = _normalise_text(col_str).replace(" ", "")
+        if len(col_squashed) <= 3:
+            continue
+        for word in words:
+            word_norm = _normalise_text(word)
+            if len(word_norm) <= 3 or word_norm == col_squashed:
+                continue
+            max_len = max(len(word_norm), len(col_squashed))
+            ratio = 1 - _levenshtein(word_norm, col_squashed) / max_len
+            if ratio >= 0.72:
+                corrected = re.sub(rf"\b{re.escape(word)}\b", col_str, corrected, flags=re.IGNORECASE)
+    return corrected
+
+
 def _is_numeric(s: pd.Series) -> bool:
     return pd.api.types.is_numeric_dtype(s)
 
@@ -979,8 +1013,18 @@ def _parse_row_conditions(question: str, columns: list) -> list:
     for col, _, col_raw in col_patterns:
         matched_op = False
         for op_name, op_regex in op_variants:
-            pattern = rf"\b{col_raw}\b\s*(?:that\s+|which\s+)?{op_regex}\s*['\"]?(.+?)['\"]?{boundary}"
-            match = re.search(pattern, text, flags=re.IGNORECASE)
+            # Forward phrasing: "InvoiceNo starts with c"
+            forward = rf"\b{col_raw}\b\s*(?:that\s+|which\s+)?{op_regex}\s*['\"]?(.+?)['\"]?{boundary}"
+            match = re.search(forward, text, flags=re.IGNORECASE)
+            if match:
+                value = match.group(1).strip(" '\"?.,:;-")
+                if value:
+                    conditions.append((col, op_name, value))
+                    matched_op = True
+                break
+            # Reversed phrasing: "starts with c in InvoiceNo" / "starts with c in the InvoiceNo column"
+            reversed_pattern = rf"{op_regex}\s*['\"]?(.+?)['\"]?\s+in\s+(?:the\s+)?{col_raw}\b(?:\s+column)?"
+            match = re.search(reversed_pattern, text, flags=re.IGNORECASE)
             if match:
                 value = match.group(1).strip(" '\"?.,:;-")
                 if value:
@@ -1076,7 +1120,9 @@ def _lookup_rows_by_conditions(df: pd.DataFrame, conditions: list) -> tuple[str,
 
 
 def _lookup_rows(df: pd.DataFrame, question: str, mentioned: list) -> tuple[str, pd.DataFrame | None]:
-    condition_text, condition_table = _lookup_rows_by_conditions(df, _parse_row_conditions(question, list(df.columns)))
+    columns = list(df.columns)
+    corrected_for_columns = _correct_column_typos(question, columns)
+    condition_text, condition_table = _lookup_rows_by_conditions(df, _parse_row_conditions(corrected_for_columns, columns))
     if condition_text:
         return condition_text, condition_table
 
@@ -1522,6 +1568,7 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
         or re.search(r"\b(show|get)\s+(me\s+)?(the\s+)?(rows?|records?|details|data|information)\b", q)
         or re.search(r"\b(rows?|records?|details)\s+(of|for|about|with|in|that)\b", q)
         or re.search(r"\bwhere\s+is\b", q)
+        or (re.search(r"\b(how many|count of|number of)\b", q) and _CONDITION_OP_PATTERN.search(q))
     )
     if not lookup_question:
         return None
@@ -1726,8 +1773,9 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
 
     # --- Filter rows ---
     if "filter" in q or "show only" in q or "keep only" in q or "where" in q:
-        # Try to parse conditions
-        conditions = _parse_row_conditions(corrected_question, columns)
+        # Try to parse conditions (correcting typo'd column names like
+        # 'invoiveno' -> 'InvoiceNo' first, same as the read-only lookup path)
+        conditions = _parse_row_conditions(_correct_column_typos(corrected_question, columns), columns)
         if conditions:
             op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with"}
             mask = pd.Series(True, index=df.index)
@@ -1924,7 +1972,10 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
         or re.search(r"\b(rows?|records?|observations?|entries|samples?)\s+(are there|in (the )?(dataset|data set|data))\b", q)
         or q in {"rows", "records", "observations", "shape", "size"}
     )
-    if row_count_question:
+    # A condition word (e.g. "start with") means this is really "how many rows
+    # MATCH X", not "how many rows total" — let it fall through to the
+    # conditional lookup below instead of answering with the whole dataset's size.
+    if row_count_question and not _CONDITION_OP_PATTERN.search(q):
         return _shape_report(df)
 
     if (
@@ -1971,6 +2022,7 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
         or re.search(r"\b(show|get)\s+(me\s+)?(the\s+)?(rows?|records?|details|data|information)\b", q)
         or re.search(r"\b(rows?|records?|details)\s+(of|for|about|with|in|that)\b", q)
         or re.search(r"\bwhere\s+is\b", q)
+        or (re.search(r"\b(how many|count of|number of)\b", q) and _CONDITION_OP_PATTERN.search(q))
     )
     if lookup_question:
         text, _ = _lookup_rows(df, question, mentioned)
