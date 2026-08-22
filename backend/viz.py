@@ -494,7 +494,7 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
     raise ValueError(f"Unknown chart type '{chart_type}'.")
 
 
-def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 6, has_geojson: bool = False) -> list:
+def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 3, has_geojson: bool = False) -> list:
     suggestions = []
 
     # ── Choropleth suggestions (highest priority when GeoJSON is present) ──────
@@ -612,32 +612,7 @@ def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 6, has_geojson: boo
             **chart_data(df, c, "histogram"),
         })
 
-    # 6. Correlation heatmap for multiple numeric columns
-    if len(numeric_cols) >= 3:
-        try:
-            corr = df[numeric_cols].corr()
-            matrix = corr.values.tolist()
-            labels = numeric_cols
-            suggestions.append({
-                "title": "Correlation heatmap",
-                "reason": "Visualize relationships between all numeric columns — red = positive correlation, blue = negative.",
-                **chart_data(df, numeric_cols[0], "heatmap", numeric_cols[1] if len(numeric_cols) > 1 else numeric_cols[0]),
-            })
-        except Exception:
-            pass
-
-    # 7. Radar chart for comparing numeric columns (if we have a categorical column to group by)
-    if len(numeric_cols) >= 3 and categorical_cols:
-        try:
-            suggestions.append({
-                "title": f"Radar chart: {', '.join(numeric_cols[:4])}",
-                "reason": f"Compare multiple numeric columns across groups in {categorical_cols[0]}.",
-                **chart_data(df, numeric_cols[0], "radar", numeric_cols[1] if len(numeric_cols) > 1 else None, categorical_cols[0]),
-            })
-        except Exception:
-            pass
-
-    # 8. Density plot for most spread numeric
+    # 6. Density plot for most spread numeric
     if numeric_cols and spreads:
         most_spread = max(spreads, key=lambda k: spreads[k])
         try:
@@ -649,7 +624,7 @@ def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 6, has_geojson: boo
         except Exception:
             pass
 
-    # 9. Scatter map / heatmap if lat/lon columns detected — insert at front so
+    # 7. Scatter map / heatmap if lat/lon columns detected — insert at front so
     #    the cap doesn't cut them off when there are many other chart types.
     coords = _detect_coordinate_columns(df)
     if coords["lat"] and coords["lon"]:
