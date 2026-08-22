@@ -33,16 +33,16 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 ASSISTANT_KEYWORDS = {
-    "analysis", "analyse", "analyze", "average", "bar", "bottom", "boxplot",
+    "analysis", "analyse", "analyze", "average", "bar", "begins", "bottom", "boxplot",
     "categorical", "category", "clean", "cluster", "columns", "compare",
-    "correlate", "correlation", "correlations", "data", "dataset", "date",
-    "describe", "distribution", "duplicates", "dtype", "extreme", "filter",
+    "contains", "correlate", "correlation", "correlations", "data", "dataset", "date",
+    "describe", "distribution", "duplicates", "dtype", "ends", "extreme", "filter",
     "frequency", "group", "histogram", "maximum", "mean", "median", "minimum",
     "missing", "model", "numeric", "outlier", "outliers", "overview",
     "predict", "prediction", "records", "relationship", "remove", "sample",
-    "scatter", "schema", "search", "sort", "standardize", "statistics",
+    "scatter", "schema", "search", "sort", "standardize", "starts", "statistics",
     "study", "summary", "target", "total", "unique", "variance",
-    "visualization",
+    "visualization", "with",
 }
 
 CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
@@ -964,27 +964,46 @@ def _parse_row_conditions(question: str, columns: list) -> list:
 
     conditions = []
     col_patterns = [(col, _normalise_text(col), re.escape(str(col))) for col in sorted(columns, key=lambda c: len(str(c)), reverse=True)]
-    operators = r"(?:=|==|is|equals?|contains?)"
     boundary = r"(?=\s+(?:and|&|,)\s+|$)"
 
+    # Tried in order of specificity: "starts with" / "ends with" first, or a bare
+    # "column value" would swallow "with c" as a literal equals-value instead.
+    op_variants = [
+        ("startswith", r"(?:start(?:s|ed|ing)?\s+with)"),
+        ("startswith", r"(?:begin(?:s|ning)?\s+with)"),
+        ("endswith",   r"(?:end(?:s|ed|ing)?\s+with)"),
+        ("contains",   r"(?:contains?|includes?)"),
+        ("eq",         r"(?:=|==|is|equals?)"),
+    ]
+
     for col, _, col_raw in col_patterns:
-        for pattern in (
-            rf"\b{col_raw}\b\s*{operators}\s*['\"]?(.+?)['\"]?{boundary}",
-            rf"\b{col_raw}\b\s+['\"]?(.+?)['\"]?{boundary}",
-        ):
+        matched_op = False
+        for op_name, op_regex in op_variants:
+            pattern = rf"\b{col_raw}\b\s*(?:that\s+|which\s+)?{op_regex}\s*['\"]?(.+?)['\"]?{boundary}"
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
                 value = match.group(1).strip(" '\"?.,:;-")
                 if value:
-                    conditions.append((col, value))
+                    conditions.append((col, op_name, value))
+                    matched_op = True
                 break
+        if matched_op:
+            continue
+        # Bare "column value" with no explicit operator word — treat as equals,
+        # same behaviour as before this function supported starts-with/ends-with.
+        pattern = rf"\b{col_raw}\b\s+['\"]?(.+?)['\"]?{boundary}"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = match.group(1).strip(" '\"?.,:;-")
+            if value:
+                conditions.append((col, "eq", value))
 
     if conditions:
         seen = set()
         deduped = []
-        for col, value in conditions:
+        for col, op, value in conditions:
             if col not in seen:
-                deduped.append((col, value))
+                deduped.append((col, op, value))
                 seen.add(col)
         return deduped
 
@@ -995,37 +1014,57 @@ def _parse_row_conditions(question: str, columns: list) -> list:
             if part_norm.startswith(col_norm + " "):
                 value = part[len(str(col)):].strip(" =:'\"?.,:;-")
                 if value:
-                    conditions.append((col, value))
+                    conditions.append((col, "eq", value))
                 break
     return conditions
 
 
-def _condition_mask(s: pd.Series, value: str) -> pd.Series:
+def _condition_mask(s: pd.Series, op: str, value: str) -> pd.Series:
     value = value.strip()
-    if pd.api.types.is_numeric_dtype(s):
-        target = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-        if not pd.isna(target):
-            return s == target
-    if pd.api.types.is_bool_dtype(s):
-        text = value.lower()
-        if text in {"true", "t", "yes", "y", "1", "male", "m"}:
-            return s == True
-        if text in {"false", "f", "no", "n", "0", "female"}:
-            return s == False
+    if op == "eq":
+        if pd.api.types.is_numeric_dtype(s):
+            target = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+            if not pd.isna(target):
+                return s == target
+        if pd.api.types.is_bool_dtype(s):
+            text = value.lower()
+            if text in {"true", "t", "yes", "y", "1", "male", "m"}:
+                return s == True
+            if text in {"false", "f", "no", "n", "0", "female"}:
+                return s == False
+        wanted = _normalise_text(value)
+        return s.astype("string").map(lambda x: wanted == _normalise_text(x) if not pd.isna(x) else False)
+
+    # contains / startswith / endswith are always treated as text matches,
+    # even on numeric or date columns (e.g. "invoice starts with 20" on an int column).
     wanted = _normalise_text(value)
-    return s.astype("string").map(lambda x: wanted == _normalise_text(x) if not pd.isna(x) else False)
+
+    def _match(x):
+        if pd.isna(x):
+            return False
+        cell = _normalise_text(x)
+        if op == "contains":
+            return wanted in cell
+        if op == "startswith":
+            return cell.startswith(wanted)
+        if op == "endswith":
+            return cell.endswith(wanted)
+        return False
+
+    return s.astype("string").map(_match)
 
 
 def _lookup_rows_by_conditions(df: pd.DataFrame, conditions: list) -> tuple[str, pd.DataFrame | None]:
     if not conditions:
         return "", None
 
+    op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with"}
     mask = pd.Series(True, index=df.index)
-    for col, value in conditions:
-        mask &= _condition_mask(df[col], value)
+    for col, op, value in conditions:
+        mask &= _condition_mask(df[col], op, value)
 
     matches = df[mask]
-    readable = " and ".join(f"{col} = {value}" for col, value in conditions)
+    readable = " and ".join(f"{col} {op_words.get(op, '=')} {value}" for col, op, value in conditions)
     if matches.empty:
         return f"I could not find any row where {readable}.", None
 
@@ -1480,8 +1519,8 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
             return table
     lookup_question = (
         re.search(r"\b(find|search for|look up|lookup)\b", q)
-        or re.search(r"\b(show|get)\s+(me\s+)?(the\s+)?(row|record|details|data|information)\b", q)
-        or re.search(r"\b(row|record|details)\s+(of|for|about|with)\b", q)
+        or re.search(r"\b(show|get)\s+(me\s+)?(the\s+)?(rows?|records?|details|data|information)\b", q)
+        or re.search(r"\b(rows?|records?|details)\s+(of|for|about|with|in|that)\b", q)
         or re.search(r"\bwhere\s+is\b", q)
     )
     if not lookup_question:
@@ -1690,11 +1729,12 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
         # Try to parse conditions
         conditions = _parse_row_conditions(corrected_question, columns)
         if conditions:
+            op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with"}
             mask = pd.Series(True, index=df.index)
-            for col, value in conditions:
-                mask &= _condition_mask(df[col], value)
+            for col, op, value in conditions:
+                mask &= _condition_mask(df[col], op, value)
             modified = df[mask].reset_index(drop=True)
-            cond_str = " and ".join(f"{c} = {v}" for c, v in conditions)
+            cond_str = " and ".join(f"{c} {op_words.get(op, '=')} {v}" for c, op, v in conditions)
             result["action"] = "filter_rows"
             result["success"] = True
             result["message"] = correction_note + f"Filtered to {len(modified):,} rows where {cond_str}."
@@ -1703,7 +1743,7 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
             result["modified_df"] = modified
             return result
         else:
-            result["message"] = "I couldn't parse the filter conditions. Try: 'filter status = active' or 'show only rows where age > 30'"
+            result["message"] = "I couldn't parse the filter conditions. Try: 'filter status = active', 'show only rows where age > 30', or 'filter invoice starts with C'"
             return result
 
     # --- Show top/bottom N ---
@@ -1928,8 +1968,8 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
 
     lookup_question = (
         re.search(r"\b(find|search for|look up|lookup)\b", q)
-        or re.search(r"\b(show|get)\s+(me\s+)?(the\s+)?(row|record|details|data|information)\b", q)
-        or re.search(r"\b(row|record|details)\s+(of|for|about|with)\b", q)
+        or re.search(r"\b(show|get)\s+(me\s+)?(the\s+)?(rows?|records?|details|data|information)\b", q)
+        or re.search(r"\b(rows?|records?|details)\s+(of|for|about|with|in|that)\b", q)
         or re.search(r"\bwhere\s+is\b", q)
     )
     if lookup_question:
