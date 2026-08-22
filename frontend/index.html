@@ -1541,7 +1541,14 @@ async function dlNotebook(){
   const sid = getState().sessionId;
   if(!sid) return;
   try{
-    const res = await fetch(`${API}/download_notebook/${sid}`);
+    // POST with the full chart history (same list the HTML report uses) so
+    // every visualization built for this dataset gets its own cell, not just
+    // the most recent one.
+    const res = await fetch(`${API}/download_notebook/${sid}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({charts: customChartSpecs})
+    });
     if(!res.ok) throw new Error("Could not generate the notebook.");
     const blob = await res.blob();
     const cd = res.headers.get("Content-Disposition") || "";

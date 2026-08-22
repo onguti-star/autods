@@ -74,16 +74,25 @@ def _training_runs(session) -> list[dict]:
     return runs
 
 
-def _has_completed_work(session) -> bool:
+def _has_completed_work(session, charts: list | None = None) -> bool:
     return any([
+        getattr(session, "notes", None) and session.notes.strip(),
         getattr(session, "cleaning_log", None),
         getattr(session, "chat_clean_log", None),
         getattr(session, "leaderboard", None),
         getattr(session, "saved_runs", None),
         getattr(session, "saved_predictions", None),
         getattr(session, "unsupervised_results", None),
+        charts,
         getattr(session, "last_visualization", None),
     ])
+
+
+def _add_notes_cell(cells: list[dict], session):
+    notes = (getattr(session, "notes", "") or "").strip()
+    if not notes:
+        return
+    cells.append(_markdown_cell(f"## Notes\n\n{notes}"))
 
 
 def _add_data_cell(cells: list[dict], session):
@@ -125,42 +134,47 @@ def _add_cleaning_cells(cells: list[dict], session):
     ))
 
 
-def _add_visualization_cells(cells: list[dict], session):
-    chart = getattr(session, "last_visualization", None) or {}
-    if not chart:
+def _add_visualization_cells(cells: list[dict], session, charts: list | None = None):
+    # Prefer the full chart history sent from the frontend (customChartSpecs —
+    # every visualization the user built for this dataset). Fall back to just
+    # the most recent one if no history was passed in (e.g. old GET calls).
+    all_charts = charts if charts else ([getattr(session, "last_visualization", None)] if getattr(session, "last_visualization", None) else [])
+    all_charts = [c for c in all_charts if c]
+    if not all_charts:
         return
 
-    cells.append(_markdown_cell("## Visualization Done"))
-    cells.append(_code_cell(
-        "import matplotlib.pyplot as plt\n\n"
-        f"chart = {_json_literal(chart)}\n"
-        "chart_type = chart.get('type')\n"
-        "x = chart.get('x')\n"
-        "y = chart.get('y')\n\n"
-        "if chart_type in {'scatter', 'line'} and x in df.columns and y in df.columns:\n"
-        "    plot_df = df[[x, y]].dropna()\n"
-        "    if chart_type == 'line':\n"
-        "        plot_df = plot_df.sort_values(x)\n"
-        "        plt.plot(plot_df[x], plot_df[y], marker='o')\n"
-        "    else:\n"
-        "        plt.scatter(plot_df[x], plot_df[y], alpha=0.7)\n"
-        "    plt.xlabel(x)\n"
-        "    plt.ylabel(y)\n"
-        "elif chart_type in {'histogram', 'boxplot'} and x in df.columns:\n"
-        "    if chart_type == 'boxplot':\n"
-        "        df[x].dropna().plot(kind='box')\n"
-        "    else:\n"
-        "        df[x].dropna().hist(bins=12)\n"
-        "    plt.xlabel(x)\n"
-        "elif x in df.columns:\n"
-        "    df[x].value_counts(dropna=True).head(15).sort_values().plot(kind='barh')\n"
-        "    plt.xlabel('Count')\n"
-        "else:\n"
-        "    print('The recorded chart columns are not present in the exported data.')\n\n"
-        "plt.title(chart.get('title') or 'AutoDS chart')\n"
-        "plt.tight_layout()\n"
-        "plt.show()\n"
-    ))
+    cells.append(_markdown_cell(f"## Visualizations Done ({len(all_charts)})"))
+    for i, chart in enumerate(all_charts, start=1):
+        cells.append(_code_cell(
+            "import matplotlib.pyplot as plt\n\n"
+            f"chart = {_json_literal(chart)}\n"
+            "chart_type = chart.get('type')\n"
+            "x = chart.get('x')\n"
+            "y = chart.get('y')\n\n"
+            "if chart_type in {'scatter', 'line'} and x in df.columns and y in df.columns:\n"
+            "    plot_df = df[[x, y]].dropna()\n"
+            "    if chart_type == 'line':\n"
+            "        plot_df = plot_df.sort_values(x)\n"
+            "        plt.plot(plot_df[x], plot_df[y], marker='o')\n"
+            "    else:\n"
+            "        plt.scatter(plot_df[x], plot_df[y], alpha=0.7)\n"
+            "    plt.xlabel(x)\n"
+            "    plt.ylabel(y)\n"
+            "elif chart_type in {'histogram', 'boxplot'} and x in df.columns:\n"
+            "    if chart_type == 'boxplot':\n"
+            "        df[x].dropna().plot(kind='box')\n"
+            "    else:\n"
+            "        df[x].dropna().hist(bins=12)\n"
+            "    plt.xlabel(x)\n"
+            "elif x in df.columns:\n"
+            "    df[x].value_counts(dropna=True).head(15).sort_values().plot(kind='barh')\n"
+            "    plt.xlabel('Count')\n"
+            "else:\n"
+            "    print('The recorded chart columns are not present in the exported data.')\n\n"
+            f"plt.title(chart.get('title') or 'AutoDS chart {i}')\n"
+            "plt.tight_layout()\n"
+            "plt.show()\n"
+        ))
 
 
 def _add_training_cells(cells: list[dict], session):
@@ -258,11 +272,14 @@ def _add_unsupervised_cells(cells: list[dict], session):
     ))
 
 
-def build_notebook(session) -> str:
-    """Build a compact .ipynb JSON string for completed session work."""
+def build_notebook(session, charts: list | None = None) -> str:
+    """Build a compact .ipynb JSON string for completed session work.
+    `charts` is the frontend's full chart history for this dataset (same list
+    used by the HTML report) so every visualization gets its own cell, not
+    just the most recently created one."""
     name = session.filename.rsplit(".", 1)[0]
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    title = "AutoDS - Completed Work Notebook" if _has_completed_work(session) else "AutoDS - Data Notebook"
+    title = "AutoDS - Completed Work Notebook" if _has_completed_work(session, charts) else "AutoDS - Data Notebook"
 
     cells = [
         _markdown_cell(
@@ -275,8 +292,9 @@ def build_notebook(session) -> str:
     ]
 
     _add_data_cell(cells, session)
+    _add_notes_cell(cells, session)
     _add_cleaning_cells(cells, session)
-    _add_visualization_cells(cells, session)
+    _add_visualization_cells(cells, session, charts)
     _add_training_cells(cells, session)
     _add_prediction_cells(cells, session)
     _add_unsupervised_cells(cells, session)

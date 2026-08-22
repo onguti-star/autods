@@ -457,7 +457,12 @@ def get_pca(session_id: str, color_col: str | None = None):
     Optional: pass ?color_col=colname to colour the 2D scatter by a categorical column.
     """
     session = _get_session_or_404(session_id)
-    return pca_analysis.analyse(session.df, color_col=color_col)
+    result = pca_analysis.analyse(session.df, color_col=color_col)
+    # Cache it on the session — this is also the flag the downloaded HTML
+    # report uses to decide whether to show a PCA section at all, so it only
+    # appears if the user actually ran PCA from the app.
+    session.pca_result = result
+    return result
 
 
 # ---------- Clean ----------
@@ -1674,9 +1679,29 @@ def unsupervised_association(session_id: str, req: dict):
 @app.get("/api/download_notebook/{session_id}")
 def download_notebook(session_id: str):
     """Download a fully self-contained .ipynb with all AutoDS functions
-    plus the current session data embedded as CSV."""
+    plus the current session data embedded as CSV. GET only has access to
+    the most recent chart (session.last_visualization) — use the POST
+    variant below to include the full visualization history."""
     session = _get_session_or_404(session_id)
     notebook_json = nb_module.build_notebook(session)
+    buf = io.BytesIO(notebook_json.encode("utf-8"))
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+        },
+    )
+
+
+@app.post("/api/download_notebook/{session_id}")
+def download_notebook_with_charts(session_id: str, req: ReportChartsRequest):
+    """Same as the GET version, but takes the frontend's full chart history
+    (customChartSpecs) so every visualization the user built gets its own
+    cell in the notebook, not just the last one."""
+    session = _get_session_or_404(session_id)
+    notebook_json = nb_module.build_notebook(session, charts=req.charts)
     buf = io.BytesIO(notebook_json.encode("utf-8"))
     name = session.filename.rsplit(".", 1)[0]
     return StreamingResponse(

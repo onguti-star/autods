@@ -9,7 +9,6 @@ import pandas as pd
 from . import automl
 from . import eda
 from . import narrate
-from . import pca_analysis
 
 
 def _fmt_report_value(value) -> str:
@@ -136,17 +135,10 @@ def _cleaning_command_type(command: str, message: str) -> str:
 
 
 def _report_pca_result(session) -> dict:
-    result = getattr(session, "pca_result", {}) or {}
-    if result:
-        return result
-    if len(session.df) <= 50_000:
-        try:
-            result = pca_analysis.analyse(session.df)
-            session.pca_result = result
-            return result
-        except Exception:
-            return {}
-    return {}
+    """Only returns a result if the user actually ran PCA from the app
+    (GET /api/pca/{id} caches it on session.pca_result) — the report should
+    never silently compute PCA on its own just because it's cheap to do."""
+    return getattr(session, "pca_result", {}) or {}
 
 
 def _report_feature_importance(session) -> list:
@@ -249,6 +241,7 @@ def _build_html_report(session, extra_charts=None) -> str:
     charts = list(extra_charts or [])
     chart_data_json = json.dumps(charts)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    pca_result = _report_pca_result(session)
     
     # HTML structure with Bootstrap 5 CDN + inline styling
     html_parts = []
@@ -675,6 +668,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                 <li><a href="#correlations">Correlations</a></li>""")
     if charts:
         html_parts.append('                <li><a href="#visualizations">Visualizations</a></li>')
+    if pca_result:
+        html_parts.append('                <li><a href="#pca">Principal Component Analysis (PCA)</a></li>')
     
     if _has_cleaning_history(session):
         html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
@@ -879,7 +874,25 @@ def _build_html_report(session, extra_charts=None) -> str:
             <span class="correlation-value" style="color: {color};">{val:+.3f}</span>
         </div>""")
 
-    pca_result = _report_pca_result(session)
+    if charts:
+        html_parts.append("""        <h2 class="section-title" id="visualizations">📊 Visualizations Created</h2>
+        <div class="chart-row">""")
+        for index, chart in enumerate(charts):
+            canvas_id = f"chart_{index}"
+            chart_title = html.escape(str(chart.get("title") or "Visualization"))
+            chart_note = html.escape(str(chart.get("reason") or ""))
+            html_parts.append(f"""            <div class="chart-card">
+                <div class="chart-title">{chart_title}</div>
+                <div class="chart-notice">{chart_note}</div>
+                <div class="chart-actions">
+                    <button class="chart-btn" onclick="copyChart({index})">📋 Copy Image</button>
+                </div>
+                <div class="chart-canvas-wrap"><canvas id="{canvas_id}"></canvas></div>
+            </div>""")
+        html_parts.append("        </div>")
+
+    # PCA Section — only appears if the user actually ran PCA from the app.
+    # Placed after Visualizations since it's its own kind of analysis, not a chart.
     if pca_result:
         html_parts.append("""        <h2 class="section-title" id="pca">Principal Component Analysis (PCA)</h2>""")
         if not pca_result.get("feasible"):
@@ -926,24 +939,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                 </tr>""")
                 html_parts.append("""            </tbody>
         </table>""")
-    
-    if charts:
-        html_parts.append("""        <h2 class="section-title" id="visualizations">📊 Visualizations Created</h2>
-        <div class="chart-row">""")
-        for index, chart in enumerate(charts):
-            canvas_id = f"chart_{index}"
-            chart_title = html.escape(str(chart.get("title") or "Visualization"))
-            chart_note = html.escape(str(chart.get("reason") or ""))
-            html_parts.append(f"""            <div class="chart-card">
-                <div class="chart-title">{chart_title}</div>
-                <div class="chart-notice">{chart_note}</div>
-                <div class="chart-actions">
-                    <button class="chart-btn" onclick="copyChart({index})">📋 Copy Image</button>
-                </div>
-                <div class="chart-canvas-wrap"><canvas id="{canvas_id}"></canvas></div>
-            </div>""")
-        html_parts.append("        </div>")
-    
+
     # Cleaning Log Section
     if _has_cleaning_history(session):
         html_parts.append("""        <h2 class="section-title" id="cleaning">✨ Data Cleaning Log</h2>""")
