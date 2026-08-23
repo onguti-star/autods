@@ -1044,8 +1044,19 @@ function tryRestoreSession(){
 // FRESH RELOAD (dev helper)
 // ============================
 function clearAndReload(){
-  const ok = confirm("Fresh reload clears this tab's locally saved AutoDS state, including uploaded-session links and current UI progress. Continue?");
+  const ok = confirm("Fresh reload clears this tab's locally saved AutoDS state, including uploaded-session links and current UI progress, and closes every open dataset session on the server. Continue?");
   if(!ok) return;
+
+  // Tell the backend to drop every open session's files, so a fresh reload
+  // actually frees the data/disk instead of just forgetting about it on the
+  // frontend and leaving orphaned CSVs behind on every click.
+  datasets.forEach(d => {
+    const sid = dsState[d.id]?.sessionId;
+    if(sid){
+      fetch(`${API}/session/${sid}`, { method: "DELETE" }).catch(() => {});
+    }
+  });
+
   try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
   location.reload();
 }
