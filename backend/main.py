@@ -1,15 +1,816 @@
 import io
 import html
+import ipaddress
+import multiprocessing as mp
+import os
+import pickle
+import socket
+import sqlite3
+import tempfile
+import urllib.parse
+import urllib.request
 import json
-import re
+import uuid
 from datetime import datetime
+from typing import Literal
 
 import pandas as pd
+import numpy as np
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
 
+from . import assistant
 from . import automl
+from . import clean as clean_module
+from . import clean_chat
 from . import eda
 from . import narrate
+from . import nlp
+from . import nb as nb_module
+from . import pca_analysis
+from . import simulation as simulation_module
+from . import unsupervised
+from . import viz
+from .main_report import _build_html_report
+from .store import SESSIONS, create_session, get_session, delete_session, purge_stale_session_files
 
+app = FastAPI(title="AutoDS")
+
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB
+MAX_REMOTE_BYTES = 200 * 1024 * 1024  # 200 MB
+MAX_DATAFRAME_ROWS = 5_500_000  # 5.5 million rows
+MAX_DATAFRAME_COLUMNS = 1_000  # 1000 columns
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def _cleanup_stale_sessions_on_startup():
+    """Sweep .sessions/ for CSV files from long-closed or crashed sessions so
+    disk usage doesn't grow unbounded run after run."""
+    purge_stale_session_files(max_age_days=7)
+
+
+
+@app.exception_handler(500)
+async def internal_exception_handler(request, exc):
+    """Ensure all 500 errors return JSON, not HTML."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"}
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Catch-all handler to ensure all exceptions return JSON."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"An error occurred: {str(exc)}"}
+    )
+
+
+# ---------- Upload ----------
+
+def _validate_dataframe_size(df: pd.DataFrame) -> None:
+    rows, cols = df.shape
+    if rows > MAX_DATAFRAME_ROWS:
+        raise HTTPException(
+            400,
+            f"Dataset has {rows:,} rows. AutoDS currently supports up to {MAX_DATAFRAME_ROWS:,} rows per session.",
+        )
+    if cols > MAX_DATAFRAME_COLUMNS:
+        raise HTTPException(
+            400,
+            f"Dataset has {cols:,} columns. AutoDS currently supports up to {MAX_DATAFRAME_COLUMNS:,} columns per session.",
+        )
+
+
+def _ensure_allowed_remote_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(400, "URL must be an http:// or https:// address.")
+
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(400, "URL is missing a hostname.")
+
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except socket.gaierror as e:
+        raise HTTPException(400, f"Could not resolve URL host: {e}")
+
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise HTTPException(400, "For safety, URL uploads must point to a public web address.")
+
+    return url
+
+
+def _read_csv_bytes(contents: bytes, sep: str | None = None) -> pd.DataFrame:
+    kwargs = {"sep": sep} if sep else {}
+    try:
+        return pd.read_csv(io.BytesIO(contents), **kwargs)
+    except pd.errors.ParserError:
+        # Retry with Python's delimiter sniffer for files that are not comma CSVs.
+        return pd.read_csv(io.BytesIO(contents), sep=None, engine="python")
+
+
+def _friendly_parse_error(e: Exception, name: str) -> str:
+    msg = str(e)
+    if "openpyxl" in msg.lower() and name.lower().endswith(".xlsx"):
+        return "Excel .xlsx support needs openpyxl installed. Run: pip install openpyxl"
+    if "xlrd" in msg.lower() and name.lower().endswith(".xls"):
+        return "Older .xls Excel files need xlrd installed. Run: pip install xlrd"
+    if "tokenizing data" in msg.lower():
+        return (
+            f"{msg}. If this is a GitHub file, use the raw file URL or a normal "
+            "github.com/.../blob/... link so AutoDS can convert it."
+        )
+    if "unsupported file type 'git'" in msg.lower() or name.lower().endswith(".git"):
+        return (
+            "That looks like a GitHub repository URL, not a dataset file. "
+            "Open the CSV/Excel/JSON file inside the repo, click the file, then paste "
+            "the github.com/.../blob/... link or the Raw link."
+        )
+    return msg
+
+
+def _normalize_dataset_url(url: str) -> str:
+    """Convert common share/view URLs into direct downloadable dataset URLs."""
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+
+    if host == "github.com":
+        parts = parsed.path.strip("/").split("/")
+        if parsed.path.endswith(".git") or len(parts) <= 2 or (len(parts) >= 3 and parts[2] == "tree"):
+            raise HTTPException(
+                400,
+                "That GitHub link points to a repository or folder, not a dataset file. "
+                "Open a specific file such as .csv, .xlsx, .json, .tsv, .parquet, or .sqlite, "
+                "then paste its github.com/.../blob/... link or Raw link.",
+            )
+        if len(parts) >= 5 and parts[2] == "blob":
+            owner, repo, _, branch = parts[:4]
+            path = "/".join(parts[4:])
+            return urllib.parse.urlunparse((
+                parsed.scheme or "https",
+                "raw.githubusercontent.com",
+                f"/{owner}/{repo}/{branch}/{path}",
+                "",
+                parsed.query,
+                "",
+            ))
+        if len(parts) >= 5 and parts[2] == "raw":
+            owner, repo, _, branch = parts[:4]
+            path = "/".join(parts[4:])
+            return urllib.parse.urlunparse((
+                parsed.scheme or "https",
+                "raw.githubusercontent.com",
+                f"/{owner}/{repo}/{branch}/{path}",
+                "",
+                parsed.query,
+                "",
+            ))
+
+    return url
+
+
+def _optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Optimize dataframe memory usage by converting object columns to category
+    and downcasting numeric types for faster processing."""
+    for col in df.columns:
+        col_type = df[col].dtype
+        
+        # Convert object/string columns to category if low cardinality
+        if col_type == 'object' or str(col_type).startswith('str'):
+            num_unique = df[col].nunique()
+            num_total = len(df[col])
+            # Convert to category if less than 50% unique values and more than 10 rows
+            if num_total > 10 and num_unique / num_total < 0.5:
+                df[col] = df[col].astype('category')
+        
+        # Downcast integer columns
+        elif col_type in ['int64', 'int32']:
+            df[col] = pd.to_numeric(df[col], downcast='integer')
+        
+        # Downcast float columns
+        elif col_type in ['float64', 'float32']:
+            df[col] = pd.to_numeric(df[col], downcast='float')
+    
+    return df
+
+
+def _df_from_bytes(contents: bytes, name: str) -> pd.DataFrame:
+    n = name.lower()
+    if n.endswith(".csv"):
+        for sep in [",", ";", "\t"]:
+            try:
+                df = pd.read_csv(io.BytesIO(contents), sep=sep,
+                                 on_bad_lines="skip", encoding_errors="replace")
+                if df.shape[1] > 1:
+                    return _optimize_dtypes(df)
+            except Exception:
+                continue
+        df = pd.read_csv(io.BytesIO(contents), on_bad_lines="skip")
+        return _optimize_dtypes(df)
+    if n.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(io.BytesIO(contents))
+        return _optimize_dtypes(df)
+    if n.endswith(".geojson"):
+        try:
+            geojson = json.loads(contents)
+            features = geojson.get("features", [])
+            if not features:
+                raise ValueError("GeoJSON file contains no features.")
+            rows = []
+            for i, feature in enumerate(features):
+                props = dict(feature.get("properties", {}))
+                props["_feature_index"] = i          # used by choropleth to join back
+                feature["properties"] = props
+                geom  = feature.get("geometry", {})
+                props["_geometry_type"] = geom.get("type", "Unknown")
+                rows.append(props)
+            df = pd.DataFrame(rows)
+            return _optimize_dtypes(df), geojson     # return tuple so upload handler can store raw
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid GeoJSON: {e}")
+    if n.endswith(".json"):
+        df = pd.read_json(io.BytesIO(contents))
+        return _optimize_dtypes(df)
+    if n.endswith((".tsv", ".txt")):
+        df = pd.read_csv(io.BytesIO(contents), sep="\t", on_bad_lines="skip")
+        return _optimize_dtypes(df)
+    if n.endswith(".parquet"):
+        return pd.read_parquet(io.BytesIO(contents))
+    if n.endswith(".db") or n.endswith(".sqlite") or n.endswith(".sqlite3"):
+        # SQLite: return the first table found
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            f.write(contents); tmp = f.name
+        try:
+            con = sqlite3.connect(tmp)
+            tables = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", con)
+            if tables.empty:
+                raise ValueError("No tables found in this SQLite file.")
+            first_table = tables["name"].iloc[0]
+            df = pd.read_sql(f"SELECT * FROM '{first_table}'", con)
+            con.close()
+        finally:
+            os.unlink(tmp)
+        return _optimize_dtypes(df)
+    raise HTTPException(400, f"Unsupported file type '{name.split('.')[-1]}'. Supported: CSV, Excel, JSON, GeoJSON, TSV, Parquet, SQLite.")
+
+
+def _session_response(session, df):
+    return {
+        "session_id": session.id,
+        "filename":   session.filename,
+        "columns":    list(df.columns),
+        "shape":      {"rows": df.shape[0], "columns": df.shape[1]},
+        "has_geojson": bool(getattr(session, "geojson", None)),
+    }
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...)):
+    name = file.filename or "data.csv"
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, f"File is too large. Maximum upload size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+    try:
+        result = _df_from_bytes(contents, name)
+        df, raw_geojson = result if isinstance(result, tuple) else (result, None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse file: {_friendly_parse_error(e, name)}")
+    if df.empty:
+        raise HTTPException(400, "Uploaded file has no rows.")
+    _validate_dataframe_size(df)
+    session = create_session(df, name)
+    if raw_geojson:
+        session.geojson = raw_geojson
+    return _session_response(session, df)
+
+
+class UrlUploadRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    name: str = Field(default="", max_length=120)
+
+
+@app.post("/api/upload_url")
+def upload_url(req: UrlUploadRequest):
+    """Fetch a dataset from any public URL — CSV, Excel, JSON, TSV, or a Google Sheets share link."""
+    url = req.url.strip()
+    # Convert Google Sheets share URL to CSV export URL
+    if "docs.google.com/spreadsheets" in url:
+        # extract spreadsheet id and convert to export link
+        import re
+        m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+        if not m:
+            raise HTTPException(400, "Could not parse Google Sheets URL.")
+        sheet_id = m.group(1)
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    else:
+        url = _normalize_dataset_url(url)
+    url = _ensure_allowed_remote_url(url)
+    try:
+        req2 = urllib.request.Request(url, headers={"User-Agent": "AutoDS/1.0"})
+        with urllib.request.urlopen(req2, timeout=15) as resp:
+            length = resp.headers.get("Content-Length")
+            if length and int(length) > MAX_REMOTE_BYTES:
+                raise HTTPException(400, f"Remote file is too large. Maximum size is {MAX_REMOTE_BYTES // (1024 * 1024)} MB.")
+            contents = resp.read()
+            if len(contents) > MAX_REMOTE_BYTES:
+                raise HTTPException(400, f"Remote file is too large. Maximum size is {MAX_REMOTE_BYTES // (1024 * 1024)} MB.")
+            content_type = resp.headers.get("Content-Type", "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not fetch URL: {e}")
+
+    # Guess filename from URL or content-type
+    name = req.name or url.split("?")[0].split("/")[-1] or "data"
+    if "." not in name.split("/")[-1]:
+        if "excel" in content_type or "spreadsheet" in content_type:
+            name += ".xlsx"
+        elif "json" in content_type:
+            name += ".json"
+        else:
+            name += ".csv"
+
+    # Validate that we got actual data, not an error page
+    if name.endswith('.json'):
+        try:
+            json.loads(contents[:200])
+        except json.JSONDecodeError:
+            raise HTTPException(
+                400,
+                "The URL did not return valid JSON. This often happens with GitHub URLs when rate-limited. "
+                "Try using the raw file URL (raw.githubusercontent.com/...) or wait a moment and try again."
+            )
+    
+    try:
+        result = _df_from_bytes(contents, name)
+        df, raw_geojson = result if isinstance(result, tuple) else (result, None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse data from URL: {_friendly_parse_error(e, name)}")
+    if df.empty:
+        raise HTTPException(400, "No rows found at that URL.")
+    _validate_dataframe_size(df)
+    session = create_session(df, name)
+    if raw_geojson:
+        session.geojson = raw_geojson
+    return _session_response(session, df)
+
+
+class PasteRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_UPLOAD_BYTES)
+    name: str = Field(default="pasted_data", max_length=120)
+    separator: str = Field(default=",", max_length=8)   # "," for CSV, "\t" for TSV
+
+
+@app.post("/api/upload_paste")
+def upload_paste(req: PasteRequest):
+    """Accept raw pasted CSV/TSV text."""
+    try:
+        sep = "\t" if req.separator in ("\\t", "\t", "tab") else req.separator
+        df = pd.read_csv(io.StringIO(req.text.strip()), sep=sep)
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse pasted text: {e}")
+    if df.empty:
+        raise HTTPException(400, "No rows found in pasted text.")
+    _validate_dataframe_size(df)
+    session = create_session(df, req.name + ".csv")
+    return _session_response(session, df)
+
+
+class DbRequest(BaseModel):
+    connection_string: str = Field(min_length=1, max_length=2048)   # e.g. postgresql://user:pass@host/db
+    query: str = Field(min_length=1, max_length=20_000)             # SQL SELECT query
+    name: str = Field(default="db_query", max_length=120)
+
+    @field_validator("query")
+    @classmethod
+    def only_select_queries(cls, value: str) -> str:
+        query = value.strip()
+        lowered = query.lower()
+        if not (lowered.startswith("select") or lowered.startswith("with")):
+            raise ValueError("Only SELECT queries are supported.")
+        if ";" in query.rstrip(";"):
+            raise ValueError("Only one SQL statement is allowed.")
+        return query.rstrip(";")
+
+
+@app.post("/api/upload_db")
+def upload_db(req: DbRequest):
+    """Run a SQL SELECT on a Postgres or MySQL database and load the result."""
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(req.connection_string, connect_args={"connect_timeout": 10})
+        with engine.connect() as con:
+            df = pd.read_sql(text(req.query), con)
+    except ImportError:
+        raise HTTPException(500, "sqlalchemy is not installed. Run: pip install sqlalchemy psycopg2-binary")
+    except Exception as e:
+        raise HTTPException(400, f"Database error: {e}")
+    if df.empty:
+        raise HTTPException(400, "Query returned no rows.")
+    _validate_dataframe_size(df)
+    session = create_session(df, req.name + ".csv")
+    return _session_response(session, df)
+
+
+# ---------- EDA ----------
+
+@app.get("/api/eda/{session_id}")
+def get_eda(session_id: str):
+    session = _get_session_or_404(session_id)
+    profile = eda.profile_dataframe(session.df)
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    return profile
+
+
+@app.get("/api/pca/{session_id}")
+def get_pca(session_id: str, color_col: str | None = None):
+    """
+    Run PCA on the session's current dataframe and return:
+    - whether PCA is useful (feasible, verdict)
+    - explained variance per component
+    - how many components needed for 80/90/95% threshold
+    - 2D scatter of the first two principal components
+    - column loadings (which original columns drive each PC)
+    Optional: pass ?color_col=colname to colour the 2D scatter by a categorical column.
+    """
+    session = _get_session_or_404(session_id)
+    result = pca_analysis.analyse(session.df, color_col=color_col)
+    # Cache it on the session — this is also the flag the downloaded HTML
+    # report uses to decide whether to show a PCA section at all, so it only
+    # appears if the user actually ran PCA from the app.
+    session.pca_result = result
+    return result
+
+
+# ---------- Clean ----------
+
+class CleanRequest(BaseModel):
+    drop_duplicates: bool = True
+    fill_missing_numeric: Literal["median", "mean", "zero", "none"] = "median"
+    fill_missing_categorical: Literal["mode", "unknown", "none"] = "mode"
+    drop_high_missing_cols: bool = True
+    strip_whitespace: bool = True
+    drop_constant_cols: bool = True
+    fix_mixed_types: bool = True
+    fix_column_names: bool = True
+    remove_outliers: bool = True
+
+
+@app.post("/api/clean/{session_id}")
+def clean_data(session_id: str, req: CleanRequest):
+    session = _get_session_or_404(session_id)
+    session.snapshot_before_change()
+    clean_options = req.model_dump()
+    cleaned_df, log = clean_module.clean_dataframe(session.df, clean_options)
+    session.df = cleaned_df
+    session.clear_current_training()
+    session.save_to_disk()
+
+    # Merge the Clean Now log with any chat-cleaning already applied so the
+    # report shows the full picture instead of wiping prior chat changes.
+    if not log:
+        log = ["Clean Now found nothing new to fix — your data is already in good shape"
+               + (" from the chat cleaning you already applied." if session.chat_clean_log else ".")]
+    if session.chat_clean_log:
+        chat_summary = [f"Previously applied via chat assistant ({len(session.chat_clean_log)} command(s)):"]
+        chat_summary += [f"  • {entry.get('command', '')}: {entry.get('message', '')}"
+                         for entry in session.chat_clean_log[-10:]]
+        log = chat_summary + [""] + log
+
+    session.cleaning_log = log
+    session.last_clean_options = clean_options
+
+    profile = eda.profile_dataframe(session.df)
+    profile["cleaning_log"] = log
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    return profile
+
+
+class CleanChatRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/clean_chat/{session_id}")
+def clean_chat_endpoint(session_id: str, req: CleanChatRequest):
+    session = _get_session_or_404(session_id)
+    new_df, message = clean_chat.run_command(session.df, req.command, original_df=session.original_df)
+
+    # Special action: split rows into a brand-new session (new tab)
+    if isinstance(message, dict) and message.get("__action__") == "split_to_tab":
+        action = message
+        subset_df = action["subset_df"]   # full DataFrame stored by clean_chat
+        new_session = create_session(subset_df, action["tab_name"] + ".csv")
+        conditions_label = action.get("conditions_label", "")
+        return {
+            "split_to_tab": True,
+            "new_session_id": new_session.id,
+            "tab_name": action["tab_name"],
+            "rows_matched": action["rows_matched"],
+            "total_rows": action["total_rows"],
+            "columns": action["columns"],
+            "preview": action["subset_records"],
+            **eda.profile_dataframe(session.df),
+                        "chat_message": (
+                "✓ Created new tab '"
+                + action["tab_name"]
+                + "' with "
+                + f"{action['rows_matched']:,} of {action['total_rows']:,} rows "
+                + f"({conditions_label}). Original dataset unchanged."
+            ),
+                        "chat_history": session.chat_clean_log,
+            "data_changed": False,
+            "can_undo": session.can_undo(),
+        }
+
+    changed = new_df is not session.df
+    if changed:   # something actually changed (including "reset") — make it undoable
+        session.snapshot_before_change()
+    session.df = new_df
+    if changed:
+        session.clear_current_training()
+        session.save_to_disk()
+    session.chat_clean_log.append({"command": req.command, "message": message})
+
+    profile = eda.profile_dataframe(session.df)
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["chat_message"] = message
+    profile["chat_history"] = session.chat_clean_log
+    profile["data_changed"] = changed
+    return profile
+
+
+@app.get("/api/clean_chat/{session_id}/help")
+def clean_chat_help(session_id: str):
+    _get_session_or_404(session_id)  # validate session exists
+    return {"help": clean_chat.HELP_TEXT}
+
+
+class TypeChangeRequest(BaseModel):
+    column: str = Field(min_length=1)
+    dtype: Literal["integer", "float", "text", "category", "datetime", "date", "time", "boolean"]
+
+
+class NotesRequest(BaseModel):
+    notes: str = Field(default="", max_length=20000)
+
+
+@app.post("/api/notes/{session_id}")
+def save_notes(session_id: str, req: NotesRequest):
+    """Free-form notes the user writes about a dataset. Kept on the session so
+    the work report (.md) and HTML report can include them under a Notes section."""
+    session = _get_session_or_404(session_id)
+    session.notes = req.notes
+    return {"ok": True, "notes": session.notes}
+
+
+@app.get("/api/notes/{session_id}")
+def get_notes(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {"notes": getattr(session, "notes", "")}
+
+
+def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFrame, str]:
+    if column not in df.columns:
+        raise HTTPException(400, f"Column '{column}' not found.")
+
+    dtype = dtype.lower().strip()
+    allowed = {"integer", "float", "text", "category", "datetime", "date", "time", "boolean"}
+    if dtype not in allowed:
+        raise HTTPException(400, f"Unsupported data type '{dtype}'.")
+
+    out = df.copy()
+    before = str(out[column].dtype)
+    before_missing = int(out[column].isna().sum())
+
+    # Common date formats including Kenyan/African conventions (DD/MM/YYYY, DD-MM-YYYY)
+    DATE_FORMATS = [
+        "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
+        "%d %b %Y", "%d %B %Y", "%Y/%m/%d",
+        "%d/%m/%y", "%d-%m-%y",
+    ]
+
+    def _parse_dates(series):
+        """Try pandas auto-parse first, then fall back through common formats."""
+        # Try dayfirst=True by default — matches DD/MM/YYYY used in Kenya
+        result = pd.to_datetime(series, dayfirst=True, errors="coerce")
+        if result.notna().sum() >= series.notna().sum() * 0.5:
+            return result
+        for fmt in DATE_FORMATS:
+            try:
+                candidate = pd.to_datetime(series, format=fmt, errors="coerce")
+                if candidate.notna().sum() > result.notna().sum():
+                    result = candidate
+            except Exception:
+                continue
+        return result
+
+    try:
+        if dtype == "integer":
+            converted = pd.to_numeric(out[column], errors="coerce")
+            non_integer = converted.dropna() % 1 != 0
+            if bool(non_integer.any()):
+                raise HTTPException(
+                    400,
+                    f"Column '{column}' contains decimal values, so it cannot be safely converted to integer.",
+                )
+            out[column] = converted.astype("Int64")
+        elif dtype == "float":
+            out[column] = pd.to_numeric(out[column], errors="coerce").astype(float)
+        elif dtype == "text":
+            out[column] = out[column].astype("string")
+        elif dtype == "category":
+            out[column] = out[column].astype("category")
+        elif dtype == "datetime":
+            out[column] = _parse_dates(out[column])
+        elif dtype == "date":
+            # Parse to datetime first, then keep only the date part as a string
+            # (pandas date objects don't have a single clean dtype, so we store
+            # as a formatted string "YYYY-MM-DD" which is unambiguous and sorts correctly)
+            parsed = _parse_dates(out[column])
+            out[column] = parsed.dt.strftime("%Y-%m-%d").astype("string")
+            out[column] = out[column].where(parsed.notna(), pd.NA)
+        elif dtype == "time":
+            # Parse as datetime then extract time-of-day as "HH:MM:SS" string
+            parsed = _parse_dates(out[column])
+            # If parsing yielded all-midnight (failed), try direct time extraction
+            if parsed.isna().all() or (parsed.dt.hour == 0).all():
+                # Try treating raw values as time strings directly
+                try:
+                    parsed = pd.to_datetime("2000-01-01 " + out[column].astype(str), errors="coerce")
+                except Exception:
+                    pass
+            out[column] = parsed.dt.strftime("%H:%M:%S").astype("string")
+            out[column] = out[column].where(parsed.notna(), pd.NA)
+        elif dtype == "boolean":
+            truthy = {"true", "t", "yes", "y", "1"}
+            falsy = {"false", "f", "no", "n", "0"}
+
+            def to_bool(value):
+                if pd.isna(value):
+                    return pd.NA
+                if isinstance(value, bool):
+                    return value
+                text = str(value).strip().lower()
+                if text in truthy:
+                    return True
+                if text in falsy:
+                    return False
+                return pd.NA
+
+            out[column] = out[column].map(to_bool).astype("boolean")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not convert '{column}' to {dtype}: {e}")
+
+    after = str(out[column].dtype)
+    after_missing = int(out[column].isna().sum())
+    introduced = after_missing - before_missing
+    type_label = {"date": "date only", "time": "time only", "datetime": "date & time"}.get(dtype, dtype)
+    note = f"Changed column '{column}' from {before} to {type_label}."
+    if introduced > 0:
+        note += f" {introduced:,} value(s) could not be converted and became missing."
+    return out, note
+
+
+@app.post("/api/change_type/{session_id}")
+def change_column_type(session_id: str, req: TypeChangeRequest):
+    session = _get_session_or_404(session_id)
+    session.snapshot_before_change()
+    session.df, log_entry = _convert_column_type(session.df, req.column, req.dtype)
+    session.clear_current_training()
+    session.cleaning_log.append(log_entry)
+    session.save_to_disk()
+
+    profile = eda.profile_dataframe(session.df)
+    profile["cleaning_log"] = session.cleaning_log
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    return profile
+
+
+@app.post("/api/undo/{session_id}")
+def undo_last_change(session_id: str):
+    session = _get_session_or_404(session_id)
+    if not session.undo():
+        raise HTTPException(400, "Nothing to undo.")
+    session.clear_current_training()
+
+    profile = eda.profile_dataframe(session.df)
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    return profile
+
+
+# ---------- Visualize ----------
+
+@app.get("/api/visualize/suggestions/{session_id}")
+def visualize_suggestions(session_id: str):
+    session = _get_session_or_404(session_id)
+    try:
+        charts = viz.suggest_visuals(session.df, has_geojson=bool(session.geojson))
+        if charts:
+            session.last_visualization = charts[0]
+        return {"charts": charts}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/visualize/{session_id}")
+def visualize_custom(session_id: str, x: str, chart_type: str,
+                     y: str | None = None, group: str | None = None,
+                     x_min: float | None = None, x_max: float | None = None,
+                     bar_limit: int | None = None, bin_width: float | None = None):
+    session = _get_session_or_404(session_id)
+    try:
+        if chart_type == "choropleth":
+            if not session.geojson:
+                raise ValueError("Choropleth maps require an uploaded .geojson dataset.")
+            if x not in session.df.columns:
+                raise ValueError(f"Column '{x}' not found.")
+            if not pd.api.types.is_numeric_dtype(session.df[x]):
+                raise ValueError(f"'{x}' is not numeric. Choose a numeric value column for the choropleth.")
+
+            skip_cols = {"_geometry_type", "_feature_index", x}
+            text_cols = [
+                c for c in session.df.columns
+                if c not in skip_cols and not pd.api.types.is_numeric_dtype(session.df[c])
+            ]
+            name_hints = ("admin", "name", "country", "region", "county", "province", "state", "district", "city")
+
+            def name_score(col: str) -> float:
+                hint = 3 if any(h in col.lower() for h in name_hints) else 0
+                non_empty = session.df[col].dropna().astype(str).str.strip()
+                non_empty = non_empty[non_empty != ""]
+                return hint + (len(non_empty) / max(len(session.df), 1))
+
+            name_col = max(text_cols, key=name_score) if text_cols else None
+            row_cols = ["_feature_index", x] + ([name_col] if name_col else [])
+            rows = []
+            for row in session.df[row_cols].to_dict("records"):
+                cleaned = {}
+                for key, value in row.items():
+                    cleaned[key] = None if pd.isna(value) else value
+                rows.append(cleaned)
+
+            chart = {
+                "type": "choropleth",
+                "title": f"Choropleth - {x}",
+                "reason": f"Colour each GeoJSON region by {x}.",
+                "value_col": x,
+                "name_col": name_col,
+                "rows": rows,
+            }
+            session.last_visualization = chart
+            return chart
+
+        chart = viz.chart_data(session.df, x, chart_type, y, group, x_min, x_max, bar_limit, bin_width)
+        session.last_visualization = chart
+        return chart
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------- Simulate ----------
+
+@app.post("/api/simulate/{session_id}")
+def simulate_scenario(session_id: str, req: simulation_module.SimulationRequest):
+    session = _get_session_or_404(session_id)
+    try:
+        return simulation_module.run_simulation(session.df, req)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# ---------- Download current data ----------
 
 def _fmt_report_value(value) -> str:
     if value is pd.NA:
@@ -57,1689 +858,6 @@ def _has_cleaning_history(session) -> bool:
     return bool(session.cleaning_log or session.chat_clean_log)
 
 
-def _column_type_counts(profile: dict) -> dict[str, int]:
-    counts = {"numeric": 0, "categorical": 0, "text": 0}
-    for col in profile.get("columns", []):
-        col_type = col.get("type") or "other"
-        counts[col_type] = counts.get(col_type, 0) + 1
-    return counts
-
-
-def _quality_flags(profile: dict) -> list[dict[str, str]]:
-    rows = profile.get("shape", {}).get("rows", 0) or 0
-    cols = profile.get("columns", []) or []
-    flags: list[dict[str, str]] = []
-
-    duplicate_rows = int(profile.get("duplicate_rows", 0) or 0)
-    if duplicate_rows:
-        pct = duplicate_rows / max(rows, 1) * 100
-        flags.append({
-            "issue": "Duplicate rows",
-            "severity": "Review",
-            "detail": f"{duplicate_rows:,} duplicate row(s), about {pct:.2f}% of the dataset.",
-        })
-
-    high_missing = [col for col in cols if float(col.get("missing_pct", 0) or 0) >= 30]
-    if high_missing:
-        names = ", ".join(str(col.get("name", "")) for col in high_missing[:8])
-        more = f" (+{len(high_missing) - 8} more)" if len(high_missing) > 8 else ""
-        flags.append({
-            "issue": "High missingness",
-            "severity": "Review",
-            "detail": f"{len(high_missing)} column(s) are at least 30% missing: {names}{more}.",
-        })
-
-    constant = [col for col in cols if int(col.get("unique", 0) or 0) <= 1]
-    if constant:
-        names = ", ".join(str(col.get("name", "")) for col in constant[:8])
-        more = f" (+{len(constant) - 8} more)" if len(constant) > 8 else ""
-        flags.append({
-            "issue": "Constant columns",
-            "severity": "Low value",
-            "detail": f"{len(constant)} column(s) have one or fewer non-missing unique values: {names}{more}.",
-        })
-
-    mostly_unique_text = [
-        col for col in cols
-        if col.get("type") in {"text", "categorical"}
-        and rows
-        and int(col.get("unique", 0) or 0) / max(rows - int(col.get("missing", 0) or 0), 1) >= 0.95
-    ]
-    if mostly_unique_text:
-        names = ", ".join(str(col.get("name", "")) for col in mostly_unique_text[:8])
-        more = f" (+{len(mostly_unique_text) - 8} more)" if len(mostly_unique_text) > 8 else ""
-        flags.append({
-            "issue": "Identifier-like text",
-            "severity": "Check",
-            "detail": f"{len(mostly_unique_text)} text/category column(s) are mostly unique: {names}{more}.",
-        })
-
-    return flags
-
-
-def _cleaning_command_type(command: str, message: str) -> str:
-    text = f"{command} {message}".lower()
-    if "created empty column" in text:
-        return "Created empty column"
-    if "created new column" in text or "filled column" in text:
-        return "Derived column"
-    if "removed" in text or "dropped" in text:
-        return "Removed data"
-    if "renamed" in text:
-        return "Renamed column"
-    if "converted" in text or "changed column" in text:
-        return "Type conversion"
-    if "filled" in text:
-        return "Filled missing values"
-    return "Cleaning command"
-
-
-def _report_pca_result(session) -> dict:
-    """Only returns a result if the user actually ran PCA from the app
-    (GET /api/pca/{id} caches it on session.pca_result) — the report should
-    never silently compute PCA on its own just because it's cheap to do."""
-    return getattr(session, "pca_result", {}) or {}
-
-
-def _report_feature_importance(session) -> list:
-    importance = getattr(session, "feature_importance", []) or []
-    if importance:
-        return importance
-    try:
-        if session.best_model_name and session.best_model_name in session.models and session.target in session.df.columns:
-            X = session.df.drop(columns=[session.target])
-            importance = automl.feature_importance(session.models[session.best_model_name], X)
-            session.feature_importance = importance
-            return importance
-    except Exception:
-        return []
-    return []
-
-
-def _render_notes_html(raw: str) -> str:
-    """Render the lightweight formatting used by the notes widget's toolbar:
-    **bold**, *italic*, ~~strike~~, <u>underline</u>, '- ' bullet lists, and
-    '1. ' numbered lists. Mirrors renderNotesMarkup() in the frontend so the
-    preview there matches what shows up in this downloaded report."""
-    if not raw or not raw.strip():
-        return ""
-
-    esc = html.escape(raw)
-    esc = esc.replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>")
-    esc = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)
-    esc = re.sub(r"~~(.+?)~~", r"<del>\1</del>", esc)
-    esc = re.sub(r"(^|[^*])\*(?!\*)(.+?)\*(?!\*)", r"\1<em>\2</em>", esc)
-
-    lines = esc.split("\n")
-    out: list[str] = []
-    list_buf: list[str] = []
-    list_type: str | None = None
-
-    def flush_list():
-        nonlocal list_buf, list_type
-        if list_buf:
-            items = "".join(f"<li>{item}</li>" for item in list_buf)
-            out.append(f"<{list_type}>{items}</{list_type}>")
-            list_buf = []
-        list_type = None
-
-    for line in lines:
-        bullet_m = re.match(r"^-\s+(.*)", line)
-        number_m = re.match(r"^\d+\.\s+(.*)", line)
-        if bullet_m:
-            if list_type != "ul":
-                flush_list()
-                list_type = "ul"
-            list_buf.append(bullet_m.group(1))
-        elif number_m:
-            if list_type != "ol":
-                flush_list()
-                list_type = "ol"
-            list_buf.append(number_m.group(1))
-        else:
-            flush_list()
-            if line.strip():
-                out.append(f"<p>{line}</p>")
-    flush_list()
-    return "".join(out)
-
-
-def _render_data_preview_table_html(df, title: str, anchor_id: str, icon: str = "👀", n: int = 15) -> str:
-    """Builds one '<h2>+<table>' block for a data preview section. Used twice
-    in the HTML report: once near the top for the original/uncleaned data,
-    and once right after the Data Cleaning Log for the current/updated data."""
-    preview = eda.safe_preview(df, n)
-    parts = [f'        <h2 class="section-title" id="{anchor_id}">{icon} {html.escape(title)}</h2>',
-             '        <div class="data-preview">',
-             '            <table class="table">']
-    if preview:
-        headers = list(preview[0].keys())
-        parts.append("                <thead><tr>")
-        for h in headers:
-            parts.append(f"<th>{html.escape(str(h))}</th>")
-        parts.append("                </tr></thead>")
-        parts.append("                <tbody>")
-        for row in preview:
-            parts.append("                    <tr>")
-            for h in headers:
-                val = _fmt_report_value(row.get(h))
-                parts.append(f"<td>{html.escape(val)}</td>")
-            parts.append("                    </tr>")
-        parts.append("                </tbody>")
-    parts.append("            </table>")
-    parts.append(f'            <p class="report-meta" style="margin-top:8px;">Showing first {min(n, len(df)):,} of {len(df):,} rows.</p>')
-    parts.append("        </div>")
-    return "\n".join(parts)
-
-
-def _build_html_report(session, extra_charts=None) -> str:
-    """Build a styled HTML presentation report."""
-    profile = eda.profile_dataframe(session.df)
-    narrative = narrate.narrate_eda(profile)
-    type_counts = _column_type_counts(profile)
-    quality_flags = _quality_flags(profile)
-    charts = list(extra_charts or [])
-    chart_data_json = json.dumps(charts)
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    pca_result = _report_pca_result(session)
-    
-    # HTML structure with Bootstrap 5 CDN + inline styling
-    html_parts = []
-    html_parts.append("""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoDS Detailed HTML Report</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-            padding: 0;
-            line-height: 1.6;
-            margin: 0;
-        }
-        .container {
-            max-width: 95vw;
-            width: 1400px;
-            background-color: white;
-            padding: 50px;
-            min-height: 100vh;
-            box-shadow: 0 0 20px rgba(0,0,0,0.1);
-        }
-        @media (max-width: 1600px) {
-            .container {
-                width: 95vw;
-                max-width: none;
-                padding: 40px;
-            }
-        }
-        @media (max-width: 768px) {
-            .container {
-                padding: 20px;
-            }
-        }
-        .report-header {
-            border-bottom: 4px solid #0d6efd;
-            padding-bottom: 20px;
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            flex-wrap: wrap;
-            gap: 20px;
-        }
-        .report-title {
-            font-size: 2.5em;
-            font-weight: 700;
-            color: #0d6efd;
-            margin-bottom: 10px;
-            flex: 1;
-        }
-        .report-meta {
-            color: #6c757d;
-            font-size: 0.95em;
-        }
-        .action-buttons {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .btn-action {
-            padding: 8px 16px;
-            border-radius: 6px;
-            border: none;
-            cursor: pointer;
-            font-size: 0.9em;
-            font-weight: 600;
-            transition: all 0.2s;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .btn-primary-action {
-            background-color: #0d6efd;
-            color: white;
-        }
-        .btn-primary-action:hover {
-            background-color: #0a58ca;
-            color: white;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(13,110,253,0.3);
-        }
-        .btn-secondary-action {
-            background-color: #6c757d;
-            color: white;
-        }
-        .btn-secondary-action:hover {
-            background-color: #5a6268;
-            color: white;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(108,117,125,0.3);
-        }
-        .section-title {
-            font-size: 1.8em;
-            font-weight: 600;
-            color: #0d6efd;
-            margin-top: 40px;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #e9ecef;
-            page-break-after: avoid;
-        }
-        .subsection-title {
-            font-size: 1.3em;
-            font-weight: 600;
-            color: #495057;
-            margin-top: 25px;
-            margin-bottom: 15px;
-        }
-        .stat-box {
-            background-color: #f8f9fa;
-            border-left: 4px solid #0d6efd;
-            padding: 15px;
-            margin: 10px 0;
-            border-radius: 4px;
-        }
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 14px;
-            margin: 15px 0 25px;
-        }
-        .stat-value {
-            font-size: 1.4em;
-            font-weight: 700;
-            color: #0d6efd;
-        }
-        .stat-label {
-            color: #6c757d;
-            font-size: 0.9em;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 15px 0;
-        }
-        table thead {
-            background-color: #0d6efd;
-            color: white;
-        }
-        table th {
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-        }
-        table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #e9ecef;
-        }
-        table tbody tr:hover {
-            background-color: #f8f9fa;
-        }
-        .toc {
-            background-color: #f8f9fa;
-            padding: 20px;
-            border-radius: 4px;
-            margin-bottom: 30px;
-            border-left: 4px solid #0d6efd;
-        }
-        .toc h3 {
-            color: #0d6efd;
-            margin-bottom: 15px;
-            font-size: 1.2em;
-        }
-        .toc ul {
-            list-style: none;
-            padding-left: 0;
-        }
-        .toc li {
-            margin: 8px 0;
-        }
-        .toc a {
-            color: #0d6efd;
-            text-decoration: none;
-            transition: color 0.2s;
-        }
-        .toc a:hover {
-            color: #0a58ca;
-            text-decoration: underline;
-        }
-        .correlation-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px;
-            background-color: #f8f9fa;
-            margin: 8px 0;
-            border-radius: 4px;
-            border-left: 3px solid #0d6efd;
-        }
-        .correlation-value {
-            font-weight: 700;
-            color: #0d6efd;
-            font-family: 'Courier New', monospace;
-        }
-        .cleaning-item {
-            padding: 10px;
-            margin: 8px 0;
-            background-color: #d4edda;
-            border-left: 3px solid #198754;
-            border-radius: 4px;
-        }
-        .cleaning-type {
-            display: inline-block;
-            margin-bottom: 5px;
-            padding: 2px 7px;
-            border-radius: 3px;
-            background-color: rgba(25,135,84,0.14);
-            color: #146c43;
-            font-size: 0.78em;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
-        }
-        .quality-item {
-            padding: 12px 14px;
-            margin: 10px 0;
-            background-color: #fff8e1;
-            border-left: 4px solid #ffc107;
-            border-radius: 4px;
-        }
-        .quality-meta {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-top: 3px;
-        }
-        .prediction-item {
-            padding: 14px 16px;
-            margin: 12px 0;
-            background-color: #fff8e1;
-            border-left: 4px solid #ffc107;
-            border-radius: 4px;
-        }
-        .prediction-output {
-            font-size: 1.1em;
-            font-weight: 700;
-            color: #198754;
-            margin-bottom: 6px;
-        }
-        .prediction-meta,
-        .prediction-inputs {
-            color: #6c757d;
-            font-size: 0.9em;
-        }
-        .prediction-inputs {
-            margin-top: 6px;
-            overflow-wrap: anywhere;
-        }
-        .analysis-item {
-            padding: 14px 16px;
-            margin: 12px 0;
-            background-color: #eef8ff;
-            border-left: 4px solid #0dcaf0;
-            border-radius: 4px;
-        }
-        .analysis-meta {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-top: 4px;
-        }
-        .metric-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 12px;
-            margin: 15px 0;
-        }
-        .importance-bar {
-            height: 10px;
-            background-color: #e9ecef;
-            border-radius: 4px;
-            overflow: hidden;
-            min-width: 120px;
-        }
-        .importance-fill {
-            height: 100%;
-            background-color: #ffc107;
-        }
-        .narrative-text {
-            color: #495057;
-            line-height: 1.8;
-            margin: 15px 0;
-        }
-        .data-preview {
-            font-size: 0.85em;
-            overflow-x: auto;
-        }
-        .chart-row {
-            display: flex;
-            flex-direction: column;
-            gap: 40px;
-            margin-bottom: 50px;
-        }
-        .chart-card {
-            background-color: #f8f9fa;
-            border-radius: 12px;
-            padding: 30px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-            border: 1px solid #e9ecef;
-            position: relative;
-        }
-        .chart-canvas-wrap {
-            position: relative;
-            width: 100%;
-            height: 800px;
-            min-height: 600px;
-        }
-        .chart-actions {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            display: flex;
-            gap: 8px;
-        }
-        .chart-btn {
-            padding: 6px 12px;
-            border-radius: 4px;
-            border: 1px solid #dee2e6;
-            background-color: white;
-            cursor: pointer;
-            font-size: 0.85em;
-            font-weight: 600;
-            transition: all 0.2s;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-        }
-        .chart-btn:hover {
-            background-color: #0d6efd;
-            color: white;
-            border-color: #0d6efd;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(13,110,253,0.3);
-        }
-        .chart-canvas-wrap canvas {
-            width: 100% !important;
-            height: 100% !important;
-        }
-        .chart-title {
-            margin-bottom: 12px;
-            color: #0d6efd;
-            font-size: 1.15em;
-            font-weight: 700;
-        }
-        .chart-notice {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-bottom: 12px;
-        }
-        @media (max-width: 992px) {
-            .chart-row {
-                grid-template-columns: 1fr;
-            }
-        }
-        @media (max-width: 768px) {
-            .container {
-                padding: 20px;
-            }
-            .report-title {
-                font-size: 1.8em;
-            }
-            .section-title {
-                font-size: 1.4em;
-            }
-        }
-        @media print {
-            body {
-                background-color: white;
-                padding: 0;
-                margin: 0;
-            }
-            .container {
-                box-shadow: none;
-                padding: 20px;
-                max-width: 100%;
-                width: 100%;
-            }
-            .action-buttons {
-                display: none !important;
-            }
-            .section-title {
-                page-break-after: avoid;
-            }
-            table {
-                page-break-inside: avoid;
-            }
-            .chart-card {
-                page-break-inside: avoid;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">""")
-    
-    # Header
-    filename = session.filename.rsplit(".", 1)[0]
-    html_parts.append(f"""        <div class="report-header">
-            <div>
-                <h1 class="report-title">📊 AutoDS Analysis Report</h1>
-                <p class="report-meta"><strong>Dataset:</strong> {filename}</p>
-                <p class="report-meta"><strong>Generated:</strong> {generated_at}</p>
-            </div>
-            <div class="action-buttons">
-                <button class="btn-action btn-primary-action" onclick="window.print()">
-                    🖨️ Print / Save as PDF
-                </button>
-            </div>
-        </div>""")
-    
-    # Table of Contents
-    html_parts.append("""        <div class="toc">
-            <h3>📋 Table of Contents</h3>
-            <ul>
-                <li><a href="#dataset">Dataset Overview</a></li>
-                <li><a href="#original-preview">Original Data (First 15 Rows)</a></li>""")
-    if getattr(session, "notes", "").strip():
-        html_parts.append('                <li><a href="#notes">Notes</a></li>')
-    html_parts.append("""                <li><a href="#summary">EDA Summary</a></li>
-                <li><a href="#quality">Data Quality Details</a></li>
-                <li><a href="#describe">Data Describe Summary</a></li>
-                <li><a href="#columns">Column Analysis</a></li>
-                <li><a href="#correlations">Correlations</a></li>""")
-    if charts:
-        html_parts.append('                <li><a href="#visualizations">Visualizations</a></li>')
-    if pca_result:
-        html_parts.append('                <li><a href="#pca">Principal Component Analysis (PCA)</a></li>')
-    
-    if _has_cleaning_history(session):
-        html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
-    html_parts.append('                <li><a href="#updated-preview">Updated Data (First 15 Rows)</a></li>')
-    if session.leaderboard or session.saved_runs:
-        html_parts.append('                <li><a href="#training">Model Training Results</a></li>')
-    if session.saved_predictions:
-        html_parts.append('                <li><a href="#predictions">Saved Predictions</a></li>')
-    if session.unsupervised_results:
-        html_parts.append('                <li><a href="#unsupervised">Unsupervised Learning</a></li>')
-    
-    html_parts.append("""            </ul>
-        </div>""")
-    
-    # Dataset Overview Section
-    html_parts.append(f"""        <h2 class="section-title" id="dataset">📈 Dataset Overview</h2>
-        <div class="summary-grid">
-        <div class="stat-box">
-            <div class="stat-label">Total Rows</div>
-            <div class="stat-value">{profile['shape']['rows']:,}</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Total Columns</div>
-            <div class="stat-value">{profile['shape']['columns']:,}</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Duplicate Rows</div>
-            <div class="stat-value">{profile['duplicate_rows']:,}</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Missing Cells</div>
-            <div class="stat-value">{profile['total_missing_cells']:,}</div>
-            <span style="color: #6c757d; font-size: 0.9em;">of {profile['total_cells']:,} total</span>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Missing Cell Rate</div>
-            <div class="stat-value">{(profile['total_missing_cells'] / max(profile['total_cells'], 1) * 100):.2f}%</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Numeric Columns</div>
-            <div class="stat-value">{type_counts.get('numeric', 0):,}</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Categorical Columns</div>
-            <div class="stat-value">{type_counts.get('categorical', 0):,}</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Text Columns</div>
-            <div class="stat-value">{type_counts.get('text', 0):,}</div>
-        </div>
-        </div>""")
-
-    # Original Data Section — the raw, untouched data before any cleaning.
-    # Placed near the top so it's the frozen "before" reference for the rest of the report.
-    # Fall back to the current dataframe if a session-like object doesn't carry
-    # original_df (e.g. an older snapshot or a minimal session stub), so report
-    # generation degrades gracefully instead of crashing.
-    html_parts.append(_render_data_preview_table_html(
-        getattr(session, "original_df", session.df), "Original Data (First 15 Rows)", "original-preview", icon="🔒"
-    ))
-
-    # Notes Section — free-form notes the user wrote about this dataset
-    if getattr(session, "notes", "").strip():
-        notes_html = _render_notes_html(session.notes)
-        html_parts.append(f"""        <h2 class="section-title" id="notes">🖊️ Notes</h2>
-        <div class="narrative-text">
-            {notes_html}
-        </div>""")
-
-    # EDA Summary Section
-    html_parts.append("""        <h2 class="section-title" id="summary">📝 EDA Summary</h2>
-        <div class="narrative-text">""")
-    
-    for note in narrative:
-        html_parts.append(f"            <p>• {note}</p>\n")
-    
-    html_parts.append("        </div>")
-
-    # Data Quality Section
-    html_parts.append("""        <h2 class="section-title" id="quality">Data Quality Details</h2>""")
-    if quality_flags:
-        for flag in quality_flags:
-            html_parts.append(f"""        <div class="quality-item">
-            <strong>{html.escape(flag["issue"])}</strong>
-            <div class="quality-meta"><strong>{html.escape(flag["severity"])}:</strong> {html.escape(flag["detail"])}</div>
-        </div>""")
-    else:
-        html_parts.append("""        <div class="analysis-item">
-            No major duplicate-row, high-missingness, constant-column, or identifier-like text issues were detected by the automatic checks.
-        </div>""")
-
-    missing_columns = sorted(
-        [col for col in profile.get("columns", []) if int(col.get("missing", 0) or 0) > 0],
-        key=lambda col: float(col.get("missing_pct", 0) or 0),
-        reverse=True,
-    )
-    if missing_columns:
-        html_parts.append("""        <h3 class="subsection-title">Columns With Missing Values</h3>
-        <table class="table">
-            <thead><tr><th>Column</th><th>Missing</th><th>Missing %</th><th>Type</th></tr></thead>
-            <tbody>""")
-        for col in missing_columns[:20]:
-            html_parts.append(f"""                <tr>
-                    <td><strong>{html.escape(str(col.get("name", "")))}</strong></td>
-                    <td>{int(col.get("missing", 0) or 0):,}</td>
-                    <td>{_fmt_report_value(col.get("missing_pct", 0))}%</td>
-                    <td>{html.escape(str(col.get("type", "")))}</td>
-                </tr>""")
-        html_parts.append("""            </tbody>
-        </table>""")
-
-    numeric_columns = [col for col in profile.get("columns", []) if col.get("type") == "numeric" and col.get("stats")]
-    if numeric_columns:
-        html_parts.append("""        <h3 class="subsection-title">Numeric Column Ranges</h3>
-        <table class="table">
-            <thead><tr><th>Column</th><th>Mean</th><th>Std</th><th>Min</th><th>Median</th><th>Max</th></tr></thead>
-            <tbody>""")
-        for col in numeric_columns[:30]:
-            stats = col.get("stats", {})
-            html_parts.append(f"""                <tr>
-                    <td><strong>{html.escape(str(col.get("name", "")))}</strong></td>
-                    <td>{html.escape(_fmt_report_value(stats.get("mean")))}</td>
-                    <td>{html.escape(_fmt_report_value(stats.get("std")))}</td>
-                    <td>{html.escape(_fmt_report_value(stats.get("min")))}</td>
-                    <td>{html.escape(_fmt_report_value(stats.get("50%")))}</td>
-                    <td>{html.escape(_fmt_report_value(stats.get("max")))}</td>
-                </tr>""")
-        html_parts.append("""            </tbody>
-        </table>""")
-
-    describe = profile.get("describe") or {}
-    if describe.get("columns") and describe.get("index"):
-        html_parts.append("""        <h2 class="section-title" id="describe">📐 Data Describe Summary</h2>
-        <div class="data-preview">
-            <table class="table">
-                <thead><tr><th>Statistic</th>""")
-        for col_name in describe.get("columns", []):
-            html_parts.append(f"<th>{html.escape(str(col_name))}</th>")
-        html_parts.append("</tr></thead><tbody>")
-        for row_idx, stat_name in enumerate(describe.get("index", [])):
-            values = describe.get("data", [[]])[row_idx] if row_idx < len(describe.get("data", [])) else []
-            html_parts.append(f"""                <tr><td><strong>{html.escape(str(stat_name))}</strong></td>""")
-            for col_idx, _ in enumerate(describe.get("columns", [])):
-                value = values[col_idx] if col_idx < len(values) else None
-                html_parts.append(f"<td>{html.escape(_fmt_report_value(value)) if value is not None else ''}</td>")
-            html_parts.append("</tr>")
-        html_parts.append("""                </tbody>
-            </table>
-        </div>""")
-    
-    # Columns Section
-    html_parts.append("""        <h2 class="section-title" id="columns">🔍 Column Analysis</h2>
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Column Name</th>
-                    <th>Type</th>
-                    <th>Unique</th>
-                    <th>Missing</th>
-                    <th>Sample Stats</th>
-                </tr>
-            </thead>
-            <tbody>""")
-    
-    for col in profile["columns"]:
-        stats_str = ""
-        stats = col.get("stats")
-        if stats:
-            stats_str = f"μ={_fmt_report_value(stats.get('mean'))}, min={_fmt_report_value(stats.get('min'))}, max={_fmt_report_value(stats.get('max'))}"
-        
-        top_values_str = ""
-        top_values = col.get("top_values")
-        if top_values:
-            top = ", ".join(f"{html.escape(str(v['value']))} ({v['count']:,})" for v in top_values[:3])
-            top_values_str = f"<br><small style='color:#6c757d;'>Top: {top}</small>"
-        
-        html_parts.append(f"""                <tr>
-                    <td><strong>{html.escape(str(col['name']))}</strong></td>
-                    <td>{html.escape(str(col['type']))}</td>
-                    <td>{col['unique']:,}</td>
-                    <td>{col['missing']:,} ({col['missing_pct']}%)</td>
-                    <td>{html.escape(stats_str)}{top_values_str}</td>
-                </tr>""")
-    
-    html_parts.append("""            </tbody>
-        </table>""")
-    
-    # Correlations Section
-    corr = profile.get("correlation", {})
-    if corr.get("matrix") and len(corr.get("columns", [])) >= 2:
-        pairs = []
-        corr_cols = corr["columns"]
-        matrix = corr["matrix"]
-        for i, a in enumerate(corr_cols):
-            for j in range(i + 1, len(corr_cols)):
-                pairs.append((a, corr_cols[j], matrix[i][j]))
-        pairs.sort(key=lambda x: abs(x[2]), reverse=True)
-        
-        html_parts.append("""        <h2 class="section-title" id="correlations">🔗 Strongest Correlations</h2>""")
-        
-        for a, b, val in pairs[:10]:
-            color = "#0d6efd" if val > 0 else "#dc3545"
-            html_parts.append(f"""        <div class="correlation-item">
-            <span><strong>{html.escape(str(a))}</strong> ↔ <strong>{html.escape(str(b))}</strong></span>
-            <span class="correlation-value" style="color: {color};">{val:+.3f}</span>
-        </div>""")
-
-    if charts:
-        html_parts.append("""        <h2 class="section-title" id="visualizations">📊 Visualizations Created</h2>
-        <div class="chart-row">""")
-        for index, chart in enumerate(charts):
-            canvas_id = f"chart_{index}"
-            chart_title = html.escape(str(chart.get("title") or "Visualization"))
-            chart_note = html.escape(str(chart.get("reason") or ""))
-            html_parts.append(f"""            <div class="chart-card">
-                <div class="chart-title">{chart_title}</div>
-                <div class="chart-notice">{chart_note}</div>
-                <div class="chart-actions">
-                    <button class="chart-btn" onclick="copyChart({index})">📋 Copy Image</button>
-                </div>
-                <div class="chart-canvas-wrap"><canvas id="{canvas_id}"></canvas></div>
-            </div>""")
-        html_parts.append("        </div>")
-
-    # PCA Section — only appears if the user actually ran PCA from the app.
-    # Placed after Visualizations since it's its own kind of analysis, not a chart.
-    if pca_result:
-        html_parts.append("""        <h2 class="section-title" id="pca">Principal Component Analysis (PCA)</h2>""")
-        if not pca_result.get("feasible"):
-            reason = html.escape(str(pca_result.get("reason") or "PCA was not feasible for this dataset."))
-            html_parts.append(f"""        <div class="analysis-item">{reason}</div>""")
-        else:
-            verdict = html.escape(str(pca_result.get("verdict", "unknown")).title())
-            recommendation = html.escape(str(pca_result.get("recommendation", "")))
-            html_parts.append(f"""        <div class="analysis-item">
-            <strong>PCA verdict:</strong> {verdict}
-            <div class="analysis-meta">{recommendation}</div>
-        </div>
-        <div class="metric-grid">
-            <div class="stat-box"><div class="stat-value">{pca_result.get("n_numeric", 0)}</div><div class="stat-label">numeric columns</div></div>
-            <div class="stat-box"><div class="stat-value">{pca_result.get("components_for_80", "?")}</div><div class="stat-label">components for 80% variance</div></div>
-            <div class="stat-box"><div class="stat-value">{pca_result.get("components_for_90", "?")}</div><div class="stat-label">components for 90% variance</div></div>
-            <div class="stat-box"><div class="stat-value">{pca_result.get("top2_variance", "?")}%</div><div class="stat-label">variance in PC1 and PC2</div></div>
-        </div>""")
-
-            explained = pca_result.get("explained_variance") or []
-            cumulative = pca_result.get("cumulative_variance") or []
-            if explained:
-                html_parts.append("""        <h3 class="subsection-title">Variance Explained</h3>
-        <table class="table">
-            <thead><tr><th>Component</th><th>Explains</th><th>Cumulative</th></tr></thead>
-            <tbody>""")
-                for index, value in enumerate(explained[:10]):
-                    cum = cumulative[index] if index < len(cumulative) else ""
-                    html_parts.append(f"""                <tr><td>PC{index + 1}</td><td>{_fmt_report_value(value)}%</td><td>{_fmt_report_value(cum)}%</td></tr>""")
-                html_parts.append("""            </tbody>
-        </table>""")
-
-            loadings = pca_result.get("loadings") or []
-            if loadings:
-                html_parts.append("""        <h3 class="subsection-title">Column Loadings</h3>
-        <table class="table">
-            <thead><tr><th>Column</th><th>PC1 loading</th><th>PC2 loading</th></tr></thead>
-            <tbody>""")
-                for loading in loadings[:20]:
-                    html_parts.append(f"""                <tr>
-                    <td>{html.escape(str(loading.get("column", "")))}</td>
-                    <td>{_fmt_report_value(loading.get("pc1"))}</td>
-                    <td>{_fmt_report_value(loading.get("pc2"))}</td>
-                </tr>""")
-                html_parts.append("""            </tbody>
-        </table>""")
-
-    # Cleaning Log Section
-    if _has_cleaning_history(session):
-        html_parts.append("""        <h2 class="section-title" id="cleaning">✨ Data Cleaning Log</h2>""")
-        html_parts.append(f"""        <div class="summary-grid">
-            <div class="stat-box"><div class="stat-value">{len(session.cleaning_log):,}</div><div class="stat-label">structured cleaning entries</div></div>
-            <div class="stat-box"><div class="stat-value">{len(session.chat_clean_log):,}</div><div class="stat-label">Clean Assist commands</div></div>
-        </div>""")
-        for entry in session.cleaning_log:
-            html_parts.append(f"""        <div class="cleaning-item">
-            <span class="cleaning-type">Structured clean</span><br>
-            ✓ {html.escape(str(entry))}
-        </div>""")
-        for entry in session.chat_clean_log:
-            command = html.escape(str(entry.get("command", "")))
-            message = html.escape(str(entry.get("message", "")))
-            command_type = html.escape(_cleaning_command_type(str(entry.get("command", "")), str(entry.get("message", ""))))
-            html_parts.append(f"""        <div class="cleaning-item">
-            <span class="cleaning-type">{command_type}</span><br>
-            ✓ <strong>{command}</strong><br>
-            <span>{message}</span>
-        </div>""")
-
-    # Updated Data Section — reflects the current state of the data, right
-    # after the cleaning log so it's easy to see the "before vs. after" together.
-    html_parts.append(_render_data_preview_table_html(
-        session.df, "Updated Data (First 15 Rows)", "updated-preview", icon="✅"
-    ))
-
-    # Model Training Section — covers every trained model, not just the current one
-    all_runs = []
-    # Saved runs first (auto-saved or manually saved)
-    for run_id, run in (session.saved_runs or {}).items():
-        all_runs.append({
-            "label": run.get("name", f"Saved: {run.get('target', '?')}"),
-            "target": run.get("target", "?"),
-            "problem_type": run.get("problem_type", ""),
-            "best_model_name": run.get("best_model_name", "?"),
-            "leaderboard": run.get("leaderboard", []),
-            "feature_columns": run.get("feature_columns", []),
-            "is_current": False,
-        })
-    # Current (most recently trained) model
-    if session.leaderboard:
-        all_runs.append({
-            "label": f"Current model — {session.target}",
-            "target": session.target,
-            "problem_type": session.problem_type or "",
-            "best_model_name": session.best_model_name or "?",
-            "leaderboard": session.leaderboard,
-            "feature_columns": session.feature_columns or [],
-            "is_current": True,
-        })
-
-    if all_runs:
-        html_parts.append(f'        <h2 class="section-title" id="training">🤖 Model Training Results</h2>')
-        html_parts.append(f'        <p style="color:#6c757d;font-size:0.9em;">{len(all_runs)} model(s) trained in this session.</p>')
-
-        for run in all_runs:
-            badge = ' <span style="background:#198754;color:#fff;font-size:0.75em;padding:2px 8px;border-radius:3px;vertical-align:middle;">current</span>' if run["is_current"] else ' <span style="background:#6c757d;color:#fff;font-size:0.75em;padding:2px 8px;border-radius:3px;vertical-align:middle;">saved</span>'
-            html_parts.append(f"""        <div style="border:1px solid #dee2e6;border-radius:6px;padding:18px 20px;margin-bottom:20px;">
-        <h3 style="margin:0 0 6px;font-size:1.1em;">→ Predicts <strong>{html.escape(str(run['target']))}</strong>{badge}</h3>
-        <p style="margin:0 0 12px;color:#6c757d;font-size:0.85em;">{html.escape(run['label'])} &nbsp;·&nbsp; {html.escape(run['problem_type'].title() if run['problem_type'] else '')} &nbsp;·&nbsp; Best: <strong>{html.escape(str(run['best_model_name']))}</strong></p>""")
-
-            if run["leaderboard"]:
-                html_parts.append("""        <table class="table" style="margin-bottom:8px;">
-            <thead><tr><th>Model</th><th>Metrics</th><th>Status</th></tr></thead>
-            <tbody>""")
-                for row in run["leaderboard"]:
-                    status = "✓ Success" if not row.get("error") else "✗ Failed"
-                    if row.get("error"):
-                        metrics = f"<span style='color:#dc3545;'>{html.escape(str(row['error']))}</span>"
-                    else:
-                        metrics = ", ".join(f"<strong>{k}:</strong> {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
-                    best_marker = " ⭐" if row.get("model") == run["best_model_name"] else ""
-                    html_parts.append(f"""                <tr>
-                    <td><strong>{html.escape(str(row.get('model', 'model')))}{best_marker}</strong></td>
-                    <td>{metrics}</td>
-                    <td>{status}</td>
-                </tr>""")
-                html_parts.append("            </tbody></table>")
-
-            if run["feature_columns"]:
-                feats = ", ".join(html.escape(c) for c in run["feature_columns"][:20])
-                if len(run["feature_columns"]) > 20:
-                    feats += f", … (+{len(run['feature_columns'])-20} more)"
-                html_parts.append(f'        <p style="font-size:0.82em;color:#6c757d;margin:0;"><strong>Features used:</strong> {feats}</p>')
-
-            # Feature importance only for current model (saved runs don't store fitted models in report)
-            if run["is_current"]:
-                importance = _report_feature_importance(session)
-                if importance:
-                    max_importance = max(abs(float(item.get("importance", 0) or 0)) for item in importance) or 1.0
-                    html_parts.append("""        <h4 style="margin:14px 0 8px;font-size:0.95em;">Feature Importance (Best Model)</h4>
-        <table class="table" style="font-size:0.88em;">
-            <thead><tr><th>Feature</th><th>Importance</th><th>Relative strength</th></tr></thead>
-            <tbody>""")
-                    for item in importance[:15]:
-                        feature = html.escape(str(item.get("feature", "")).split("__")[-1])
-                        value = float(item.get("importance", 0) or 0)
-                        width = min(abs(value) / max_importance * 100, 100)
-                        html_parts.append(f"""                <tr>
-                    <td><strong>{feature}</strong></td>
-                    <td>{_fmt_report_value(value)}</td>
-                    <td><div class="importance-bar"><div class="importance-fill" style="width:{width:.1f}%"></div></div></td>
-                </tr>""")
-                    html_parts.append("            </tbody></table>")
-
-            html_parts.append("        </div>")  # end run card
-
-    if session.saved_predictions:
-        html_parts.append("""        <h2 class="section-title" id="predictions">🎯 Saved Predictions</h2>""")
-        for prediction in session.saved_predictions.values():
-            target = html.escape(str(prediction.get("target") or "Prediction"))
-            outputs = ", ".join(_fmt_report_value(v) for v in prediction.get("predictions", []))
-            output = html.escape(outputs or "missing")
-            source = html.escape(str(prediction.get("source_name") or "Current training"))
-            model = html.escape(str(prediction.get("model_name") or "model"))
-            created_at = html.escape(str(prediction.get("created_at") or ""))
-            inputs = html.escape(_fmt_prediction_inputs(prediction.get("inputs", [])))
-            narrative_text = html.escape(str(prediction.get("narrative") or ""))
-            html_parts.append(f"""        <div class="prediction-item">
-            <div class="prediction-output">{target}: {output}</div>
-            <div class="prediction-meta">{source} · {model} · {created_at}</div>
-            <div class="prediction-inputs"><strong>Inputs:</strong> {inputs}</div>""")
-            if narrative_text:
-                html_parts.append(f"""            <div class="prediction-inputs"><strong>Note:</strong> {narrative_text}</div>""")
-            html_parts.append("        </div>")
-
-    if session.unsupervised_results:
-        html_parts.append("""        <h2 class="section-title" id="unsupervised">🧭 Unsupervised Learning</h2>""")
-        suggestions = session.unsupervised_results.get("suggestions") or {}
-        preprocessing = suggestions.get("preprocessing") or {}
-        if preprocessing:
-            features = preprocessing.get("features_used") or []
-            feature_text = ", ".join(html.escape(str(c)) for c in features[:12])
-            if len(features) > 12:
-                feature_text += ", ..."
-            html_parts.append(f"""        <div class="analysis-item">
-            <strong>Preprocessing for Unsupervised Learning</strong>
-            <div class="analysis-meta"><strong>Scaling:</strong> {html.escape(str(preprocessing.get("scaling", "StandardScaler")))}</div>
-            <div class="analysis-meta">{html.escape(str(preprocessing.get("scaling_description", "")))}</div>
-            <div class="analysis-meta"><strong>Numeric features used:</strong> {len(features):,}{f" ({feature_text})" if feature_text else ""}</div>
-        </div>""")
-        cluster_analysis = session.unsupervised_results.get("cluster_analysis")
-        if cluster_analysis:
-            html_parts.append(f"""        <div class="analysis-item">
-                <strong>Cluster Number Analysis</strong>
-            <div class="analysis-meta">Best silhouette K: {html.escape(str(cluster_analysis.get("best_silhouette_k", "")))}; best Davies-Bouldin K: {html.escape(str(cluster_analysis.get("best_db_k", "")))}; elbow K: {html.escape(str(cluster_analysis.get("elbow_k", "")))}; best Calinski-Harabasz K: {html.escape(str(cluster_analysis.get("best_ch_k", "")))}</div>""")
-            rows = cluster_analysis.get("k_analysis") or []
-            if rows:
-                html_parts.append("""            <table class="table"><thead><tr><th>K</th><th>Inertia</th><th>Silhouette</th><th>Davies-Bouldin</th><th>Calinski-Harabasz</th><th>Votes</th></tr></thead><tbody>""")
-                for row in rows:
-                    html_parts.append(f"""                <tr>
-                    <td>{html.escape(str(row.get("k", "")))}</td>
-                    <td>{_fmt_report_value(row.get("inertia"))}</td>
-                    <td>{_fmt_report_value(row.get("silhouette"))}</td>
-                    <td>{_fmt_report_value(row.get("davies_bouldin"))}</td>
-                    <td>{_fmt_report_value(row.get("calinski_harabasz"))}</td>
-                    <td>{html.escape(str(row.get("votes", "")))}</td>
-                </tr>""")
-                html_parts.append("            </tbody></table>")
-            html_parts.append("        </div>")
-        clustering = session.unsupervised_results.get("clustering")
-        if clustering:
-            method = html.escape(str(clustering.get("method", "Clustering")))
-            selected = html.escape(str(clustering.get("selected_method") or method))
-            reason = html.escape(str(clustering.get("selection_reason") or ""))
-            rows_scored = clustering.get("n_rows_scored")
-            html_parts.append(f"""        <div class="analysis-item">
-            <strong>{method}</strong>
-            <div class="analysis-meta">Selected method: {selected}</div>""")
-            if rows_scored:
-                html_parts.append(f"""            <div class="analysis-meta">Rows scored: {int(rows_scored):,}</div>""")
-            if reason:
-                html_parts.append(f"""            <div class="analysis-meta">{reason}</div>""")
-            sizes = clustering.get("cluster_sizes") or {}
-            if sizes:
-                html_parts.append("            <table class='table'><thead><tr><th>Cluster</th><th>Rows</th></tr></thead><tbody>")
-                for name, count in sizes.items():
-                    html_parts.append(f"""                <tr><td>{html.escape(str(name))}</td><td>{int(count):,}</td></tr>""")
-                html_parts.append("            </tbody></table>")
-            metrics = clustering.get("metrics") or {}
-            if metrics:
-                metrics_text = ", ".join(f"<strong>{html.escape(str(k))}:</strong> {_fmt_report_value(v)}" for k, v in metrics.items())
-                html_parts.append(f"""            <div class="analysis-meta">{metrics_text}</div>""")
-            html_parts.append("        </div>")
-        anomaly = session.unsupervised_results.get("anomaly")
-        if anomaly:
-            html_parts.append(f"""        <div class="analysis-item">
-            <strong>{html.escape(str(anomaly.get("method", "Anomaly Detection")))}</strong>
-            <div class="analysis-meta">Anomalies found: {int(anomaly.get("n_outliers", 0)):,} ({_fmt_report_value(anomaly.get("outlier_percentage", 0))}% of data)</div>
-            <div class="analysis-meta">Normal rows: {int(anomaly.get("n_normal", 0)):,}</div>
-        </div>""")
-        reduction = session.unsupervised_results.get("reduction")
-        if reduction:
-            html_parts.append(f"""        <div class="analysis-item">
-            <strong>{html.escape(str(reduction.get("method", "Dimensionality Reduction")))}</strong>
-            <div class="analysis-meta">Components: {html.escape(str(reduction.get("n_components", "")))}</div>
-            <div class="analysis-meta">Points generated: {int(reduction.get("n_rows_scored", 0)):,}</div>""")
-            if reduction.get("explained_variance"):
-                variance = ", ".join(f"PC{i + 1}: {_fmt_report_value(v)}%" for i, v in enumerate(reduction.get("explained_variance", [])))
-                html_parts.append(f"""            <div class="analysis-meta">Explained variance: {variance}</div>""")
-            html_parts.append("        </div>")
-        association = session.unsupervised_results.get("association")
-        if association:
-            html_parts.append(f"""        <div class="analysis-item">
-            <strong>{html.escape(str(association.get("method", "Association Rules")))}</strong>
-            <div class="analysis-meta">Rules found: {int(association.get("n_rules", 0)):,}</div>
-            <div class="analysis-meta">Minimum support: {_fmt_report_value(association.get("min_support"))}; minimum confidence: {_fmt_report_value(association.get("min_confidence"))}</div>""")
-            rules = association.get("rules") or []
-            if rules:
-                html_parts.append("""            <table class="table"><thead><tr><th>Antecedents</th><th>Consequents</th><th>Support</th><th>Confidence</th><th>Lift</th></tr></thead><tbody>""")
-                for rule in rules[:10]:
-                    html_parts.append(f"""                <tr>
-                    <td>{html.escape(", ".join(map(str, rule.get("antecedents", []))))}</td>
-                    <td>{html.escape(", ".join(map(str, rule.get("consequents", []))))}</td>
-                    <td>{_fmt_report_value(rule.get("support"))}</td>
-                    <td>{_fmt_report_value(rule.get("confidence"))}</td>
-                    <td>{_fmt_report_value(rule.get("lift"))}</td>
-                </tr>""")
-                html_parts.append("            </tbody></table>")
-            html_parts.append("        </div>")
-    
-    html_parts.append("""    </div>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script>
-        function copyReportLink() {
-            const link = window.location.href;
-            navigator.clipboard.writeText(link).then(() => {
-                showNotification('Report link copied to clipboard!');
-            }).catch(() => {
-                prompt('Copy this link:', link);
-            });
-        }
-
-        function downloadHTML() {
-            const htmlContent = document.documentElement.outerHTML;
-            const blob = new Blob([htmlContent], { type: 'text/html' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'autods_report.html';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            showNotification('HTML report downloaded!');
-        }
-
-        function copyChart(index) {
-            const canvas = document.getElementById(`chart_${index}`);
-            if (!canvas) {
-                showNotification('❌ Chart not found');
-                return;
-            }
-            
-            // Find the chart card container
-            const chartCard = canvas.closest('.chart-card');
-            if (!chartCard) {
-                showNotification('❌ Chart container not found');
-                return;
-            }
-            
-            // Method 1: Try to copy the entire chart card as an image using html2canvas approach
-            // Since we can't use external libraries, we'll create a downloadable link
-            try {
-                const dataUrl = canvas.toDataURL('image/png');
-                
-                // Create a temporary download link
-                const link = document.createElement('a');
-                link.download = `chart_${index + 1}.png`;
-                link.href = dataUrl;
-                
-                // Trigger download
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                
-                showNotification('✓ Chart downloaded! Check your downloads folder.');
-                
-                // Also try to copy to clipboard
-                copyToClipboard(dataUrl);
-                
-            } catch (err) {
-                console.error('Download failed:', err);
-                showNotification('❌ Failed to download. Please right-click the chart and select "Save image as..."');
-            }
-        }
-
-        function copyToClipboard(dataUrl) {
-            // Convert data URL to blob
-            fetch(dataUrl)
-                .then(res => res.blob())
-                .then(blob => {
-                    if (navigator.clipboard && window.ClipboardItem) {
-                        try {
-                            const item = new ClipboardItem({ 'image/png': blob });
-                            return navigator.clipboard.write([item]);
-                        } catch (err) {
-                            console.log('Clipboard API not supported');
-                            return Promise.resolve();
-                        }
-                    }
-                    return Promise.resolve();
-                })
-                .then(() => {
-                    if (navigator.clipboard && window.ClipboardItem) {
-                        showNotification('✓ Chart also copied to clipboard! You can paste it now.');
-                    }
-                })
-                .catch(err => {
-                    console.log('Clipboard copy failed:', err);
-                });
-        }
-
-        function copyReportContent() {
-            // Create a simplified text version of the report
-            let textContent = 'AUTODS ANALYSIS REPORT\n';
-            textContent += '='.repeat(50) + '\n\n';
-            
-            // Extract title and metadata
-            const title = document.querySelector('.report-title')?.textContent || 'AutoDS Analysis Report';
-            const dataset = document.querySelector('.report-meta strong')?.parentElement?.textContent || '';
-            textContent += `${title}\n${dataset}\n\n`;
-            
-            // Extract all section titles and content
-            const sections = document.querySelectorAll('.section-title, .narrative-text p, .stat-box, .correlation-item, .cleaning-item, .prediction-item, .analysis-item');
-            sections.forEach(section => {
-                const text = section.textContent.trim();
-                if (text) {
-                    textContent += text + '\n\n';
-                }
-            });
-            
-            // Copy to clipboard
-            navigator.clipboard.writeText(textContent).then(() => {
-                showNotification('Report text copied to clipboard! You can paste it into Word, PowerPoint, or any document.');
-            }).catch(() => {
-                // Fallback: select all text
-                const range = document.createRange();
-                range.selectNode(document.body);
-                const selection = window.getSelection();
-                selection.removeAllRanges();
-                selection.addRange(range);
-                showNotification('Text selected! Press Ctrl+C to copy.');
-            });
-        }
-
-        function showNotification(message) {
-            // Create notification element
-            const notification = document.createElement('div');
-            notification.style.cssText = `
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                background-color: #198754;
-                color: white;
-                padding: 15px 20px;
-                border-radius: 8px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                font-size: 14px;
-                font-weight: 600;
-                z-index: 10000;
-                animation: slideIn 0.3s ease-out;
-            `;
-            notification.textContent = message;
-            document.body.appendChild(notification);
-            
-            // Remove after 3 seconds
-            setTimeout(() => {
-                notification.style.animation = 'slideOut 0.3s ease-out';
-                setTimeout(() => {
-                    document.body.removeChild(notification);
-                }, 300);
-            }, 3000);
-        }
-
-        // Add animation styles
-        const style = document.createElement('style');
-        style.textContent = `
-            @keyframes slideIn {
-                from { transform: translateX(400px); opacity: 0; }
-                to { transform: translateX(0); opacity: 1; }
-            }
-            @keyframes slideOut {
-                from { transform: translateX(0); opacity: 1; }
-                to { transform: translateX(400px); opacity: 0; }
-            }
-        `;
-        document.head.appendChild(style);
-    </script>
-    <script>
-        const reportCharts = """ + chart_data_json + """;
-
-        const chartOptions = {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: true, position: 'bottom' },
-                tooltip: { mode: 'index', intersect: false }
-            }
-        };
-        const pieColors = ['#5fd4d6', '#ffb627', '#5fd98c', '#ef6f6f', '#a78bfa', '#fb923c', '#34d399', '#f472b6', '#60a5fa', '#facc15', '#94a3b8', '#f87171'];
-
-        function fmtShort(value) {
-            const n = Number(value);
-            if (Number.isFinite(n)) {
-                return Math.abs(n) >= 1000
-                    ? n.toLocaleString(undefined, { maximumFractionDigits: 1 })
-                    : n.toFixed(Math.abs(n) < 10 ? 2 : 1).replace(/\\.0$/, '');
-            }
-            return String(value);
-        }
-
-        function boxplotTooltipOptions(chart) {
-            return {
-                displayColors: false,
-                callbacks: {
-                    title: (items) => {
-                        const label = (items && items[0] && items[0].label) || 'all';
-                        return chart.group ? `${chart.group}: ${label}` : (chart.x || 'Box plot');
-                    },
-                    label: (ctx) => {
-                        const label = ctx.label || 'all';
-                        const stats = chart.groups && chart.groups[label];
-                        if (!stats) return `${ctx.dataset.label || chart.x || 'Value'}: ${fmtShort(ctx.parsed.y)}`;
-                        const current = ctx.dataset.label || 'Value';
-                        const iqr = Number(stats.q3) - Number(stats.q1);
-                        return [
-                            `${current}: ${fmtShort(ctx.parsed.y)}`,
-                            `Min: ${fmtShort(stats.min)}`,
-                            `Q1: ${fmtShort(stats.q1)}`,
-                            `Median: ${fmtShort(stats.median)}`,
-                            `Q3: ${fmtShort(stats.q3)}`,
-                            `Max: ${fmtShort(stats.max)}`,
-                            `IQR: ${fmtShort(iqr)}`,
-                            `Outliers: ${(stats.outliers || []).length}`,
-                        ];
-                    }
-                }
-            };
-        }
-
-        function renderHeatmap(canvas, chart) {
-            const matrix = chart.matrix || [];
-            const labels = chart.labels || [];
-            const n = matrix.length;
-            if (!n) return false;
-
-            const wrap = canvas.parentElement;
-            const rect = wrap.getBoundingClientRect();
-            const width = Math.max(640, Math.floor(rect.width || 640));
-            const height = Math.max(520, Math.floor(rect.height || 520));
-            canvas.width = width;
-            canvas.height = height;
-
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, width, height);
-
-            const labelSpace = labels.length ? 120 : 36;
-            const topSpace = 30;
-            const rightSpace = 24;
-            const bottomSpace = labels.length ? 130 : 36;
-            const plotW = width - labelSpace - rightSpace;
-            const plotH = height - topSpace - bottomSpace;
-            const size = Math.max(80, Math.min(plotW, plotH));
-            const cellSize = size / n;
-            const offsetX = labelSpace + Math.max(0, (plotW - size) / 2);
-            const offsetY = topSpace + Math.max(0, (plotH - size) / 2);
-
-            let maxAbs = 0;
-            for (let i = 0; i < n; i++) {
-                for (let j = 0; j < (matrix[i] || []).length; j++) {
-                    const v = Number(matrix[i][j]);
-                    if (Number.isFinite(v)) maxAbs = Math.max(maxAbs, Math.abs(v));
-                }
-            }
-            if (!maxAbs) maxAbs = 1;
-
-            function cellColor(value) {
-                const intensity = Math.min(1, Math.abs(value) / maxAbs);
-                if (value >= 0) {
-                    const r = Math.round(255 - (255 - 220) * intensity);
-                    const g = Math.round(255 - (255 - 53) * intensity);
-                    const b = Math.round(255 - (255 - 69) * intensity);
-                    return `rgb(${r},${g},${b})`;
-                }
-                const r = Math.round(255 - (255 - 49) * intensity);
-                const g = Math.round(255 - (255 - 130) * intensity);
-                const b = Math.round(255 - (255 - 206) * intensity);
-                return `rgb(${r},${g},${b})`;
-            }
-
-            for (let i = 0; i < n; i++) {
-                for (let j = 0; j < n; j++) {
-                    const v = Number((matrix[i] || [])[j] || 0);
-                    const x = offsetX + j * cellSize;
-                    const y = offsetY + i * cellSize;
-                    ctx.fillStyle = cellColor(v);
-                    ctx.fillRect(x, y, Math.max(1, cellSize - 1), Math.max(1, cellSize - 1));
-                    if (cellSize >= 34) {
-                        ctx.fillStyle = Math.abs(v) > maxAbs * 0.55 ? '#fff' : '#212529';
-                        ctx.font = `${Math.min(12, cellSize / 3)}px Arial, sans-serif`;
-                        ctx.textAlign = 'center';
-                        ctx.textBaseline = 'middle';
-                        ctx.fillText(v.toFixed(2), x + cellSize / 2, y + cellSize / 2);
-                    }
-                }
-            }
-
-            ctx.fillStyle = '#495057';
-            ctx.font = '11px Arial, sans-serif';
-            for (let i = 0; i < n; i++) {
-                const label = String(labels[i] || '');
-                ctx.save();
-                ctx.translate(offsetX + i * cellSize + cellSize / 2, offsetY + size + 10);
-                ctx.rotate(-Math.PI / 4);
-                ctx.textAlign = 'right';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(label, 0, 0);
-                ctx.restore();
-
-                ctx.textAlign = 'right';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(label, offsetX - 8, offsetY + i * cellSize + cellSize / 2);
-            }
-            return true;
-        }
-
-        function buildChartConfig(chart) {
-            switch (chart.type) {
-                case 'pie':
-                    return {
-                        type: 'doughnut',
-                        data: {
-                            labels: chart.labels,
-                            datasets: [{
-                                data: chart.values,
-                                backgroundColor: pieColors,
-                                borderColor: '#ffffff',
-                                borderWidth: 2
-                            }]
-                        },
-                        options: {
-                            ...chartOptions,
-                            cutout: '52%',
-                            plugins: {
-                                ...chartOptions.plugins,
-                                legend: {
-                                    position: 'right',
-                                    labels: { color: '#495057', boxWidth: 12, padding: 12 }
-                                },
-                                tooltip: {
-                                    callbacks: {
-                                        label: (ctx) => {
-                                            const total = ctx.dataset.data.reduce((a, b) => a + Number(b || 0), 0);
-                                            const value = Number(ctx.parsed || 0);
-                                            const pct = total ? ` (${(value / total * 100).toFixed(1)}%)` : '';
-                                            return `${ctx.label}: ${value}${pct}`;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    };
-                case 'bar':
-                case 'histogram':
-                    return {
-                        type: 'bar',
-                        data: {
-                            labels: chart.labels,
-                            datasets: [{
-                                label: chart.x || 'Values',
-                                data: chart.values,
-                                backgroundColor: 'rgba(13,110,253,0.75)',
-                                borderColor: 'rgba(13,110,253,1)',
-                                borderWidth: 1
-                            }]
-                        },
-                        options: {
-                            ...chartOptions,
-                            scales: { y: { beginAtZero: true } }
-                        }
-                    };
-                case 'line':
-                    return {
-                        type: 'line',
-                        data: {
-                            labels: chart.labels,
-                            datasets: [{
-                                label: chart.y || chart.x || 'Series',
-                                data: chart.values,
-                                borderColor: 'rgba(13,110,253,0.85)',
-                                backgroundColor: 'rgba(13,110,253,0.3)',
-                                fill: true,
-                                tension: 0.25
-                            }]
-                        },
-                        options: chartOptions
-                    };
-                case 'scatter':
-                    return {
-                        type: 'scatter',
-                        data: {
-                            datasets: [{
-                                label: chart.title || `${chart.x} vs ${chart.y}`,
-                                data: chart.points,
-                                pointRadius: 5,
-                                pointBackgroundColor: 'rgba(13,110,253,0.85)',
-                                borderColor: 'rgba(13,110,253,1)'
-                            }]
-                        },
-                        options: {
-                            ...chartOptions,
-                            scales: {
-                                x: { type: 'linear', title: { display: true, text: chart.x } },
-                                y: { title: { display: true, text: chart.y } }
-                            }
-                        }
-                    };
-                case 'boxplot': {
-                    if (!chart.groups) return null;
-                    const groupEntries = Object.entries(chart.groups);
-                    if (!groupEntries.length) return null;
-                    const isSimple = chart._boxplotMode === 'simple';
-                    const bpLabels = groupEntries.map(([g]) => g);
-                    const bpDatasets = isSimple
-                        ? [{ label: chart.x || 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: 'rgba(95,212,214,0.73)' }]
-                        : [
-                            { label: 'Q1',     data: groupEntries.map(([, s]) => (s && s.q1)     || 0), backgroundColor: 'rgba(95,212,214,0.45)' },
-                            { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: 'rgba(255,182,39,0.75)'  },
-                            { label: 'Q3',     data: groupEntries.map(([, s]) => (s && s.q3)     || 0), backgroundColor: 'rgba(95,217,140,0.45)'  }
-                          ];
-                    return {
-                        type: 'bar',
-                        data: { labels: bpLabels, datasets: bpDatasets },
- 	                        options: {
- 	                            ...chartOptions,
- 	                            interaction: { mode: 'nearest', intersect: true },
- 	                            plugins: {
- 	                                ...chartOptions.plugins,
- 	                                legend: { display: !isSimple, labels: { color: '#495057' } },
- 	                                tooltip: boxplotTooltipOptions(chart)
- 	                            },
- 	                            scales: { y: { beginAtZero: true } }
- 	                        }
-                    };
-                }
-                case 'wordcloud':
-                case 'word_frequency': {
-                    if (!chart.words || !chart.words.length) return null;
-                    const cloudContainer = document.createElement('div');
-                    cloudContainer.className = 'wordcloud-wrap';
-                    const counts = chart.words.map(w => w.count);
-                    const min = Math.min(...counts), max = Math.max(...counts);
-                    const scale = c => min === max ? 24 : 13 + ((c - min) / (max - min)) * 46;
-                    cloudContainer.innerHTML = chart.words.map((w, i) =>
-                        `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${pieColors[i % pieColors.length]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
-                    ).join('');
-                    canvas.parentElement.insertBefore(cloudContainer, canvas);
-                    canvas.remove();
-                    return null;
-                }
-                case 'density': {
-                    if (!chart.labels || !chart.labels.length) return null;
-                    return {
-                        type: 'line',
-                        data: {
-                            labels: chart.labels,
-                            datasets: [{
-                                label: chart.x || 'Density',
-                                data: chart.values,
-                                borderColor: 'rgba(255,182,39,0.85)',
-                                backgroundColor: 'rgba(255,182,39,0.2)',
-                                fill: true,
-                                pointRadius: 0,
-                                tension: 0.4
-                            }]
-                        },
-                        options: {
-                            ...chartOptions,
-                            scales: {
-                                x: { ticks: { maxTicksLimit: 10 } },
-                                y: { beginAtZero: true }
-                            }
-                        }
-                    };
-                }
-                case 'violin': {
-                    if (!chart.groups || !Object.keys(chart.groups).length) return null;
-                    const groupEntries = Object.entries(chart.groups).filter(([, s]) => s);
-                    if (!groupEntries.length) return null;
-                    
-                    const violinLabels = groupEntries.map(([g]) => g);
-                    const violinDatasets = [
-                        { label: 'Q1', data: groupEntries.map(([, s]) => (s && s.q1) || 0), backgroundColor: 'rgba(95,212,214,0.45)' },
-                        { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: 'rgba(255,182,39,0.75)' },
-                        { label: 'Q3', data: groupEntries.map(([, s]) => (s && s.q3) || 0), backgroundColor: 'rgba(95,217,140,0.45)' }
-                    ];
-                    
-                    return {
-                        type: 'bar',
-                        data: { labels: violinLabels, datasets: violinDatasets },
-                        options: {
-                            ...chartOptions,
-                            interaction: { mode: 'nearest', intersect: true },
-                            plugins: {
-                                ...chartOptions.plugins,
-                                legend: { display: true, labels: { color: '#495057' } }
-                            },
-                            scales: { y: { beginAtZero: true } }
-                        }
-                    };
-                }
-                case 'treemap': {
-                    if (!chart.labels || !chart.labels.length) return null;
-                    const treemapContainer = document.createElement('div');
-                    treemapContainer.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;width:100%;';
-                    const total = chart.values.reduce((a, b) => a + b, 0);
-                    treemapContainer.innerHTML = chart.labels.map((label, i) => {
-                        const share = total ? (chart.values[i] / total * 100).toFixed(1) : '0.0';
-                        return `<div style="background:${pieColors[i % pieColors.length]}cc;color:#fff;padding:12px;border-radius:4px;text-align:center;font-family:Arial,sans-serif;">
-                            <div style="font-weight:bold;font-size:12px;margin-bottom:4px;">${label.length > 15 ? label.slice(0, 12) + '…' : label}</div>
-                            <div style="font-size:10px;opacity:0.9;">${chart.values[i]} (${share}%)</div>
-                        </div>`;
-                    }).join('');
-                    canvas.parentElement.insertBefore(treemapContainer, canvas);
-                    canvas.remove();
-                    return null;
-                }
-                case 'radar': {
-                    if (!chart.labels || !chart.datasets || !chart.datasets.length) return null;
-                    return {
-                        type: 'radar',
-                        data: {
-                            labels: chart.labels,
-                            datasets: chart.datasets.map((ds, i) => ({
-                                label: ds.label || `Series ${i + 1}`,
-                                data: ds.data,
-                                borderColor: pieColors[i % pieColors.length],
-                                backgroundColor: pieColors[i % pieColors.length] + '33',
-                                pointBackgroundColor: pieColors[i % pieColors.length],
-                                borderWidth: 2
-                            }))
-                        },
-                        options: {
-                            ...chartOptions,
-                            scales: {
-                                r: {
-                                    beginAtZero: true,
-                                    ticks: { color: '#495057', backdropColor: 'transparent' },
-                                    grid: { color: '#dee2e6' },
-                                    pointLabels: { color: '#495057', font: { size: 11 } }
-                                }
-                            }
-                        }
-                    };
-                }
-                case 'scatter_map': {
-                    const notice = document.createElement('div');
-                    notice.className = 'chart-notice';
-                    notice.textContent = 'Scatter maps require an interactive map and cannot be rendered in the static HTML report.';
-                    notice.style.marginTop = '20px';
-                    canvas.parentElement.insertBefore(notice, canvas);
-                    canvas.remove();
-                    return null;
-                }
-                default:
-                    return null;
-            }
-        }
-
-        reportCharts.forEach((chart, index) => {
-            const canvas = document.getElementById(`chart_${index}`);
-            if (!canvas) return;
-            if (chart.type === 'heatmap') {
-                if (renderHeatmap(canvas, chart)) return;
-            }
-            const config = buildChartConfig(chart);
-            if (!config) {
-                const notice = document.createElement('div');
-                notice.className = 'chart-notice';
-                notice.textContent = 'This visualization is not rendered as an interactive chart in the downloaded report.';
-                canvas.parentElement.insertBefore(notice, canvas);
-                canvas.remove();
-                return;
-            }
-            new Chart(canvas, config);
-        });
-    </script>
-</body>
-</html>""")
-    
-    return "\n".join(html_parts)
-
-
 def _build_work_report(session) -> str:
     profile = eda.profile_dataframe(session.df)
     narrative = narrate.narrate_eda(profile)
@@ -1775,9 +893,14 @@ def _build_work_report(session) -> str:
         f"- Duplicate rows: {profile['duplicate_rows']:,}",
         f"- Missing cells: {profile['total_missing_cells']:,} of {profile['total_cells']:,}",
         "",
-        "## Summary",
-        "",
     ]
+
+    if getattr(session, "notes", "").strip():
+        lines.extend(["## Notes", ""])
+        lines.extend(session.notes.strip().splitlines())
+        lines.append("")
+
+    lines.extend(["## Summary", ""])
 
     lines.extend(f"- {note}" for note in narrative)
     lines.extend(["", "## Columns", ""])
@@ -1813,58 +936,27 @@ def _build_work_report(session) -> str:
         for a, b, val in pairs[:10]:
             lines.append(f"- `{a}` vs `{b}`: {val:+.3f}")
 
-    if has_cleaning:
+    if _has_cleaning_history(session):
         lines.extend(["", "## Cleaning Log", ""])
         lines.extend(f"- {entry}" for entry in session.cleaning_log)
         lines.extend(f"- {entry.get('command', '')}: {entry.get('message', '')}" for entry in session.chat_clean_log)
 
-    all_runs_md = []
-    for run_id, run in (session.saved_runs or {}).items():
-        all_runs_md.append({
-            "label": run.get("name", f"Saved: {run.get('target', '?')}"),
-            "target": run.get("target", "?"),
-            "problem_type": run.get("problem_type", ""),
-            "best_model_name": run.get("best_model_name", "?"),
-            "leaderboard": run.get("leaderboard", []),
-            "feature_columns": run.get("feature_columns", []),
-            "is_current": False,
-        })
     if session.leaderboard:
-        all_runs_md.append({
-            "label": f"Current model",
-            "target": session.target,
-            "problem_type": session.problem_type or "",
-            "best_model_name": session.best_model_name or "?",
-            "leaderboard": session.leaderboard,
-            "feature_columns": session.feature_columns or [],
-            "is_current": True,
-        })
-
-    if all_runs_md:
         lines.extend(["", "## Model Training", ""])
-        lines.append(f"{len(all_runs_md)} model(s) trained in this session.")
-        for run in all_runs_md:
-            tag = " *(current)*" if run["is_current"] else " *(saved)*"
-            lines.extend(["", f"### → Predicts `{run['target']}`{tag}", ""])
-            lines.append(f"- **Label:** {run['label']}")
-            lines.append(f"- **Problem type:** {run['problem_type'].title() if run['problem_type'] else 'Unknown'}")
-            lines.append(f"- **Best model:** {run['best_model_name']}")
-            if run["feature_columns"]:
-                feats = ", ".join(f"`{c}`" for c in run["feature_columns"][:20])
-                if len(run["feature_columns"]) > 20:
-                    feats += f", … (+{len(run['feature_columns'])-20} more)"
-                lines.append(f"- **Features used:** {feats}")
-            if run["leaderboard"]:
-                lines.append("")
-                lines.append("| Rank | Model | Metrics |")
-                lines.append("| --- | --- | --- |")
-                for i, row in enumerate(run["leaderboard"], 1):
-                    if row.get("error"):
-                        metrics = f"failed: {row['error']}"
-                    else:
-                        metrics = ", ".join(f"{k}: {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
-                    marker = " ⭐" if row.get("model") == run["best_model_name"] else ""
-                    lines.append(f"| {i} | {row.get('model', 'model')}{marker} | {metrics} |")
+        lines.append(f"- Target column: `{session.target}`")
+        lines.append(f"- Problem type: {session.problem_type.title() if session.problem_type else 'Unknown'}")
+        lines.append(f"- Best model: **{session.best_model_name}**")
+        lines.append(f"- Features used: {', '.join(f'`{c}`' for c in session.feature_columns) if session.feature_columns else 'all columns'}")
+        lines.append("")
+        lines.append("| Rank | Model | Metrics |")
+        lines.append("| --- | --- | --- |")
+        for i, row in enumerate(session.leaderboard, 1):
+            if row.get("error"):
+                metrics = f"failed: {row['error']}"
+            else:
+                metrics = ", ".join(f"{k}: {_fmt_report_value(v)}" for k, v in row.get("metrics", {}).items())
+            marker = " ⭐" if row.get("model") == session.best_model_name else ""
+            lines.append(f"| {i} | {row.get('model', 'model')}{marker} | {metrics} |")
 
     if session.saved_predictions:
         lines.extend(["", "## Predictions", ""])
@@ -1986,3 +1078,815 @@ def _build_work_report(session) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+@app.get("/api/geojson/{session_id}")
+def get_geojson(session_id: str):
+    """Return the raw GeoJSON stored on the session (uploaded .geojson file)."""
+    session = get_session(session_id)
+    if not session.geojson:
+        raise HTTPException(404, "No GeoJSON available for this session.")
+    return session.geojson
+
+
+@app.get("/api/download_data/{session_id}")
+def download_data(session_id: str, fmt: str = "csv"):
+    session = _get_session_or_404(session_id)
+    df = session.df
+    name = session.filename.rsplit(".", 1)[0]
+
+    if fmt == "excel":
+        # Excel (.xlsx) sheets have a hard limit of 1,048,576 rows. Beyond
+        # that the file can't be written at all — reject early with a clear
+        # message instead of burning memory/time on a write that will fail
+        # partway through anyway.
+        EXCEL_ROW_LIMIT = 1_048_575  # leaves room for the header row
+        if len(df) > EXCEL_ROW_LIMIT:
+            raise HTTPException(
+                400,
+                f"This dataset has {len(df):,} rows, which is more than Excel's "
+                f"limit of {EXCEL_ROW_LIMIT:,} rows per sheet. Please download as "
+                "CSV instead, or filter/split the dataset into a smaller subset first.",
+            )
+        buf = io.BytesIO()
+        # xlsxwriter's constant_memory mode streams rows to the output as it
+        # writes instead of building the whole workbook as Python objects in
+        # RAM first (which is what the default openpyxl engine does) — this
+        # is the main fix for large exports using up all available memory.
+        with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={"options": {"constant_memory": True}}) as writer:
+            df.to_excel(writer, index=False, sheet_name="Sheet1")
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={name}_autods.xlsx"},
+        )
+
+    # CSV: write in row-chunks and stream each chunk out as it's produced,
+    # instead of building the entire CSV as one giant string in memory first.
+    # This keeps peak memory roughly constant no matter how large the dataset is.
+    CHUNK_ROWS = 50_000
+
+    def _csv_chunks():
+        header_buf = io.StringIO()
+        df.iloc[0:0].to_csv(header_buf, index=False)
+        yield header_buf.getvalue().encode("utf-8")
+        for start in range(0, len(df), CHUNK_ROWS):
+            chunk_buf = io.StringIO()
+            df.iloc[start:start + CHUNK_ROWS].to_csv(chunk_buf, index=False, header=False)
+            yield chunk_buf.getvalue().encode("utf-8")
+
+    return StreamingResponse(
+        _csv_chunks(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods.csv"},
+    )
+
+
+@app.get("/api/download_work/{session_id}")
+def download_work(session_id: str):
+    session = _get_session_or_404(session_id)
+    report = _build_work_report(session).encode("utf-8")
+    buf = io.BytesIO(report)
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_work_report.md"},
+    )
+
+
+@app.get("/api/download_html/{session_id}")
+def download_html(session_id: str):
+    session = _get_session_or_404(session_id)
+    report = _build_html_report(session).encode("utf-8")
+    buf = io.BytesIO(report)
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html"},
+    )
+
+
+class ReportChartsRequest(BaseModel):
+    charts: list = []   # chart objects the user built in "Build a custom chart",
+                         # in the same shape returned by /api/visualize
+
+
+@app.post("/api/download_html/{session_id}")
+def download_html_with_custom_charts(session_id: str, req: ReportChartsRequest):
+    session = _get_session_or_404(session_id)
+    report = _build_html_report(session, extra_charts=req.charts).encode("utf-8")
+    buf = io.BytesIO(report)
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html"},
+    )
+
+
+# ---------- Ask ----------
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    # "clean" = sent from the Clean tab's chat, "assistant" = the floating
+    # "Ask about your data" panel. A few data-modifying actions (like
+    # creating a new column) are only meant for the Clean chat.
+    source: str = "assistant"
+
+
+@app.post("/api/ask/{session_id}")
+def ask(session_id: str, req: AskRequest):
+    session = _get_session_or_404(session_id)
+
+    code_answer = assistant.answer_code_request(
+        session.df,
+        req.question,
+        filename=session.filename,
+        cleaning_log=session.cleaning_log,
+        chat_clean_log=session.chat_clean_log,
+        clean_options=session.last_clean_options,
+        visualization=session.last_visualization,
+        unsupervised_results=session.unsupervised_results,
+    )
+    if code_answer:
+        return {"answer": code_answer, "table": None, "action": "show_code", "modified": False}
+    
+    # First try to execute an action
+    action_result = assistant.execute_action(session.df, req.question, source=req.source)
+    
+    if action_result["success"] and action_result["modified_df"] is not None:
+        # Apply the modification to the session
+        session.snapshot_before_change()
+        session.df = action_result["modified_df"]
+        session.clear_current_training()
+        
+        # Get updated profile
+        profile = eda.profile_dataframe(session.df)
+        profile["narrative"] = narrate.narrate_eda(profile)
+        profile["can_undo"] = session.can_undo()
+        profile["data_changed"] = True
+        
+        return {
+            "answer": action_result["message"],
+            "table": action_result.get("table"),
+            "action": action_result["action"],
+            "profile": profile,
+            "modified": True,
+        }
+    if action_result["success"]:
+        return {
+            "answer": action_result["message"],
+            "table": action_result.get("table"),
+            "action": action_result["action"],
+            "modified": False,
+        }
+    
+    # Otherwise, just answer the question
+    answer = assistant.answer_question(session.df, req.question)
+    table = assistant.answer_question_table(session.df, req.question)
+    return {"answer": answer, "table": table, "action": None, "modified": False}
+
+
+# ---------- Train ----------
+
+class TrainRequest(BaseModel):
+    target: str = Field(min_length=1)
+    use_pca: bool = False
+
+
+# session_id -> {"process", "manager", "progress", "result_queue", "target"}
+# Training runs in its OWN OS process (not a thread) so it can actually be
+# killed on cancel -- scikit-learn/xgboost .fit() calls can't be interrupted
+# cooperatively from within the same process once they've started.
+TRAIN_JOBS: dict = {}
+
+
+def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
+    """Runs in a child process. Talks back to the parent only via progress_list/result_queue."""
+    def _report(msg: str):
+        progress_list.append(msg)
+
+    try:
+        problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+            df, target, use_pca=use_pca, progress_callback=_report
+        )
+        result_queue.put({
+            "status": "done",
+            "problem_type": problem_type,
+            "leaderboard": leaderboard,
+            "fitted": fitted,
+            "best_name": best_name,
+            "label_encoder": label_encoder,
+        })
+    except Exception as e:
+        result_queue.put({"status": "error", "error": str(e)})
+
+
+def _cleanup_train_job(session_id: str):
+    job = TRAIN_JOBS.pop(session_id, None)
+    if job is None:
+        return
+    if job["process"].is_alive():
+        job["process"].terminate()
+        job["process"].join(timeout=2)
+        if job["process"].is_alive():
+            job["process"].kill()
+    job["manager"].shutdown()
+
+
+@app.post("/api/train/{session_id}")
+def train(session_id: str, req: TrainRequest):
+    session = _get_session_or_404(session_id)
+    if req.target not in session.df.columns:
+        raise HTTPException(400, f"Column '{req.target}' not found.")
+
+    # Automatically preserve the current training as a saved run before starting
+    # a new one, so the user never loses a trained model when switching targets.
+    if session.models and session.target and session.target != req.target:
+        run_id = str(uuid.uuid4())
+        session.saved_runs[run_id] = {
+            "name": f"Auto-saved: {session.target}",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "target": session.target,
+            "problem_type": session.problem_type,
+            "models": session.models,
+            "leaderboard": session.leaderboard,
+            "best_model_name": session.best_model_name,
+            "label_encoder": session.label_encoder,
+            "feature_columns": session.feature_columns,
+        }
+
+    # Starting a new run always replaces any previous one for this session.
+    _cleanup_train_job(session_id)
+
+    manager = mp.Manager()
+    progress = manager.list(["Starting training...", "Preparing data and features..."])
+    result_queue = manager.Queue()
+
+    process = mp.Process(
+        target=_train_worker,
+        args=(session.df.copy(), req.target, req.use_pca, progress, result_queue),
+        daemon=True,
+    )
+    process.start()
+
+    TRAIN_JOBS[session_id] = {
+        "process": process,
+        "manager": manager,
+        "progress": progress,
+        "result_queue": result_queue,
+        "target": req.target,
+    }
+
+    return {"status": "started"}
+
+
+@app.get("/api/train/{session_id}/status")
+def train_status(session_id: str):
+    session = _get_session_or_404(session_id)
+    job = TRAIN_JOBS.get(session_id)
+    if job is None:
+        return {"status": "idle", "messages": []}
+
+    messages = list(job["progress"])
+
+    if job["process"].is_alive():
+        return {"status": "running", "messages": messages}
+
+    # Process has exited -- see if it left a result behind before we clean it up.
+    try:
+        result = job["result_queue"].get_nowait()
+    except Exception:
+        result = None
+
+    _cleanup_train_job(session_id)
+
+    if result is None:
+        # No result means it was cancelled (killed) or crashed without reporting.
+        return {"status": "cancelled", "messages": messages}
+
+    if result["status"] == "error":
+        return {"status": "error", "messages": messages, "error": result["error"]}
+
+    problem_type = result["problem_type"]
+    leaderboard = result["leaderboard"]
+    fitted = result["fitted"]
+    best_name = result["best_name"]
+    label_encoder = result["label_encoder"]
+    target = job["target"]
+
+    session.target = target
+    session.problem_type = problem_type
+    session.models = fitted
+    session.leaderboard = leaderboard
+    session.best_model_name = best_name
+    session.label_encoder = label_encoder
+    session.feature_columns = [c for c in session.df.columns if c != target]
+
+    importance = []
+    if best_name and best_name in fitted:
+        X = session.df.drop(columns=[target])
+        importance = automl.feature_importance(fitted[best_name], X)
+
+    training_narrative = narrate.narrate_training(
+        problem_type, target, leaderboard, best_name, importance
+    )
+
+    return {
+        "status": "done",
+        "messages": messages,
+        "problem_type": problem_type,
+        "target": target,
+        "leaderboard": leaderboard,
+        "best_model": best_name,
+        "feature_importance": importance,
+        "feature_columns": session.feature_columns,
+        "narrative": training_narrative,
+    }
+
+
+@app.post("/api/train/{session_id}/cancel")
+def cancel_train(session_id: str):
+    job = TRAIN_JOBS.get(session_id)
+    if job is None:
+        return {"status": "idle"}
+    _cleanup_train_job(session_id)
+    return {"status": "cancelled"}
+
+
+def _run_metric_summary(problem_type: str, leaderboard: list, best_name: str) -> dict | None:
+    """Pull out the headline metric (accuracy or R²) for the best model, for display in run lists."""
+    for r in leaderboard:
+        if r.get("model") == best_name and "metrics" in r:
+            key = "accuracy" if problem_type == "classification" else "r2"
+            value = r["metrics"].get(key)
+            return {"key": key, "value": value} if value is not None else None
+    return None
+
+
+def _run_summary(run_id: str, run: dict) -> dict:
+    return {
+        "id": run_id,
+        "name": run["name"],
+        "created_at": run["created_at"],
+        "target": run["target"],
+        "problem_type": run["problem_type"],
+        "best_model": run["best_model_name"],
+        "top_metric": _run_metric_summary(run["problem_type"], run["leaderboard"], run["best_model_name"]),
+        "feature_columns": run["feature_columns"],
+    }
+
+
+class SaveRunRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+@app.post("/api/train_runs/{session_id}")
+def save_train_run(session_id: str, req: SaveRunRequest):
+    """Snapshot the current (most recently trained) models as a named run, so
+    training a new target afterwards doesn't lose this one — it stays available
+    for prediction under its own name."""
+    session = _get_session_or_404(session_id)
+    if not session.models:
+        raise HTTPException(400, "Train a model first before saving a run.")
+
+    run_id = str(uuid.uuid4())
+    session.saved_runs[run_id] = {
+        "name": req.name,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "target": session.target,
+        "problem_type": session.problem_type,
+        "models": session.models,
+        "leaderboard": session.leaderboard,
+        "best_model_name": session.best_model_name,
+        "label_encoder": session.label_encoder,
+        "feature_columns": session.feature_columns,
+    }
+    return {
+        "saved": _run_summary(run_id, session.saved_runs[run_id]),
+        "runs": [_run_summary(rid, r) for rid, r in session.saved_runs.items()],
+    }
+
+
+@app.get("/api/train_runs/{session_id}")
+def list_train_runs(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {"runs": [_run_summary(rid, r) for rid, r in session.saved_runs.items()]}
+
+
+@app.delete("/api/train_runs/{session_id}/{run_id}")
+def delete_train_run(session_id: str, run_id: str):
+    session = _get_session_or_404(session_id)
+    if run_id not in session.saved_runs:
+        raise HTTPException(404, "Saved run not found.")
+    del session.saved_runs[run_id]
+    return {"runs": [_run_summary(rid, r) for rid, r in session.saved_runs.items()]}
+
+
+# ---------- Predict ----------
+
+class PredictRequest(BaseModel):
+    rows: list[dict[str, object]] = Field(min_length=1, max_length=100)
+    model_name: str | None = None  # defaults to best model
+    run_id: str | None = None      # predict using a saved run instead of the current active training
+
+
+def _jsonable_value(value):
+    if hasattr(value, "item"):
+        return value.item()
+    if pd.isna(value):
+        return None
+    return value
+
+
+def _prediction_summary(prediction_id: str, prediction: dict) -> dict:
+    return {
+        "id": prediction_id,
+        "created_at": prediction["created_at"],
+        "target": prediction["target"],
+        "problem_type": prediction["problem_type"],
+        "model_name": prediction["model_name"],
+        "source_name": prediction["source_name"],
+        "run_id": prediction["run_id"],
+        "inputs": prediction["inputs"],
+        "predictions": prediction["predictions"],
+        "narrative": prediction["narrative"],
+    }
+
+
+@app.post("/api/predict/{session_id}")
+def predict(session_id: str, req: PredictRequest):
+    session = _get_session_or_404(session_id)
+
+    if req.run_id:
+        if req.run_id not in session.saved_runs:
+            raise HTTPException(404, "Saved run not found.")
+        run = session.saved_runs[req.run_id]
+        models, problem_type, target = run["models"], run["problem_type"], run["target"]
+        label_encoder, feature_columns = run["label_encoder"], run["feature_columns"]
+        default_model_name = run["best_model_name"]
+        source_name = run["name"]
+    else:
+        if not session.models:
+            raise HTTPException(400, "No trained models for this session yet.")
+        models, problem_type, target = session.models, session.problem_type, session.target
+        label_encoder, feature_columns = session.label_encoder, session.feature_columns
+        default_model_name = session.best_model_name
+        source_name = "Current training"
+
+    model_name = req.model_name or default_model_name
+    if model_name not in models:
+        raise HTTPException(400, f"Model '{model_name}' not found.")
+
+    pipe = models[model_name]
+    input_df = pd.DataFrame(req.rows)
+
+    missing_cols = [c for c in feature_columns if c not in input_df.columns]
+    for c in missing_cols:
+        input_df[c] = None
+    input_df = input_df[feature_columns]
+
+    preds = pipe.predict(input_df)
+
+    if problem_type == "classification" and label_encoder is not None:
+        preds = label_encoder.inverse_transform(preds.astype(int))
+
+    pred_value = preds[0].item() if hasattr(preds[0], "item") else preds[0]
+    explanation = narrate.narrate_prediction(
+        problem_type, target, pred_value, model_name, req.rows[0]
+    )
+    predictions = [_jsonable_value(p) for p in preds]
+    prediction_id = str(uuid.uuid4())
+    session.saved_predictions[prediction_id] = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "target": target,
+        "problem_type": problem_type,
+        "model_name": model_name,
+        "source_name": source_name,
+        "run_id": req.run_id,
+        "inputs": req.rows,
+        "predictions": predictions,
+        "narrative": explanation,
+    }
+
+    return {
+        "predictions": predictions,
+        "narrative": explanation,
+        "saved_prediction": _prediction_summary(prediction_id, session.saved_predictions[prediction_id]),
+        "saved_predictions": [
+            _prediction_summary(pid, p) for pid, p in session.saved_predictions.items()
+        ],
+    }
+
+
+@app.get("/api/predictions/{session_id}")
+def list_predictions(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {
+        "predictions": [
+            _prediction_summary(pid, p) for pid, p in session.saved_predictions.items()
+        ]
+    }
+
+
+@app.delete("/api/predictions/{session_id}/{prediction_id}")
+def delete_prediction(session_id: str, prediction_id: str):
+    session = _get_session_or_404(session_id)
+    if prediction_id not in session.saved_predictions:
+        raise HTTPException(404, "Saved prediction not found.")
+    del session.saved_predictions[prediction_id]
+    return {
+        "predictions": [
+            _prediction_summary(pid, p) for pid, p in session.saved_predictions.items()
+        ]
+    }
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "ok",
+        "sessions": len(SESSIONS),
+        "limits": {
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "max_rows": MAX_DATAFRAME_ROWS,
+            "max_columns": MAX_DATAFRAME_COLUMNS,
+        },
+    }
+
+
+# ---------- Unsupervised Learning ----------
+
+@app.get("/api/unsupervised/suggest/{session_id}")
+def unsupervised_suggest(session_id: str):
+    session = _get_session_or_404(session_id)
+    result = unsupervised.suggest_unsupervised(session.df)
+    result["preprocessing"] = unsupervised.preprocessing_summary(session.df)
+    session.unsupervised_results["suggestions"] = result
+    return result
+
+
+@app.get("/api/unsupervised/suggest_clusters/{session_id}")
+def unsupervised_suggest_clusters(session_id: str, max_clusters: int = 10):
+    session = _get_session_or_404(session_id)
+    try:
+        result = unsupervised.suggest_clusters(session.df, max_clusters=max_clusters)
+        session.unsupervised_results["cluster_analysis"] = _compact_unsupervised_result(result)
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/unsupervised/cluster/{session_id}")
+def unsupervised_cluster(session_id: str, req: dict):
+    session = _get_session_or_404(session_id)
+    method = req.get("method", "kmeans")
+    try:
+        if method == "auto":
+            result = unsupervised.cluster_best(session.df, max_clusters=req.get("max_clusters", 10))
+        elif method == "kmeans":
+            result = unsupervised.cluster_kmeans(session.df, n_clusters=req.get("n_clusters", 3))
+        elif method == "dbscan":
+            result = unsupervised.cluster_dbscan(session.df, eps=req.get("eps", 0.5), min_samples=req.get("min_samples", 5))
+        elif method == "hierarchical":
+            result = unsupervised.cluster_hierarchical(session.df, n_clusters=req.get("n_clusters", 3), linkage=req.get("linkage", "ward"))
+        else:
+            raise HTTPException(400, f"Unknown clustering method: {method}")
+        if len(result.get("labels", [])) == len(session.df):
+            session.df["cluster_label"] = result["labels"]
+        session.unsupervised_results["clustering"] = _compact_unsupervised_result(result)
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/unsupervised/anomaly/{session_id}")
+def unsupervised_anomaly(session_id: str, req: dict):
+    session = _get_session_or_404(session_id)
+    method = req.get("method", "isolation_forest")
+    try:
+        if method == "isolation_forest":
+            result = unsupervised.detect_anomalies_isolation_forest(session.df, contamination=req.get("contamination", 0.1))
+        elif method == "lof":
+            result = unsupervised.detect_anomalies_lof(session.df, contamination=req.get("contamination", 0.1), n_neighbors=req.get("n_neighbors", 20))
+        else:
+            raise HTTPException(400, f"Unknown anomaly detection method: {method}")
+        session.unsupervised_results["anomaly"] = _compact_unsupervised_result(result)
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/unsupervised/reduce/{session_id}")
+def unsupervised_reduce(session_id: str, req: dict):
+    session = _get_session_or_404(session_id)
+    method = req.get("method", "tsne")
+    try:
+        if method == "tsne":
+            result = unsupervised.reduce_tsne(session.df, n_components=req.get("n_components", 2), perplexity=req.get("perplexity", 30.0))
+        elif method == "pca":
+            result = unsupervised.reduce_pca_advanced(session.df, n_components=req.get("n_components", 2))
+        else:
+            raise HTTPException(400, f"Unknown dimensionality reduction method: {method}")
+        session.unsupervised_results["reduction"] = _compact_unsupervised_result(result)
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/unsupervised/association/{session_id}")
+def unsupervised_association(session_id: str, req: dict):
+    session = _get_session_or_404(session_id)
+    try:
+        result = unsupervised.association_rules(
+            session.df,
+            min_support=req.get("min_support", 0.1),
+            min_confidence=req.get("min_confidence", 0.5),
+        )
+        session.unsupervised_results["association"] = _compact_unsupervised_result(result)
+        return result
+    except ImportError as e:
+        raise HTTPException(500, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------- Download Jupyter Notebook ----------
+
+@app.get("/api/download_notebook/{session_id}")
+def download_notebook(session_id: str):
+    """Download a fully self-contained .ipynb with all AutoDS functions
+    plus the current session data embedded as CSV. GET only has access to
+    the most recent chart (session.last_visualization) — use the POST
+    variant below to include the full visualization history."""
+    session = _get_session_or_404(session_id)
+    notebook_json = nb_module.build_notebook(session)
+    buf = io.BytesIO(notebook_json.encode("utf-8"))
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+        },
+    )
+
+
+@app.post("/api/download_notebook/{session_id}")
+def download_notebook_with_charts(session_id: str, req: ReportChartsRequest):
+    """Same as the GET version, but takes the frontend's full chart history
+    (customChartSpecs) so every visualization the user built gets its own
+    cell in the notebook, not just the last one."""
+    session = _get_session_or_404(session_id)
+    notebook_json = nb_module.build_notebook(session, charts=req.charts)
+    buf = io.BytesIO(notebook_json.encode("utf-8"))
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+        },
+    )
+
+
+# ---------- Download trained model ----------
+
+@app.get("/api/download_model/{session_id}")
+def download_model(session_id: str, model_name: str | None = None, run_id: str | None = None):
+    session = _get_session_or_404(session_id)
+
+    if run_id:
+        if run_id not in session.saved_runs:
+            raise HTTPException(404, "Saved run not found.")
+        run = session.saved_runs[run_id]
+        models, label_encoder, feature_columns = run["models"], run["label_encoder"], run["feature_columns"]
+        target, problem_type = run["target"], run["problem_type"]
+        default_model_name = run["best_model_name"]
+    else:
+        models, label_encoder, feature_columns = session.models, session.label_encoder, session.feature_columns
+        target, problem_type = session.target, session.problem_type
+        default_model_name = session.best_model_name
+
+    name = model_name or default_model_name
+    if not name or name not in models:
+        raise HTTPException(400, "No such trained model.")
+
+    buf = io.BytesIO()
+    pickle.dump({
+        "pipeline": models[name],
+        "label_encoder": label_encoder,
+        "feature_columns": feature_columns,
+        "target": target,
+        "problem_type": problem_type,
+    }, buf)
+    buf.seek(0)
+    safe_name = name.replace(" ", "_").lower()
+    return StreamingResponse(
+        buf,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}_model.pkl"},
+    )
+
+
+def _get_session_or_404(session_id: str):
+    try:
+        return get_session(session_id)
+    except KeyError:
+        raise HTTPException(404, "Session not found. Please re-upload your file.")
+
+
+@app.delete("/api/session/{session_id}")
+def delete_session_endpoint(session_id: str):
+    """Removes this session from memory and deletes its two on-disk CSV copies
+    (current + original) from .sessions/. Called when a dataset tab is closed
+    so storage doesn't grow forever."""
+    delete_session(session_id)
+    return {"ok": True}
+
+
+@app.get("/api/progress/{session_id}")
+def get_progress(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {"messages": session.progress_messages}
+
+
+# ---------- Filter / Split endpoint ----------
+
+class FilterRequest(BaseModel):
+    where_clause: str = Field(min_length=1, max_length=4000)   # pandas-style query string
+    new_name: str = Field(default="filtered_subset", max_length=120)
+
+
+def _apply_filter(df: pd.DataFrame, where_clause: str) -> pd.DataFrame:
+    """
+    Run a filter using pandas .query().
+    Supports expressions like:
+        gender == 'Male'
+        age > 30 and monthly_charges < 60
+        churn == 'Yes' or tenure > 60
+        city in ['Nairobi', 'Mombasa']
+    Raises ValueError with a readable message on bad syntax.
+    """
+    try:
+        result = df.query(where_clause, engine="python")
+        return result.reset_index(drop=True)
+    except Exception as exc:
+        raise ValueError(f"Filter error: {exc}")
+
+
+@app.post("/api/filter/{session_id}")
+def filter_dataset(session_id: str, req: FilterRequest):
+    """
+    Apply a filter expression to the current dataframe and create a brand-new
+    session from the matching rows. Returns a new session_id the frontend can
+    open as an independent dataset tab.
+    """
+    session = _get_session_or_404(session_id)
+    try:
+        result_df = _apply_filter(session.df, req.where_clause)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    if result_df.empty:
+        raise HTTPException(400, "The filter matched 0 rows. Try a less restrictive condition.")
+
+    new_name = req.new_name.strip() or "filtered_subset"
+    new_session = create_session(result_df, new_name + ".csv")
+
+    return {
+        "session_id": new_session.id,
+        "name": new_name,
+        "shape": {"rows": len(result_df), "columns": len(result_df.columns)},
+        "columns": list(result_df.columns),
+        "preview": result_df.head(5).to_dict(orient="records"),
+    }
+
+
+@app.post("/api/filter_preview/{session_id}")
+def filter_preview(session_id: str, req: FilterRequest):
+    """
+    Dry-run: return the first 10 rows + row count for the filter expression
+    without creating a new session.
+    """
+    session = _get_session_or_404(session_id)
+    try:
+        result_df = _apply_filter(session.df, req.where_clause)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    return {
+        "rows_matched": len(result_df),
+        "total_rows": len(session.df),
+        "preview": result_df.head(10).to_dict(orient="records"),
+        "columns": list(result_df.columns),
+    }
+
+
+# ---------- Serve frontend ----------
+frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+if os.path.isdir(frontend_dir):
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")

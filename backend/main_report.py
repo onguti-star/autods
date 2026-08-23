@@ -724,8 +724,11 @@ def _build_html_report(session, extra_charts=None) -> str:
 
     # Original Data Section — the raw, untouched data before any cleaning.
     # Placed near the top so it's the frozen "before" reference for the rest of the report.
+    # Fall back to the current dataframe if a session-like object doesn't carry
+    # original_df (e.g. an older snapshot or a minimal session stub), so report
+    # generation degrades gracefully instead of crashing.
     html_parts.append(_render_data_preview_table_html(
-        session.original_df, "Original Data (First 15 Rows)", "original-preview", icon="🔒"
+        getattr(session, "original_df", session.df), "Original Data (First 15 Rows)", "original-preview", icon="🔒"
     ))
 
     # Notes Section — free-form notes the user wrote about this dataset
