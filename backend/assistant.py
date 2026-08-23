@@ -1771,7 +1771,7 @@ def _parse_create_column(question: str, columns: list) -> dict | None:
     }
 
 
-def execute_action(df: pd.DataFrame, question: str) -> dict:
+def execute_action(df: pd.DataFrame, question: str, source: str = "assistant") -> dict:
     """Execute an action on the dataframe based on the user's question.
     Returns a dict with:
       - action: str describing what was done
@@ -1807,6 +1807,9 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
 
     # --- Create a new column ---
     if re.search(r"\b(?:create|add|insert|make)\b", q) and "column" in q and not any(w in q for w in ("drop ", "remove ", "delete ", "rename ")):
+        if source != "clean":
+            result["message"] = "Creating columns is a Clean-tab thing — open the Clean panel's chat and try that request there."
+            return result
         parsed = _parse_create_column(corrected_question, columns)
         if not parsed:
             result["message"] = (
@@ -2019,8 +2022,13 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
             result["message"] = "Please specify which column to sort by. Example: 'sort by age' or 'sort by price descending'"
             return result
 
-    # --- Filter rows ---
-    if "filter" in q or "show only" in q or "keep only" in q or "where" in q:
+    # --- Filter rows (in-place) ---
+    # Deliberately narrow: only an explicit mutating verb ("filter", "keep
+    # only") shrinks the live dataset. "show rows where X" / "show only rows
+    # where X" must stay read-only — those go to the lookup/table answer
+    # below instead, so asking to *see* something never quietly overwrites
+    # the dataset everyone else's view (Updated data table, etc.) depends on.
+    if "filter" in q or "keep only" in q:
         # Try to parse conditions (correcting typo'd column names like
         # 'invoiveno' -> 'InvoiceNo' first, same as the read-only lookup path)
         conditions = _parse_row_conditions(_correct_column_typos(corrected_question, columns), columns)
@@ -2042,7 +2050,7 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
             result["modified_df"] = modified
             return result
         else:
-            result["message"] = "I couldn't parse the filter conditions. Try: 'filter status = active', 'show only rows where age > 30', or 'filter invoice starts with C'"
+            result["message"] = "I couldn't parse the filter conditions. Try: 'filter status = active', 'keep only rows where age > 30', or 'filter invoice starts with C'"
             return result
 
     # --- Show top/bottom N ---

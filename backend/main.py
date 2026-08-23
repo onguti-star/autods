@@ -1191,6 +1191,10 @@ def download_html_with_custom_charts(session_id: str, req: ReportChartsRequest):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
+    # "clean" = sent from the Clean tab's chat, "assistant" = the floating
+    # "Ask about your data" panel. A few data-modifying actions (like
+    # creating a new column) are only meant for the Clean chat.
+    source: str = "assistant"
 
 
 @app.post("/api/ask/{session_id}")
@@ -1211,7 +1215,7 @@ def ask(session_id: str, req: AskRequest):
         return {"answer": code_answer, "table": None, "action": "show_code", "modified": False}
     
     # First try to execute an action
-    action_result = assistant.execute_action(session.df, req.question)
+    action_result = assistant.execute_action(session.df, req.question, source=req.source)
     
     if action_result["success"] and action_result["modified_df"] is not None:
         # Apply the modification to the session

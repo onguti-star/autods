@@ -4797,7 +4797,7 @@ function addFilterCondition(){
   row.id = id;
   row.innerHTML = `
     <select class="fc-col" onchange="_rebuildExpr()">${colOpts}</select>
-    <select class="fc-op" onchange="_rebuildExpr()">
+    <select class="fc-op" onchange="_onOpChange(this)">
       <option value="==">==(equals)</option>
       <option value="!=">!=(not equals)</option>
       <option value=">">&gt;(greater)</option>
@@ -4805,11 +4805,26 @@ function addFilterCondition(){
       <option value=">=">&gt;=(≥)</option>
       <option value="<=">&lt;=(≤)</option>
       <option value="contains">contains</option>
+      <option value="isnull">is missing / null</option>
+      <option value="notnull">is not missing / null</option>
     </select>
     <input type="text" class="fc-val" placeholder="value" oninput="_rebuildExpr()" style="flex:1;min-width:100px;">
     <button class="remove-cond" onclick="_removeCondition('${id}')" title="Remove">×</button>
   `;
   $("filterConditions").appendChild(row);
+  _rebuildExpr();
+}
+
+function _onOpChange(selectEl){
+  // "is missing / null" and "is not missing / null" don't take a value —
+  // hide the value box instead of leaving a confusing unused input.
+  const row = selectEl.closest(".filter-row");
+  const valInput = row?.querySelector(".fc-val");
+  if(valInput){
+    const needsValue = !["isnull", "notnull"].includes(selectEl.value);
+    valInput.style.display = needsValue ? "" : "none";
+    if(!needsValue) valInput.value = "";
+  }
   _rebuildExpr();
 }
 
@@ -4828,14 +4843,23 @@ function _rebuildExpr(){
     const col  = row.querySelector(".fc-col")?.value?.trim();
     const op   = row.querySelector(".fc-op")?.value;
     const val  = row.querySelector(".fc-val")?.value?.trim();
-    if(!col || !val) return;
-    if(op === "contains"){
-      parts.push(`${col}.str.contains('${val}', case=False, na=False)`);
+    if(!col) return;
+    // Backtick-wrap the column name so names with spaces/special characters
+    // still work in the pandas query string, e.g. `unit price` > 5.
+    const colRef = `\`${col}\``;
+    if(op === "isnull"){
+      parts.push(`${colRef}.isnull()`);
+    } else if(op === "notnull"){
+      parts.push(`${colRef}.notna()`);
+    } else if(!val){
+      return;
+    } else if(op === "contains"){
+      parts.push(`${colRef}.str.contains('${val}', case=False, na=False)`);
     } else {
       // Wrap in quotes if non-numeric
       const isNum = !isNaN(Number(val)) && val !== "";
       const v = isNum ? val : `'${val}'`;
-      parts.push(`${col} ${op} ${v}`);
+      parts.push(`${colRef} ${op} ${v}`);
     }
   });
   $("filterExpr").value = parts.join(logic);

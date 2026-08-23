@@ -16,6 +16,7 @@ import pandas as pd
 from . import nlp
 from .assistant import (
     CLEAN_KEYWORDS,
+    _correct_column_typos,
     _correct_keyword_typos,
     _find_columns_in_text,
     _format_keyword_correction_note,
@@ -102,7 +103,7 @@ def _convert_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.DataFra
 
 def _clean_new_column_name(raw: str) -> str:
     text = raw.strip(" '\"?.,:;-")
-    text = re.sub(r"^(?:the\s+)?(?:column\s+)?(?:called\s+|named\s+)?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(?:the\s+)?(?:column\s+)?(?:called\s+|named\s+|titled\s+)?", "", text, flags=re.IGNORECASE)
     return text.strip(" '\"?.,:;-")
 
 
@@ -541,13 +542,52 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
 
     # ---- create new column with math expression ----
     if any(term in ql for term in ("create", "add", "new column")):
+        # Pull an optional "before X" / "after X" clause out before any of the
+        # patterns below run, so it doesn't get swallowed as part of an
+        # expression or column name. Also treat "titled" the same as
+        # "called"/"named" (all the patterns below already understand those),
+        # and fix squashed/typo'd column references (e.g. "unitprice" for
+        # "unit price") the same forgiving way the rest of the assistant does.
+        position = None
+        position_col_raw = None
+        pos_match = re.search(r"\b(before|after)\b\s+(.+)$", q, flags=re.IGNORECASE)
+        if pos_match:
+            position = pos_match.group(1).lower()
+            position_col_raw = pos_match.group(2).strip(" '\"?.,:;-")
+            q = q[:pos_match.start()].strip()
+        q = re.sub(r"\btitled\b", "named", q, flags=re.IGNORECASE)
+        q = _correct_column_typos(q, columns)
+        ql = q.lower()
+
+        position_col = None
+        if position_col_raw:
+            corrected_ref = _correct_column_typos(position_col_raw, columns)
+            for col in sorted(columns, key=lambda c: len(str(c)), reverse=True):
+                if re.search(rf"\b{re.escape(str(col))}\b", corrected_ref, flags=re.IGNORECASE):
+                    position_col = col
+                    break
+
+        def _place(new_df: pd.DataFrame, new_col: str, message: str) -> tuple[pd.DataFrame, str]:
+            """Applies the before/after positioning captured above, if any,
+            then returns the (df, message) pair a caller should return."""
+            if position_col and position_col in new_df.columns and new_col in new_df.columns:
+                ordered = [c for c in new_df.columns if c != new_col]
+                idx = ordered.index(position_col)
+                insert_at = idx if position == "before" else idx + 1
+                ordered.insert(insert_at, new_col)
+                new_df = new_df[ordered]
+                message += f" ({position} '{position_col}')"
+            elif position_col_raw and not position_col:
+                message += " — couldn't find that reference column, so it was added at the end"
+            return new_df, message
+
         empty_col_name = _parse_empty_column_name(q)
         if empty_col_name:
             if empty_col_name in columns:
                 return df, f"Column '{empty_col_name}' already exists."
             new_df = df.copy()
             new_df[empty_col_name] = pd.NA
-            return new_df, f"Created empty column '{empty_col_name}'."
+            return _place(new_df, empty_col_name, f"Created empty column '{empty_col_name}'.")
 
         # First check if this is an aggregate operation (sum/mean/multiply all columns)
         aggregate_match = re.search(
@@ -577,7 +617,7 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
                 'min': 'min', 'max': 'max', 'median': 'median'
             }.get(operation, operation)
             
-            return new_df, f"Created new column '{new_col_name}' as {op_name} of all numeric columns"
+            return _place(new_df, new_col_name, f"Created new column '{new_col_name}' as {op_name} of all numeric columns")
         
         # Otherwise, try to parse as a regular expression
         expr, new_col_name = _parse_math_expression(q, df)
@@ -585,7 +625,8 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if expr and new_col_name:
             if new_col_name in columns:
                 return df, f"Column '{new_col_name}' already exists. Use: fill {new_col_name} with {expr}"
-            return _apply_math_expression_to_column(df, new_col_name, expr, "Created new column")
+            new_df, message = _apply_math_expression_to_column(df, new_col_name, expr, "Created new column")
+            return _place(new_df, new_col_name, message)
         else:
             return df, (
                 "To create a new column, use formats like:\n"
@@ -597,6 +638,7 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
                 "• create column sum_all as sum of all columns\n"
                 "• create column avg as mean of all columns\n"
                 "• create column total as multiply all columns\n"
+                "• create a new column named revenue before/after cost  (position it)\n"
                 "Supports: +, -, *, /, ** (power), % (modulo)\n"
                 "You can use any existing column names in the expression."
             )
