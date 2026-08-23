@@ -1092,19 +1092,55 @@ def get_geojson(session_id: str):
 @app.get("/api/download_data/{session_id}")
 def download_data(session_id: str, fmt: str = "csv"):
     session = _get_session_or_404(session_id)
-    buf = io.BytesIO()
-    if fmt == "excel":
-        session.df.to_excel(buf, index=False)
-        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ext = "xlsx"
-    else:
-        session.df.to_csv(buf, index=False)
-        media_type = "text/csv"
-        ext = "csv"
-    buf.seek(0)
+    df = session.df
     name = session.filename.rsplit(".", 1)[0]
-    return StreamingResponse(buf, media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={name}_autods.{ext}"})
+
+    if fmt == "excel":
+        # Excel (.xlsx) sheets have a hard limit of 1,048,576 rows. Beyond
+        # that the file can't be written at all — reject early with a clear
+        # message instead of burning memory/time on a write that will fail
+        # partway through anyway.
+        EXCEL_ROW_LIMIT = 1_048_575  # leaves room for the header row
+        if len(df) > EXCEL_ROW_LIMIT:
+            raise HTTPException(
+                400,
+                f"This dataset has {len(df):,} rows, which is more than Excel's "
+                f"limit of {EXCEL_ROW_LIMIT:,} rows per sheet. Please download as "
+                "CSV instead, or filter/split the dataset into a smaller subset first.",
+            )
+        buf = io.BytesIO()
+        # xlsxwriter's constant_memory mode streams rows to the output as it
+        # writes instead of building the whole workbook as Python objects in
+        # RAM first (which is what the default openpyxl engine does) — this
+        # is the main fix for large exports using up all available memory.
+        with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={"options": {"constant_memory": True}}) as writer:
+            df.to_excel(writer, index=False, sheet_name="Sheet1")
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={name}_autods.xlsx"},
+        )
+
+    # CSV: write in row-chunks and stream each chunk out as it's produced,
+    # instead of building the entire CSV as one giant string in memory first.
+    # This keeps peak memory roughly constant no matter how large the dataset is.
+    CHUNK_ROWS = 50_000
+
+    def _csv_chunks():
+        header_buf = io.StringIO()
+        df.iloc[0:0].to_csv(header_buf, index=False)
+        yield header_buf.getvalue().encode("utf-8")
+        for start in range(0, len(df), CHUNK_ROWS):
+            chunk_buf = io.StringIO()
+            df.iloc[start:start + CHUNK_ROWS].to_csv(chunk_buf, index=False, header=False)
+            yield chunk_buf.getvalue().encode("utf-8")
+
+    return StreamingResponse(
+        _csv_chunks(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods.csv"},
+    )
 
 
 @app.get("/api/download_work/{session_id}")
