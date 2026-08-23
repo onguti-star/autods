@@ -178,8 +178,10 @@ def _safe_eval_math(expr: str, df: pd.DataFrame, row: pd.Series = None) -> float
                 if isinstance(node.value, (int, float)):
                     return node.value
                 raise ValueError(f"Unsupported constant: {node.value}")
-            elif isinstance(node, ast.Num):  # Python 3.7 compatibility
-                return node.n
+            # Note: ast.Num (pre-3.8) is intentionally not handled — every numeric
+            # literal on supported Python versions parses as ast.Constant above,
+            # and ast.Num itself is removed in Python 3.14, so referencing it here
+            # would be both dead code and a future crash.
             elif isinstance(node, ast.BinOp):
                 left = _eval(node.left)
                 right = _eval(node.right)

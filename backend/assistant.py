@@ -68,20 +68,49 @@ def _keyword_typo_threshold(word: str, keyword: str) -> int:
     return 3
 
 
+# Words immediately following one of these markers are user-chosen names or
+# data values (e.g. "into TITLE and NAME", "called REVENUE", "where STATUS is
+# CANCELLED"), never command keywords — so they must never be "corrected"
+# against the keyword list, even if they happen to be a close edit-distance
+# match to one.
+_NAME_OR_VALUE_MARKERS = {
+    "into", "as", "called", "named", "is", "was", "equals", "equal", "to", "where",
+}
+
+
 def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tuple[str, str]]]:
     """Correct likely misspelled command words while leaving column/value text alone.
 
     This is intentionally conservative: it only corrects standalone words that are
     close to a known command keyword and ignores short words where false positives
-    are common.
+    are common. It also skips any word directly preceded by a naming/value marker
+    (like "into", "called", "where", "is") since those positions always hold
+    user-chosen names or literal data values, not command syntax — including a
+    run of "and"-joined names/values following such a marker (e.g.
+    "into title and name").
     """
     corrections: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    prev_word: list[str] = [""]
+    protected_streak: list[bool] = [False]  # protection carried across "and"
 
     def replace(match: re.Match) -> str:
         word = match.group(0)
         lower = word.lower()
+        guard_word = prev_word[0]
+        prev_word[0] = lower
+
+        if lower == "and" and protected_streak[0]:
+            return word  # keep the streak alive without touching "and" itself
+
+        is_protected = guard_word in _NAME_OR_VALUE_MARKERS or (
+            guard_word == "and" and protected_streak[0]
+        )
+        protected_streak[0] = is_protected
+
         if lower in keywords or len(lower) < 4 or lower.isdigit():
+            return word
+        if is_protected:
             return word
 
         best_keyword = None
