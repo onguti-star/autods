@@ -46,12 +46,14 @@ ASSISTANT_KEYWORDS = {
 }
 
 CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
-    "add", "boolean", "column", "convert", "copy", "create", "delete", "drop",
+    "add", "after", "before", "boolean", "called", "column", "convert", "copy",
+    "create", "delete", "drop",
     "duplicates", "emails", "export", "extract", "fill", "first", "float", "greater",
-    "integer", "keep", "lowercase", "missing", "move", "multiply", "numbers",
+    "insert", "integer", "keep", "lowercase", "make", "missing", "move", "multiply",
+    "named", "numbers",
     "outliers", "punctuation", "push", "rename", "replace", "reset", "rows",
     "product", "send", "separate", "separator", "decimal", "comma", "dot", "period",
-    "round", "rounding", "decimals", "decimal",
+    "round", "rounding", "decimals", "decimal", "titled",
     "split", "stopwords", "strip", "tab", "text", "trim",
     "uppercase", "urls", "whitespace",
 }
@@ -170,6 +172,44 @@ _CONDITION_OP_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Shared fragment for "is null" / "is missing" / "is empty" style phrasing,
+# used both for column-specific checks and the no-column-mentioned fallback below.
+_NULL_WORD = r"(?:null|missing|empty|blank|nan|na|n/a)"
+_GENERIC_NULL_PATTERN = re.compile(
+    rf"\b(?:is|are)\s+(not\s+)?{_NULL_WORD}\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _generic_null_lookup(df: pd.DataFrame, question: str) -> tuple[str, "pd.DataFrame | None"] | None:
+    """Handles 'show rows where is null' / 'find rows with missing values' when
+    no specific column is named in the question — checks across every column.
+    Returns None if the question doesn't look like a null/missing check at all,
+    so the caller can fall through to other lookup strategies."""
+    q = question.lower()
+    match = _GENERIC_NULL_PATTERN.search(q)
+    has_missing_phrase = any(w in q for w in ("missing value", "missing values", "null value", "null values", "has missing", "have missing"))
+    if not match and not has_missing_phrase:
+        return None
+
+    negated = bool(match and match.group(1)) or "not missing" in q or "no missing" in q
+    if negated:
+        mask = df.notna().all(axis=1)
+        desc = "row(s) with no missing values (fully filled)"
+    else:
+        mask = df.isna().any(axis=1)
+        desc = "row(s) with at least one missing value"
+
+    matches = df[mask]
+    if matches.empty:
+        return f"I could not find any {desc}.", None
+
+    shown = matches.head(50)
+    parts = [f"Found {len(matches):,} {desc}."]
+    if len(matches) > len(shown):
+        parts.append(f"Showing the first {len(shown)} in the table below.")
+    return " ".join(parts), shown
+
 
 def _correct_column_typos(text: str, columns: list) -> str:
     """Best-effort fix for a misspelled/squashed column name in free text —
@@ -186,7 +226,14 @@ def _correct_column_typos(text: str, columns: list) -> str:
             continue
         for word in words:
             word_norm = _normalise_text(word)
-            if len(word_norm) <= 3 or word_norm == col_squashed:
+            if len(word_norm) <= 3:
+                continue
+            if word_norm == col_squashed:
+                # Squashed exact match, e.g. 'unitprice' for column 'unit price' —
+                # normalised forms are equal but the literal text is missing the
+                # space, so it still needs rewriting to the real column name.
+                if word != col_str:
+                    corrected = re.sub(rf"\b{re.escape(word)}\b", col_str, corrected, flags=re.IGNORECASE)
                 continue
             max_len = max(len(word_norm), len(col_squashed))
             ratio = 1 - _levenshtein(word_norm, col_squashed) / max_len
@@ -963,6 +1010,10 @@ def _extract_lookup_value(question: str) -> str | None:
             value = match.group(1)
             value = re.sub(r"\b(?:in|from)\s+(?:the\s+)?(?:dataset|data set|data|table)\b.*$", "", value, flags=re.IGNORECASE)
             value = re.sub(r"\b(?:and\s+)?show\s+(?:all\s+)?(?:the\s+)?(?:details?|data|information)\b.*$", "", value, flags=re.IGNORECASE)
+            # Strip leading filler like "the word", "the term", "the value" —
+            # "show rows with the word heart" should search for "heart", not
+            # the literal phrase "the word heart".
+            value = re.sub(r"^(?:the\s+)?(?:word|term|value|text|phrase|name)s?\b\s*", "", value.strip(), flags=re.IGNORECASE)
             value = value.strip(" ?.,:;-")
             return value or None
     return None
@@ -1000,6 +1051,19 @@ def _parse_row_conditions(question: str, columns: list) -> list:
     col_patterns = [(col, _normalise_text(col), re.escape(str(col))) for col in sorted(columns, key=lambda c: len(str(c)), reverse=True)]
     boundary = r"(?=\s+(?:and|&|,)\s+|$)"
 
+    # Null-check operators ("is null", "is missing", "has no value", ...) never
+    # take a value, so they're tried in their own pass before the value-based
+    # operators below — otherwise "InvoiceNo is null" would get swallowed by
+    # the generic "is" (equals) operator, treating "null" as a literal value to match.
+    null_op_variants = [
+        ("notnull", rf"(?:is|are)\s+not\s+{_NULL_WORD}\b"),
+        ("notnull", r"has\s+(?:a|any)\s+value\b"),
+        ("notnull", r"is\s+(?:present|filled|not\s+empty)\b"),
+        ("isnull",  rf"(?:is|are)\s+{_NULL_WORD}\b"),
+        ("isnull",  r"has\s+no\s+value\b"),
+        ("isnull",  r"is\s+not\s+(?:present|filled)\b"),
+    ]
+
     # Tried in order of specificity: "starts with" / "ends with" first, or a bare
     # "column value" would swallow "with c" as a literal equals-value instead.
     op_variants = [
@@ -1011,6 +1075,21 @@ def _parse_row_conditions(question: str, columns: list) -> list:
     ]
 
     for col, _, col_raw in col_patterns:
+        matched_null = False
+        for op_name, op_regex in null_op_variants:
+            forward = rf"\b{col_raw}\b\s*(?:that\s+|which\s+)?{op_regex}"
+            if re.search(forward, text, flags=re.IGNORECASE):
+                conditions.append((col, op_name, ""))
+                matched_null = True
+                break
+            reversed_pattern = rf"{op_regex}\s+in\s+(?:the\s+)?{col_raw}\b(?:\s+column)?"
+            if re.search(reversed_pattern, text, flags=re.IGNORECASE):
+                conditions.append((col, op_name, ""))
+                matched_null = True
+                break
+        if matched_null:
+            continue
+
         matched_op = False
         for op_name, op_regex in op_variants:
             # Forward phrasing: "InvoiceNo starts with c"
@@ -1065,6 +1144,10 @@ def _parse_row_conditions(question: str, columns: list) -> list:
 
 def _condition_mask(s: pd.Series, op: str, value: str) -> pd.Series:
     value = value.strip()
+    if op == "isnull":
+        return s.isna()
+    if op == "notnull":
+        return s.notna()
     if op == "eq":
         if pd.api.types.is_numeric_dtype(s):
             target = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
@@ -1102,13 +1185,16 @@ def _lookup_rows_by_conditions(df: pd.DataFrame, conditions: list) -> tuple[str,
     if not conditions:
         return "", None
 
-    op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with"}
+    op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with", "isnull": "is null", "notnull": "is not null"}
     mask = pd.Series(True, index=df.index)
     for col, op, value in conditions:
         mask &= _condition_mask(df[col], op, value)
 
     matches = df[mask]
-    readable = " and ".join(f"{col} {op_words.get(op, '=')} {value}" for col, op, value in conditions)
+    readable = " and ".join(
+        f"{col} {op_words.get(op, '=')}" if op in ("isnull", "notnull") else f"{col} {op_words.get(op, '=')} {value}"
+        for col, op, value in conditions
+    )
     if matches.empty:
         return f"I could not find any row where {readable}.", None
 
@@ -1119,12 +1205,52 @@ def _lookup_rows_by_conditions(df: pd.DataFrame, conditions: list) -> tuple[str,
     return " ".join(parts), shown
 
 
+def _fuzzy_edit_distance(a: str, b: str) -> int:
+    """Edit distance that also treats an adjacent-character swap (e.g.
+    'haert' -> 'heart') as a single edit instead of two — this is one of the
+    most common human typo patterns, and plain Levenshtein under-scores it."""
+    m, n = len(a), len(b)
+    d = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        d[i][0] = i
+    for j in range(n + 1):
+        d[0][j] = j
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[m][n]
+
+
+def _fuzzy_word_match(token: str, words: list, threshold: float = 0.72) -> bool:
+    """True if any word in `words` is spelled closely enough to `token` —
+    catches typos in either direction (query misspelled, or the data itself
+    has a typo), not just exact substring matches."""
+    if len(token) <= 2:
+        return False  # too short to fuzzy-match reliably (e.g. "no", "id")
+    for w in words:
+        if abs(len(w) - len(token)) > 2:
+            continue  # cheap pre-filter before the more expensive edit-distance check
+        max_len = max(len(w), len(token))
+        if max_len and (1 - _fuzzy_edit_distance(token, w) / max_len) >= threshold:
+            return True
+    return False
+
+
 def _lookup_rows(df: pd.DataFrame, question: str, mentioned: list) -> tuple[str, pd.DataFrame | None]:
     columns = list(df.columns)
     corrected_for_columns = _correct_column_typos(question, columns)
     condition_text, condition_table = _lookup_rows_by_conditions(df, _parse_row_conditions(corrected_for_columns, columns))
     if condition_text:
         return condition_text, condition_table
+
+    # No specific column was named (e.g. "show rows where is null") — check
+    # across every column instead of requiring one to be mentioned by name.
+    generic_null = _generic_null_lookup(df, question)
+    if generic_null:
+        return generic_null
 
     value = _extract_lookup_value(question)
     search_cols = mentioned or list(df.columns)
@@ -1155,11 +1281,22 @@ def _lookup_rows(df: pd.DataFrame, question: str, mentioned: list) -> tuple[str,
     for idx, row in df.iterrows():
         cells = [_normalise_text(row[col]) for col in search_cols if col in df.columns]
         row_text = " ".join(cells)
+        row_words = row_text.split()
         phrase_in_cell = any(value_norm in cell for cell in cells)
         phrase_in_row = value_norm in row_text
         all_tokens_in_row = all(token in row_text for token in tokens)
-        if phrase_in_cell or phrase_in_row or all_tokens_in_row:
-            score = (3 if phrase_in_cell else 0) + (2 if phrase_in_row else 0) + (1 if all_tokens_in_row else 0)
+        # Fuzzy pass: tolerates misspellings either in the question or in the
+        # data itself (e.g. query "heart" also matches a cell containing "haert").
+        fuzzy_tokens_in_row = (not all_tokens_in_row) and all(
+            token in row_text or _fuzzy_word_match(token, row_words) for token in tokens
+        )
+        if phrase_in_cell or phrase_in_row or all_tokens_in_row or fuzzy_tokens_in_row:
+            score = (
+                (3 if phrase_in_cell else 0)
+                + (2 if phrase_in_row else 0)
+                + (2 if all_tokens_in_row else 0)
+                + (1 if fuzzy_tokens_in_row else 0)
+            )
             matches.append((score, idx, row))
 
     if not matches:
@@ -1167,7 +1304,7 @@ def _lookup_rows(df: pd.DataFrame, question: str, mentioned: list) -> tuple[str,
         return f"I could not find any row matching '{value}'{col_note}.", None
 
     matches.sort(key=lambda item: (-item[0], item[1]))
-    shown_matches = matches[:50]
+    shown_matches = matches[:10]
     shown_df = df.loc[[idx for _, idx, _ in shown_matches]]
     parts = [f"Found {len(matches):,} matching row(s) for '{value}'."]
     if len(matches) > len(shown_matches):
@@ -1569,6 +1706,8 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
         or re.search(r"\b(rows?|records?|details)\s+(of|for|about|with|in|that)\b", q)
         or re.search(r"\bwhere\s+is\b", q)
         or (re.search(r"\b(how many|count of|number of)\b", q) and _CONDITION_OP_PATTERN.search(q))
+        or _GENERIC_NULL_PATTERN.search(q)
+        or "missing value" in q or "missing values" in q
     )
     if not lookup_question:
         return None
@@ -1577,6 +1716,59 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
     if matches is None or matches.empty:
         return None
     return _df_to_table(matches)
+
+
+def _parse_create_column(question: str, columns: list) -> dict | None:
+    """Parses 'create a new column named revenue [= formula] [before/after COLUMN]'.
+    Column references (for positioning or inside a formula) are matched
+    loosely — typos and missing spaces (e.g. 'unitprice' for 'unit price',
+    or 'total2024' for 'total 2024') are resolved the same way
+    _correct_column_typos already handles elsewhere in the assistant, so this
+    doesn't require exact spacing/spelling to line up with the real column name."""
+    text = question.strip()
+    m = re.search(
+        r"\b(?:create|add|insert|make)\b(?:\s+(?:a|an|the))?\s+(?:new\s+)?column\b\s*(?:named|called|titled)?\s*",
+        text, flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    rest = text[m.end():].strip()
+    if not rest:
+        return None
+
+    # Split off an optional position clause first: "... before COLUMN" / "... after COLUMN"
+    position = None
+    position_col_raw = None
+    pos_match = re.search(r"\b(before|after)\b\s+(.+)$", rest, flags=re.IGNORECASE)
+    if pos_match:
+        position = pos_match.group(1).lower()
+        position_col_raw = pos_match.group(2).strip(" '\"?.,:;-")
+        rest = rest[:pos_match.start()].strip()
+
+    # Then split off an optional formula: "revenue = price * quantity"
+    formula = None
+    name_part = rest
+    if "=" in rest:
+        name_part, formula = rest.split("=", 1)
+        formula = formula.strip()
+    name_part = name_part.strip(" '\"?.,:;-")
+    if not name_part:
+        return None
+
+    resolved_position_col = None
+    if position_col_raw:
+        corrected = _correct_column_typos(position_col_raw, columns)
+        for col in sorted(columns, key=lambda c: len(str(c)), reverse=True):
+            if re.search(rf"\b{re.escape(str(col))}\b", corrected, flags=re.IGNORECASE):
+                resolved_position_col = col
+                break
+
+    return {
+        "name": name_part,
+        "formula": formula,
+        "position": position,
+        "position_col": resolved_position_col,
+    }
 
 
 def execute_action(df: pd.DataFrame, question: str) -> dict:
@@ -1588,7 +1780,7 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
       - table: dict | None with {columns, rows} if there's data to show
       - modified_df: pd.DataFrame | None if the dataframe was changed
     """
-    corrected_question, corrections = _correct_keyword_typos(question.strip(), ASSISTANT_KEYWORDS)
+    corrected_question, corrections = _correct_keyword_typos(question.strip(), CLEAN_KEYWORDS)
     correction_note = _format_keyword_correction_note(corrections)
     q = corrected_question.lower()
     columns = list(df.columns)
@@ -1610,6 +1802,62 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
         result["action"] = "remove_duplicates"
         result["success"] = True
         result["message"] = correction_note + f"Removed {removed:,} duplicate row(s). Dataset went from {before:,} to {len(modified):,} rows."
+        result["modified_df"] = modified
+        return result
+
+    # --- Create a new column ---
+    if re.search(r"\b(?:create|add|insert|make)\b", q) and "column" in q and not any(w in q for w in ("drop ", "remove ", "delete ", "rename ")):
+        parsed = _parse_create_column(corrected_question, columns)
+        if not parsed:
+            result["message"] = (
+                "Try something like: \"create a new column named revenue\" or "
+                "\"create a new column named revenue = price * quantity after cost\""
+            )
+            return result
+
+        name = parsed["name"]
+        if name in df.columns:
+            result["message"] = f"A column named '{name}' already exists. Pick a different name, or rename the existing one first."
+            return result
+
+        modified = df.copy()
+        formula_note = " (empty)"
+        if parsed["formula"]:
+            # Resolve typo'd/squashed column references in the formula the same
+            # forgiving way as everywhere else, then wrap names in backticks so
+            # pandas.eval can handle columns with spaces in them.
+            formula_corrected = _correct_column_typos(parsed["formula"], columns)
+            for col in sorted(columns, key=lambda c: len(str(c)), reverse=True):
+                formula_corrected = re.sub(rf"\b{re.escape(str(col))}\b", f"`{col}`", formula_corrected)
+            unquoted = re.sub(r"`[^`]*`", "", formula_corrected)
+            if re.search(r"[^a-zA-Z0-9_ .\+\-\*/()%]", unquoted):
+                result["message"] = "That formula has characters I don't support — stick to column names, numbers, and + - * / ( )."
+                return result
+            try:
+                modified[name] = modified.eval(formula_corrected, engine="python")
+            except Exception as e:
+                result["message"] = f"Couldn't compute that formula ({e}). Try something like: price * quantity"
+                return result
+            formula_note = f" as {parsed['formula'].strip()}"
+        else:
+            modified[name] = pd.NA
+
+        # Move the new column to the requested position, if any
+        position_note = ""
+        if parsed["position_col"] and parsed["position_col"] in modified.columns:
+            ordered = [c for c in modified.columns if c != name]
+            idx = ordered.index(parsed["position_col"])
+            insert_at = idx if parsed["position"] == "before" else idx + 1
+            ordered.insert(insert_at, name)
+            modified = modified[ordered]
+            position_note = f" ({parsed['position']} '{parsed['position_col']}')"
+        elif parsed["position_col"] is None and parsed["position"]:
+            position_note = " — couldn't find that reference column, so it was added at the end"
+
+        result["action"] = "create_column"
+        result["success"] = True
+        result["message"] = correction_note + f"Created column '{name}'{formula_note}{position_note}."
+        result["table"] = _df_to_table(modified.head(10))
         result["modified_df"] = modified
         return result
 
@@ -1777,12 +2025,15 @@ def execute_action(df: pd.DataFrame, question: str) -> dict:
         # 'invoiveno' -> 'InvoiceNo' first, same as the read-only lookup path)
         conditions = _parse_row_conditions(_correct_column_typos(corrected_question, columns), columns)
         if conditions:
-            op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with"}
+            op_words = {"eq": "=", "contains": "contains", "startswith": "starts with", "endswith": "ends with", "isnull": "is null", "notnull": "is not null"}
             mask = pd.Series(True, index=df.index)
             for col, op, value in conditions:
                 mask &= _condition_mask(df[col], op, value)
             modified = df[mask].reset_index(drop=True)
-            cond_str = " and ".join(f"{c} {op_words.get(op, '=')} {v}" for c, op, v in conditions)
+            cond_str = " and ".join(
+                f"{c} {op_words.get(op, '=')}" if op in ("isnull", "notnull") else f"{c} {op_words.get(op, '=')} {v}"
+                for c, op, v in conditions
+            )
             result["action"] = "filter_rows"
             result["success"] = True
             result["message"] = correction_note + f"Filtered to {len(modified):,} rows where {cond_str}."
@@ -2023,6 +2274,8 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
         or re.search(r"\b(rows?|records?|details)\s+(of|for|about|with|in|that)\b", q)
         or re.search(r"\bwhere\s+is\b", q)
         or (re.search(r"\b(how many|count of|number of)\b", q) and _CONDITION_OP_PATTERN.search(q))
+        or _GENERIC_NULL_PATTERN.search(q)
+        or "missing value" in q or "missing values" in q
     )
     if lookup_question:
         text, _ = _lookup_rows(df, question, mentioned)

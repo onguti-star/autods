@@ -1355,6 +1355,7 @@ function clearAnalysisUI(){
   if($("savedRunsHead")) $("savedRunsHead").style.display = "none";
   if($("savedPredictionsHead")) $("savedPredictionsHead").style.display = "none";
   if($("undoCleanBtn")) $("undoCleanBtn").disabled = true;
+  if($("floatUndoBtn")) $("floatUndoBtn").disabled = true;
   destroyChart("importanceCanvas");
   destroyChart("simCanvas");
   destroyChart("corrCanvas");
@@ -1454,6 +1455,15 @@ function restoreDataset(state){
       setTimeout(() => renderVizSuggestions(state.vizSuggestionsData), 80);
     } else {
       $("vizSuggestions").innerHTML = `<p class="hint" style="margin-top:8px;">Charts were cleared — click <strong>Suggest charts</strong> to reload.</p>`;
+    }
+    // Re-draw any manually-built custom charts too — these live in #vizResult,
+    // separate from the auto-suggested gallery above, and were previously
+    // lost on tab switch because only the suggestions were being restored.
+    $("vizResult").innerHTML = "";
+    hide("vizResult");
+    const customSpecs = customChartSpecs.filter(s => s._reportSource === "custom");
+    if(customSpecs.length){
+      setTimeout(() => customSpecs.forEach(spec => _renderCustomChartCard(spec)), 80);
     }
   }
 
@@ -1685,6 +1695,7 @@ function renderEDA(profile, datasetId){
   show("dlBarEDA");
   if("can_undo" in profile){
     $("undoCleanBtn").disabled = !profile.can_undo;
+    if($("floatUndoBtn")) $("floatUndoBtn").disabled = !profile.can_undo;
   }
   $("edaStats").innerHTML = `
     <div class="stat"><div class="v">${profile.shape.rows.toLocaleString()}</div><div class="l">rows</div></div>
@@ -2389,6 +2400,12 @@ function renderVizSuggestions(charts){
       if(specIdx > -1) customChartSpecs.splice(specIdx, 1);
       // Update saved specs after closing a chart
       if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
+      // Also drop it from the saved suggestion list itself, or it would
+      // reappear the next time this dataset tab is restored.
+      if(dsState[activeDs] && dsState[activeDs].vizSuggestionsData){
+        const vIdx = dsState[activeDs].vizSuggestionsData.indexOf(ch);
+        if(vIdx > -1) dsState[activeDs].vizSuggestionsData.splice(vIdx, 1);
+      }
       if(!$("vizSuggestions").children.length){
         $("vizSuggestions").innerHTML = `<p class="hint">All suggested charts closed.</p>`;
         if(dsState[activeDs]) dsState[activeDs].vizSuggestionsData = [];
@@ -2589,28 +2606,39 @@ function explainChart(ch){
 }
 
 function addCustomChart(ch){
-  const id = "vizCanvas_" + Date.now() + "_" + Math.floor(Math.random()*1000);
-  const panel = document.createElement("div");
-  panel.className = "chart-panel";
-  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(ch)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div><div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${explainChart(ch)}</div>`;
-  panel.querySelector(".download").addEventListener("click", () => downloadChart(id, chartTitle(ch)));
-  if(ch.type === "wordcloud"){
-    panel.querySelector(".download").style.display = "none";   // rendered as HTML, not a canvas — nothing to export as PNG
-  }
   // Attach title/reason so the downloaded report can show a sensible label,
   // and keep this spec around so the detailed HTML report can include it.
   const reportSpec = {...ch, title: chartTitle(ch), reason: explainChart(ch), _reportSource: "custom"};
   customChartSpecs.push(reportSpec);
+  if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
+  _renderCustomChartCard(reportSpec);
+}
+
+// Builds the actual chart-panel DOM/canvas for one custom-chart spec, without
+// touching customChartSpecs — used both by addCustomChart() (new chart, spec
+// gets pushed first) and by restoreDataset() (spec is already in the array
+// from a previous visit to this tab; only the visible card needs rebuilding).
+function _renderCustomChartCard(spec){
+  const id = "vizCanvas_" + Date.now() + "_" + Math.floor(Math.random()*1000);
+  const panel = document.createElement("div");
+  panel.className = "chart-panel";
+  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div><div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${spec.reason || explainChart(spec)}</div>`;
+  panel.querySelector(".download").addEventListener("click", () => downloadChart(id, chartTitle(spec)));
+  if(spec.type === "wordcloud"){
+    panel.querySelector(".download").style.display = "none";   // rendered as HTML, not a canvas — nothing to export as PNG
+  }
   panel.querySelector(".close").addEventListener("click", () => {
     destroyChart(id);
     panel.remove();
-    const idx = customChartSpecs.indexOf(reportSpec);
+    const idx = customChartSpecs.indexOf(spec);
     if(idx > -1) customChartSpecs.splice(idx, 1);
+    if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
     if(!$("vizResult").children.length) hide("vizResult");
   });
   $("vizResult").prepend(panel);
   show("vizResult");
-  drawChart(id, ch);
+  drawChart(id, spec);
+  return panel;
 }
 
 function safeFileName(name){
@@ -4656,6 +4684,7 @@ async function sendQ(){
         }
         if(data.profile.can_undo !== undefined){
           $("undoCleanBtn").disabled = !data.profile.can_undo;
+          if($("floatUndoBtn")) $("floatUndoBtn").disabled = !data.profile.can_undo;
         }
       }
       // Show a notification
@@ -5297,6 +5326,25 @@ document.addEventListener("DOMContentLoaded", () => {
 }
 #floatCloseBtn:hover { color: var(--bad); border-color: var(--bad); }
 
+#floatHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+#floatUndoBtn {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--ink-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+#floatUndoBtn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+#floatUndoBtn:disabled { color: #3a4357; border-color: #3a4357; cursor: not-allowed; }
+
 /* ── chat history ── */
 #floatChatWrap {
   flex: 1;
@@ -5497,7 +5545,10 @@ document.addEventListener("DOMContentLoaded", () => {
     <div id="floatHeaderTitle">
       <span class="fab-label">⌘</span> Ask about your data
     </div>
-    <button id="floatCloseBtn" onclick="toggleFloat()">✕ close</button>
+    <div id="floatHeaderActions">
+      <button id="floatUndoBtn" title="Undo the last change made to this dataset" disabled onclick="floatUndo()">↶ Undo</button>
+      <button id="floatCloseBtn" onclick="toggleFloat()">✕ close</button>
+    </div>
   </div>
 
   <!-- no dataset message -->
@@ -5554,6 +5605,14 @@ document.addEventListener("DOMContentLoaded", () => {
     chatWrap.style.display = hasSid ? "" : "none";
     document.getElementById("floatInputRow").style.display = hasSid ? "" : "none";
     statusBar.textContent = hasSid ? "session · " + sid.slice(0,8) + "…" : "";
+
+    // Keep the undo button in step with whichever dataset tab is active —
+    // covers opening the panel fresh, and switching tabs while it's open.
+    if(undoBtn){
+      const st = (typeof dsState !== "undefined" && typeof activeDs !== "undefined") ? (dsState[activeDs] || {}) : {};
+      const profile = st.lastProfile || st.profile;
+      undoBtn.disabled = !hasSid || !(profile && profile.can_undo);
+    }
   }
 
   // ── send message ──────────────────────────────────────
@@ -5616,6 +5675,42 @@ document.addEventListener("DOMContentLoaded", () => {
 
   sendBtn.addEventListener("click", floatSend);
   input.addEventListener("keydown", e => { if(e.key === "Enter") floatSend(); });
+
+  // ── undo ───────────────────────────────────────────────
+  // Uses the same shared undo stack as the Clean panel's undo button — a
+  // dataset only has one history, however the change was made (chat, this
+  // panel, or the Clean tab), so this just reverts whatever happened last.
+  const undoBtn = document.getElementById("floatUndoBtn");
+  async function floatUndo(){
+    const sid = (typeof getSid === "function") ? getSid() : null;
+    if(!sid) return;
+    undoBtn.disabled = true;
+    const bot = addFloatMsg("Undoing…", "bot");
+    statusBar.textContent = "undoing…";
+    try{
+      const apiBase = (typeof API !== "undefined") ? API : "";
+      const res = await fetch(`${apiBase}/undo/${sid}`, { method: "POST" });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail || "Nothing to undo.");
+
+      bot.textContent = "Reverted the last change to this dataset.";
+      if(typeof setDatasetState === "function") setDatasetState(activeDs, { profile: data });
+      if(typeof renderEDA === "function") renderEDA(data);
+      if(typeof renderCleanPreview === "function") renderCleanPreview(data);
+      if(typeof handleDataChanged === "function") handleDataChanged(data, { reloadViz: true });
+
+      undoBtn.disabled = !data.can_undo;
+      statusBar.textContent = "session · " + sid.slice(0,8) + "…";
+    } catch(err){
+      bot.textContent = err.message || "Nothing to undo.";
+      bot.classList.add("error");
+      undoBtn.disabled = true; // matches: nothing left to undo
+      statusBar.textContent = "session · " + sid.slice(0,8) + "…";
+    } finally {
+      chatWrap.scrollTop = chatWrap.scrollHeight;
+    }
+  }
+  window.floatUndo = floatUndo;
 
   // ── message helpers ───────────────────────────────────
   function addFloatMsg(text, role){
