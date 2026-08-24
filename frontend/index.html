@@ -1050,10 +1050,17 @@ function clearAndReload(){
   // Tell the backend to drop every open session's files, so a fresh reload
   // actually frees the data/disk instead of just forgetting about it on the
   // frontend and leaving orphaned CSVs behind on every click.
+  //
+  // keepalive:true is required here — location.reload() below fires right
+  // after this loop, and without it the browser is allowed to abort these
+  // fetches mid-flight when the page starts unloading, silently dropping
+  // the DELETE before it ever reaches the server. keepalive tells the
+  // browser to still send the request even though the page is navigating
+  // away (same mechanism navigator.sendBeacon uses).
   datasets.forEach(d => {
     const sid = dsState[d.id]?.sessionId;
     if(sid){
-      fetch(`${API}/session/${sid}`, { method: "DELETE" }).catch(() => {});
+      fetch(`${API}/session/${sid}`, { method: "DELETE", keepalive: true }).catch(() => {});
     }
   });
 
@@ -2093,6 +2100,10 @@ async function sendCleanChat(){
         chatCleanLog:     [],
       };
       activeDs = newId;
+      // Same fix as the filter panel: wipe stale DOM from the previous tab
+      // before rendering this one, or the clean log / updated table /
+      // training / predict panels keep showing the parent dataset's content.
+      resetPanels();
       renderDsTabs();
       autoSave();
       await loadEDA(newId, data.new_session_id);
@@ -4816,6 +4827,8 @@ function addFilterCondition(){
       <option value=">=">&gt;=(≥)</option>
       <option value="<=">&lt;=(≤)</option>
       <option value="contains">contains</option>
+      <option value="startswith">starts with</option>
+      <option value="endswith">ends with</option>
       <option value="isnull">is missing / null</option>
       <option value="notnull">is not missing / null</option>
     </select>
@@ -4866,6 +4879,17 @@ function _rebuildExpr(){
       return;
     } else if(op === "contains"){
       parts.push(`${colRef}.str.contains('${val}', case=False, na=False)`);
+    } else if(op === "startswith"){
+      parts.push(`${colRef}.str.startswith('${val}', na=False)`);
+    } else if(op === "endswith"){
+      parts.push(`${colRef}.str.endswith('${val}', na=False)`);
+    } else if((op === "==" || op === "!=") && ["missing","null","nan","none","na"].includes(val.toLowerCase())){
+      // Typing "missing"/"null"/etc. with == or != almost always means "this
+      // value is actually missing", not "this cell literally contains the
+      // text 'missing'" — a real missing value never equals that string, so
+      // the filter would silently match 0 rows instead of what was meant.
+      // Translate to the real missing-value check automatically.
+      parts.push(op === "==" ? `${colRef}.isnull()` : `${colRef}.notna()`);
     } else {
       // Wrap in quotes if non-numeric
       const isNum = !isNaN(Number(val)) && val !== "";
@@ -4954,6 +4978,12 @@ async function sendFilterToTab(){
       chatCleanLog:     [],
     };
     activeDs = newId;
+    // Wipe the DOM before rendering the new tab — every other "new dataset"
+    // path (addDataset, switchDataset -> restoreDataset) calls this first.
+    // Without it, the filtered tab's clean log, updated-data table, training
+    // and predict panels kept showing the parent dataset's leftover content,
+    // since dsState was fresh but the DOM never got cleared.
+    resetPanels();
     renderDsTabs();
     autoSave();
     await loadEDA(newId, data.session_id);

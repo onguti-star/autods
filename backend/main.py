@@ -633,6 +633,26 @@ def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.
     try:
         if dtype == "integer":
             converted = pd.to_numeric(out[column], errors="coerce")
+            # errors="coerce" silently turns any value it can't parse into
+            # NaN — including genuinely non-numeric text like "C536379" in a
+            # column that's mostly real numbers. Left unchecked, that means
+            # converting a column to integer can silently delete real data
+            # with nothing but an easy-to-miss note, while a decimal value
+            # in the same column hard-blocks the conversion below. Treat
+            # unparseable text the same way: refuse rather than destroy it.
+            # (Blank/whitespace-only cells are treated as already-missing,
+            # not as data that would be destroyed.)
+            had_real_value = out[column].notna() & (out[column].astype(str).str.strip() != "")
+            unparseable = converted.isna() & had_real_value
+            if bool(unparseable.any()):
+                examples = out[column][unparseable].astype(str).unique()[:3]
+                example_str = ", ".join(f"'{v}'" for v in examples)
+                raise HTTPException(
+                    400,
+                    f"Column '{column}' has non-numeric value(s) (e.g. {example_str}) that can't become "
+                    f"integers. Converting would silently turn them into missing data. Clean those values "
+                    f"first, or convert to text/category instead.",
+                )
             non_integer = converted.dropna() % 1 != 0
             if bool(non_integer.any()):
                 raise HTTPException(
@@ -641,7 +661,19 @@ def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.
                 )
             out[column] = converted.astype("Int64")
         elif dtype == "float":
-            out[column] = pd.to_numeric(out[column], errors="coerce").astype(float)
+            converted = pd.to_numeric(out[column], errors="coerce")
+            had_real_value = out[column].notna() & (out[column].astype(str).str.strip() != "")
+            unparseable = converted.isna() & had_real_value
+            if bool(unparseable.any()):
+                examples = out[column][unparseable].astype(str).unique()[:3]
+                example_str = ", ".join(f"'{v}'" for v in examples)
+                raise HTTPException(
+                    400,
+                    f"Column '{column}' has non-numeric value(s) (e.g. {example_str}) that can't become "
+                    f"numbers. Converting would silently turn them into missing data. Clean those values "
+                    f"first, or convert to text/category instead.",
+                )
+            out[column] = converted.astype(float)
         elif dtype == "text":
             out[column] = out[column].astype("string")
         elif dtype == "category":

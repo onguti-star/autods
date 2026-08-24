@@ -667,7 +667,10 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if aggregate_match:
             new_col_name = aggregate_match.group(1)
             operation = aggregate_match.group(2)
-            
+
+            if new_col_name in columns:
+                return df, f"Column '{new_col_name}' already exists. Choose a different name."
+
             # Apply the aggregate operation
             result_series = _apply_aggregate_operation(df, operation)
             
@@ -1045,9 +1048,17 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
                 if text_to_remove.endswith(".") and len(text_to_remove) > 1:
                     pattern = re.escape(text_to_remove[:-1]) + r"\.?"
                 new_df = df.copy()
+                # Cast to plain string BEFORE calling .where() — if new_df[col]
+                # is still category dtype, .where() tries to insert the
+                # post-replace values into that same Categorical, and pandas
+                # raises "Cannot setitem on a Categorical with a new category"
+                # the moment a replaced value isn't already one of the
+                # column's existing categories (which it usually won't be,
+                # since we just changed it).
+                col_as_str = new_df[col].astype(str)
                 cleaned = (
-                    new_df[col]
-                    .where(new_df[col].isna(), new_df[col].astype(str).str.replace(pattern, "", regex=True, case=False))
+                    col_as_str
+                    .where(new_df[col].isna(), col_as_str.str.replace(pattern, "", regex=True, case=False))
                 )
                 new_df[col] = cleaned.where(cleaned.isna(), cleaned.astype(str).str.replace(r"\s+", " ", regex=True).str.strip())
                 changed = int((df[col].astype(str) != new_df[col].astype(str)).sum())

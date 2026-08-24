@@ -63,12 +63,54 @@ def _delete_session_files(session_id: str):
             pass
 
 
+def _dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename duplicate column labels so every column name is unique.
+
+    Duplicate column names are silently dangerous: pandas allows a DataFrame
+    to have two (or more) columns sharing a name, but the moment that frame
+    is serialized with .to_dict(orient="records") — which every preview,
+    EDA profile, and filter response in this app does — the duplicate keys
+    collapse into one, and only the LAST duplicate's value survives per row.
+    If the first (real, non-null) column of that name happens to sit before
+    a later duplicate that's empty, the preview shows that column as null
+    for every row even though the actual first column is fully populated —
+    with no error or warning surfaced to the user.
+
+    Rather than chase every place a duplicate name could be introduced
+    (raw CSVs with repeated headers, filtering, chat-driven column
+    creation, joins, etc.), rename duplicates once here — the single
+    place every dataframe passes through on its way into a session —
+    so downstream code never has to special-case it.
+    """
+    cols = list(df.columns)
+    if len(cols) == len(set(cols)):
+        return df
+    seen: dict[str, int] = {}
+    new_cols = []
+    for c in cols:
+        if c not in seen:
+            seen[c] = 0
+            new_cols.append(c)
+        else:
+            seen[c] += 1
+            candidate = f"{c}_{seen[c] + 1}"
+            while candidate in seen:
+                seen[c] += 1
+                candidate = f"{c}_{seen[c] + 1}"
+            seen[candidate] = 0
+            new_cols.append(candidate)
+    df = df.copy()
+    df.columns = new_cols
+    return df
+
+
 class Session:
     UNDO_LIMIT = 20   # cap history depth so long cleaning sessions don't grow memory unbounded
 
     def __init__(self, df: pd.DataFrame, filename: str, session_id: str | None = None):
         self.id = session_id or str(uuid.uuid4())
         self.filename = filename
+        df = _dedupe_columns(df)
         self.df = df
         self.original_df = df.copy()             # kept so chat cleaning commands can be reset
         self.target: Optional[str] = None

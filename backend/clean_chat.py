@@ -602,7 +602,10 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if aggregate_match:
             new_col_name = aggregate_match.group(1)
             operation = aggregate_match.group(2)
-            
+
+            if new_col_name in columns:
+                return df, f"Column '{new_col_name}' already exists. Choose a different name."
+
             # Apply the aggregate operation
             result_series = _apply_aggregate_operation(df, operation)
             
@@ -1030,6 +1033,49 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
                 return df, f"No rows found where '{col}' is {op_text} {value} — nothing kept (no change made)."
             return new_df, f"Kept {kept:,} row(s) where '{col}' is {op_text} {value}; removed the rest."
 
+    # ---- drop rows where a column starts with / ends with / contains text ----
+    # Must run BEFORE the generic "remove exact text from a column" block below,
+    # or "drop rows which start with C in InvoiceNo" gets misread as "strip the
+    # literal text 'rows which start with c' out of InvoiceNo's values" (a
+    # no-op edit, since that phrase never appears in real data) instead of
+    # actually dropping the matching rows — which is what was asked for.
+    _prefix_specs = [
+        ("startswith", r"(?:start(?:s|ing|ed)?|begin(?:s|ning)?)\s+with"),
+        ("endswith",   r"end(?:s|ing|ed)?\s+with"),
+        ("contains",   r"contains?|includes?"),
+    ]
+    for str_op, verb_re in _prefix_specs:
+        text_val = col_raw = None
+        # Form A: "drop rows which start with X in COLUMN"
+        m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+(?:which|that)?\s*(?:{verb_re})\s+(.+?)\s+(?:in|from)\s+(.+)", ql)
+        if m:
+            text_val, col_raw = m.group(1), m.group(2)
+        else:
+            # Form B: "drop rows where COLUMN starts with X"
+            m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:{verb_re})\s+(.+)", ql)
+            if m:
+                col_raw, text_val = m.group(1), m.group(2)
+        if m:
+            col = _match_col(col_raw, columns)
+            text_val = text_val.strip(" '\"")
+            if col and text_val:
+                series = df[col].astype(str)
+                if str_op == "startswith":
+                    mask = series.str.lower().str.startswith(text_val.lower())
+                    verb_label = "started with"
+                elif str_op == "endswith":
+                    mask = series.str.lower().str.endswith(text_val.lower())
+                    verb_label = "ended with"
+                else:
+                    mask = series.str.lower().str.contains(re.escape(text_val.lower()), na=False)
+                    verb_label = "contained"
+                mask = mask & df[col].notna()
+                new_df = df[~mask].reset_index(drop=True)
+                removed = len(df) - len(new_df)
+                if removed == 0:
+                    return df, f"No rows found where '{col}' {verb_label} '{text_val}' — nothing removed."
+                return new_df, f"Removed {removed:,} row(s) where '{col}' {verb_label} '{text_val}'."
+
     # ---- remove exact text from a column ----
     m = re.search(rf"\b{REMOVE_VERB_RE}\s+(.+?)\s+(?:in|from)\s+(.+)", q, flags=re.IGNORECASE)
     if m:
@@ -1050,9 +1096,17 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
                 if text_to_remove.endswith(".") and len(text_to_remove) > 1:
                     pattern = re.escape(text_to_remove[:-1]) + r"\.?"
                 new_df = df.copy()
+                # Cast to plain string BEFORE calling .where() — if new_df[col]
+                # is still category dtype, .where() tries to insert the
+                # post-replace values into that same Categorical, and pandas
+                # raises "Cannot setitem on a Categorical with a new category"
+                # the moment a replaced value isn't already one of the
+                # column's existing categories (which it usually won't be,
+                # since we just changed it).
+                col_as_str = new_df[col].astype(str)
                 cleaned = (
-                    new_df[col]
-                    .where(new_df[col].isna(), new_df[col].astype(str).str.replace(pattern, "", regex=True, case=False))
+                    col_as_str
+                    .where(new_df[col].isna(), col_as_str.str.replace(pattern, "", regex=True, case=False))
                 )
                 new_df[col] = cleaned.where(cleaned.isna(), cleaned.astype(str).str.replace(r"\s+", " ", regex=True).str.strip())
                 changed = int((df[col].astype(str) != new_df[col].astype(str)).sum())
