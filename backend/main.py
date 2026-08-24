@@ -1,6 +1,7 @@
 import io
 import html
 import ipaddress
+import math
 import multiprocessing as mp
 import os
 import pickle
@@ -1853,6 +1854,29 @@ class FilterRequest(BaseModel):
     new_name: str = Field(default="filtered_subset", max_length=120)
 
 
+def _json_safe_records(df: pd.DataFrame) -> list[dict]:
+    """
+    Convert a DataFrame slice to a list of dicts that's safe to return as
+    JSON. Plain .to_dict(orient="records") leaves NaN/NaT/inf values as
+    float('nan'), and FastAPI's JSON encoder raises
+    'Out of range float values are not JSON compliant: nan' when it hits
+    those. Swap them for None (-> JSON null) instead.
+    """
+    records = df.to_dict(orient="records")
+    cleaned = []
+    for row in records:
+        cleaned_row = {}
+        for key, value in row.items():
+            if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                cleaned_row[key] = None
+            elif pd.isna(value):
+                cleaned_row[key] = None
+            else:
+                cleaned_row[key] = value
+        cleaned.append(cleaned_row)
+    return cleaned
+
+
 def _apply_filter(df: pd.DataFrame, where_clause: str) -> pd.DataFrame:
     """
     Run a filter using pandas .query().
@@ -1894,7 +1918,7 @@ def filter_dataset(session_id: str, req: FilterRequest):
         "name": new_name,
         "shape": {"rows": len(result_df), "columns": len(result_df.columns)},
         "columns": list(result_df.columns),
-        "preview": result_df.head(5).to_dict(orient="records"),
+        "preview": _json_safe_records(result_df.head(5)),
     }
 
 
@@ -1913,7 +1937,7 @@ def filter_preview(session_id: str, req: FilterRequest):
     return {
         "rows_matched": len(result_df),
         "total_rows": len(session.df),
-        "preview": result_df.head(10).to_dict(orient="records"),
+        "preview": _json_safe_records(result_df.head(10)),
         "columns": list(result_df.columns),
     }
 

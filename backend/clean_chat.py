@@ -1183,9 +1183,28 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, f"Replaced {count:,} occurrence(s) of '{old_val_raw}' → '{new_val_raw}' in '{col}'."
 
     # ---- filter rows by value (remove / keep only) ----
-    m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
-        re.search(r"delete\s+(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
-        re.search(rf"{REMOVE_VERB_RE}\s+all\s+(?:the\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql)
+    # NOT_EQ_OP must be tried BEFORE EQ_OP: "is not equal to" contains "is" and
+    # "equal to", so if EQ_OP were checked first it would wrongly grab "is" as
+    # the separator and leave "not equal to 0" dangling as the literal value.
+    NOT_EQ_OP = r"(?:is\s+not\s+equal\s+to|is\s+not|not\s+equal\s+to|!=|<>)"
+    EQ_OP = r"(?:is\s+equal\s+to|equal\s+to|equals\s+to|==|=|equals?|is)"
+
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+{NOT_EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"delete\s+(?:rows?\s+)?where\s+(.+?)\s+{NOT_EQ_OP}\s+(.+)", ql)
+    if m:
+        col = _match_col(m.group(1), columns)
+        value = _parse_value_token(m.group(2))
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        mask = df[col].astype(str).str.strip().str.lower() == str(value).strip().lower()
+        removed = int((~mask).sum())
+        if removed == 0:
+            return df, f"No rows found where '{col}' is not '{value}' — nothing removed."
+        return df[mask].reset_index(drop=True), f"Removed {removed:,} row(s) where '{col}' was not '{value}'."
+
+    m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+{EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"delete\s+(?:rows?\s+)?where\s+(.+?)\s+{EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"{REMOVE_VERB_RE}\s+all\s+(?:the\s+)?(?:rows?\s+)?where\s+(.+?)\s+{EQ_OP}\s+(.+)", ql)
     if m:
         col = _match_col(m.group(1), columns)
         value = _parse_value_token(m.group(2))
@@ -1197,9 +1216,23 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             return df, f"No rows found where '{col}' is '{value}' — nothing removed."
         return df[mask].reset_index(drop=True), f"Removed {removed:,} row(s) where '{col}' was '{value}'."
 
-    m = re.search(r"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+(?:is|=|==|equals?)\s+(.+)", ql) or \
-        re.search(r"filter\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql) or \
-        re.search(r"show\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+(?:is|=|==)\s+(.+)", ql)
+    m = re.search(rf"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+{NOT_EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"filter\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+{NOT_EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"show\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+{NOT_EQ_OP}\s+(.+)", ql)
+    if m:
+        col = _match_col(m.group(1), columns)
+        value = _parse_value_token(m.group(2))
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        mask = df[col].astype(str).str.strip().str.lower() != str(value).strip().lower()
+        kept = int(mask.sum())
+        if kept == 0:
+            return df, f"No rows found where '{col}' is not '{value}' — nothing kept (no change made)."
+        return df[mask].reset_index(drop=True), f"Kept {kept:,} row(s) where '{col}' is not '{value}'; removed the rest."
+
+    m = re.search(rf"\bkeep\s+only\s+rows?\s+where\s+(.+?)\s+{EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"filter\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+{EQ_OP}\s+(.+)", ql) or \
+        re.search(rf"show\s+(?:only\s+)?(?:rows?\s+)?where\s+(.+?)\s+{EQ_OP}\s+(.+)", ql)
     if m:
         col = _match_col(m.group(1), columns)
         value = _parse_value_token(m.group(2))

@@ -6,8 +6,40 @@ import pandas as pd
 
 from . import nlp
 
+# Hard cap on how many points a line/area chart will ever send to the
+# browser. Sending every row of a 500k-row dataset crashes/freezes the tab
+# (huge JSON payload + Chart.js curve smoothing over that many points), so
+# large series get aggregated down to this many points instead. Trend shape
+# is preserved by averaging y within evenly-sized x buckets rather than
+# randomly dropping points.
+MAX_LINE_POINTS = 3000
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+def _downsample_xy(sub: pd.DataFrame, x: str, y: str, max_points: int = MAX_LINE_POINTS):
+    """
+    Reduce a sorted (x, y) DataFrame to at most `max_points` rows so a line/
+    area chart never has to render more than that many points. When x is
+    numeric, points are aggregated into evenly-spaced x-buckets and averaged
+    (keeps the trend shape instead of a misleading zig-zag from random
+    sampling). When x is non-numeric (e.g. category/date-as-string), falls
+    back to an evenly-spaced stride so the whole range is still represented.
+    Returns (reduced_df, was_sampled, original_count, shown_count).
+    """
+    n = len(sub)
+    if n <= max_points:
+        return sub, False, n, n
+
+    if pd.api.types.is_numeric_dtype(sub[x]):
+        bin_idx = pd.cut(sub[x], bins=max_points, labels=False, duplicates="drop")
+        agg = sub.groupby(bin_idx, observed=True).agg({x: "mean", y: "mean"}).reset_index(drop=True)
+        return agg, True, n, len(agg)
+    else:
+        idx = np.linspace(0, n - 1, max_points).astype(int)
+        reduced = sub.iloc[idx].reset_index(drop=True)
+        return reduced, True, n, len(reduced)
+
 
 def _histogram_data(s: pd.Series, bins: int = 12,
                     x_min: float = None, x_max: float = None,
@@ -87,12 +119,16 @@ def _boxplot_data(df: pd.DataFrame, x: str, group_col: str = None):
 
 def _line_data(df: pd.DataFrame, x: str, y: str):
     sub = df[[x, y]].dropna().sort_values(x)
+    sub, sampled, total_points, shown_points = _downsample_xy(sub, x, y)
     if pd.api.types.is_numeric_dtype(sub[x]):
         xs = [float(v) for v in sub[x]]
     else:
         xs = [str(v) for v in sub[x]]
     ys = [float(v) for v in sub[y]]
-    return {"labels": xs, "values": ys}
+    return {
+        "labels": xs, "values": ys,
+        "sampled": sampled, "total_points": total_points, "shown_points": shown_points,
+    }
 
 
 def _pie_data(s: pd.Series, top_n: int = 10):
@@ -153,12 +189,16 @@ def _radar_data(df: pd.DataFrame, cols: list[str], group_col: str = None) -> dic
 def _area_data(df: pd.DataFrame, x: str, y: str) -> dict:
     """Generate data for area chart - cumulative trends."""
     sub = df[[x, y]].dropna().sort_values(x)
+    sub, sampled, total_points, shown_points = _downsample_xy(sub, x, y)
     if pd.api.types.is_numeric_dtype(sub[x]):
         xs = [float(v) for v in sub[x]]
     else:
         xs = [str(v) for v in sub[x]]
     ys = [float(v) for v in sub[y]]
-    return {"type": "area", "labels": xs, "values": ys}
+    return {
+        "type": "area", "labels": xs, "values": ys,
+        "sampled": sampled, "total_points": total_points, "shown_points": shown_points,
+    }
 
 
 def _violin_data(df: pd.DataFrame, x: str, group_col: str = None) -> dict:
@@ -381,28 +421,55 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
     if chart_type == "histogram":
         if not pd.api.types.is_numeric_dtype(s):
             raise ValueError(f"'{x}' is not numeric — try a bar chart instead.")
+        hist = _histogram_data(s, x_min=x_min, x_max=x_max, bin_width=bin_width)
+        n_shown = int(sum(hist["values"])) if hist["values"] else 0
         return {
             "type": "histogram",
             "x": x,
             "x_min": x_min,
             "x_max": x_max,
             "bin_width": bin_width,
-            **_histogram_data(s, x_min=x_min, x_max=x_max, bin_width=bin_width),
+            "x_label": x,
+            "y_label": "Count",
+            "caption": (
+                f"Distribution of '{x}' across {n_shown:,} values, split into "
+                f"{len(hist['labels'])} bars. Bar height = how many rows fall in that range."
+            ),
+            **hist,
         }
 
     if chart_type == "bar":
         top_n = min(max(int(bar_limit), 1), 1000) if bar_limit is not None else None
-        return {"type": "bar", "x": x, "bar_limit": top_n, **_bar_data(s, top_n=top_n)}
+        bar = _bar_data(s, top_n=top_n)
+        total_categories = s.nunique(dropna=True)
+        caption = f"How often each value of '{x}' occurs, most frequent first."
+        if top_n is not None and total_categories > len(bar["labels"]):
+            caption += f" Showing top {len(bar['labels'])} of {total_categories:,} distinct values."
+        return {
+            "type": "bar", "x": x, "bar_limit": top_n,
+            "x_label": x, "y_label": "Count", "caption": caption,
+            **bar,
+        }
 
     if chart_type == "pie":
-        return {"type": "pie", "x": x, **_pie_data(s)}
+        pie = _pie_data(s)
+        return {
+            "type": "pie", "x": x,
+            "caption": f"Share of each category in '{x}' — slice size = proportion of rows.",
+            **pie,
+        }
 
     if chart_type == "scatter":
         if not y or y not in df.columns:
             raise ValueError("Scatter needs a Y column.")
         if not pd.api.types.is_numeric_dtype(s) or not pd.api.types.is_numeric_dtype(df[y]):
             raise ValueError("Scatter needs two numeric columns.")
-        return {"type": "scatter", "x": x, "y": y, **_scatter_data(df, x, y)}
+        scatter = _scatter_data(df, x, y)
+        total_rows = len(df[[x, y]].dropna())
+        caption = f"Each dot is one row — '{x}' on the X-axis vs '{y}' on the Y-axis."
+        if total_rows > len(scatter["points"]):
+            caption += f" Showing a random sample of {len(scatter['points']):,} of {total_rows:,} rows."
+        return {"type": "scatter", "x": x, "y": y, "x_label": x, "y_label": y, "caption": caption, **scatter}
 
     if chart_type == "bubble":
         if not y or y not in df.columns:
@@ -414,25 +481,48 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
                 raise ValueError(f"'{col}' must be numeric for a bubble chart.")
         # normalise size to 3–30 range
         sub = df[[x, y, group]].dropna()
+        total_rows = len(sub)
         if len(sub) > 400:
             sub = sub.sample(400, random_state=42)
         sz = sub[group]
         sz_norm = 3 + 27 * (sz - sz.min()) / (sz.max() - sz.min() + 1e-9)
         pts = [{"x": float(r[x]), "y": float(r[y]), "r": float(sz_norm.iloc[i])}
                for i, (_, r) in enumerate(sub.iterrows())]
-        return {"type": "bubble", "x": x, "y": y, "size": group, "points": pts}
+        caption = f"'{x}' vs '{y}', with bubble size showing '{group}'."
+        if total_rows > len(pts):
+            caption += f" Showing a random sample of {len(pts):,} of {total_rows:,} rows."
+        return {
+            "type": "bubble", "x": x, "y": y, "size": group,
+            "x_label": x, "y_label": y, "caption": caption, "points": pts,
+        }
 
     if chart_type == "boxplot":
         if not pd.api.types.is_numeric_dtype(s):
             raise ValueError(f"'{x}' must be numeric for a box plot.")
-        return {"type": "boxplot", "x": x, "group": group, **_boxplot_data(df, x, group)}
+        caption = f"Spread of '{x}': box = middle 50% of values, line = median, dots = outliers."
+        if group:
+            caption += f" Grouped by '{group}'."
+        return {
+            "type": "boxplot", "x": x, "group": group,
+            "x_label": x, "y_label": x, "caption": caption,
+            **_boxplot_data(df, x, group),
+        }
 
     if chart_type == "line":
         if not y or y not in df.columns:
             raise ValueError("Line chart needs a Y column.")
         if not pd.api.types.is_numeric_dtype(df[y]):
             raise ValueError(f"'{y}' must be numeric for a line chart.")
-        return {"type": "line", "x": x, "y": y, **_line_data(df, x, y)}
+        line = _line_data(df, x, y)
+        if line["sampled"]:
+            caption = (
+                f"'{y}' over '{x}' — showing {line['shown_points']:,} points aggregated "
+                f"(averaged) from {line['total_points']:,} rows to keep the chart readable and fast."
+            )
+        else:
+            caption = f"'{y}' plotted over '{x}' for all {line['total_points']:,} rows."
+        return {"type": "line", "x": x, "y": y, "x_label": x, "y_label": y, "caption": caption, **line}
+
 
     if chart_type == "word_frequency":
         top = nlp.word_frequency(s, top_n=25)
@@ -471,7 +561,15 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
     if chart_type == "area":
         if not y or y not in df.columns:
             raise ValueError("Area chart needs a Y column.")
-        return _area_data(df, x, y)
+        area = _area_data(df, x, y)
+        if area["sampled"]:
+            caption = (
+                f"'{y}' over '{x}' — showing {area['shown_points']:,} points aggregated "
+                f"(averaged) from {area['total_points']:,} rows to keep the chart readable and fast."
+            )
+        else:
+            caption = f"'{y}' plotted over '{x}' for all {area['total_points']:,} rows."
+        return {"x_label": x, "y_label": y, "caption": caption, **area}
 
     if chart_type == "violin":
         if not pd.api.types.is_numeric_dtype(s):

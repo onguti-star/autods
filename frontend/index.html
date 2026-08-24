@@ -2442,6 +2442,30 @@ $("vizBtn").addEventListener("click", async () => {
   hide("vizError");
   const x = $("vizColX").value, y = $("vizColY").value, g = $("vizGroup").value;
   const t = selectedChartType;
+
+  // Guard against the column dropdown not being populated yet — this can
+  // happen on large datasets where EDA profiling is still running in the
+  // background after the data preview already appeared. Sending an empty
+  // column name produces a confusing "Column '' not found" error, so catch
+  // it here with a clearer message instead, and try to recover by
+  // refreshing the column list.
+  if(!x){
+    if(!allColumns.length && getSid()){
+      $("vizError").textContent = "Still loading columns for this dataset — refreshing now, try again in a moment.";
+      show("vizError");
+      loadEDA(activeDs, getSid());
+    } else {
+      $("vizError").textContent = "Please select a column first.";
+      show("vizError");
+    }
+    return;
+  }
+  if(["scatter","line","bubble","area"].includes(t) && !y){
+    $("vizError").textContent = "This chart type needs a Y column too.";
+    show("vizError");
+    return;
+  }
+
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
   if(["scatter","line","bubble","area"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
   if(["boxplot","bubble"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
@@ -2574,7 +2598,11 @@ function explainChart(ch){
   if(ch.type === "line" && ch.labels?.length && ch.values?.length){
     const first = Number(ch.values[0]), last = Number(ch.values[ch.values.length - 1]);
     const direction = last > first ? "increases" : last < first ? "decreases" : "stays about the same";
-    return `${ch.y} ${direction} from ${fmtShort(first)} to ${fmtShort(last)} across the plotted ${ch.x} values.`;
+    let text = `${ch.y} ${direction} from ${fmtShort(first)} to ${fmtShort(last)} across the plotted ${ch.x} values.`;
+    if(ch.sampled){
+      text += ` (Showing ${ch.shown_points.toLocaleString()} points averaged from ${ch.total_points.toLocaleString()} rows to keep the chart fast — the trend shape is preserved.)`;
+    }
+    return text;
   }
   if(ch.type === "boxplot" && ch.groups){
     const groups = Object.entries(ch.groups).filter(([,s]) => s);
@@ -2624,7 +2652,7 @@ function explainChart(ch){
     const top = items[0];
     return `"${top.word}" is the most frequent word in ${ch.x}, appearing ${fmtShort(top.count)} time(s) across the dataset (stopwords like "the" and "and" are excluded).`;
   }
-  return `This visualization gives a quick view of ${ch.x}.`;
+  return ch.caption || `This visualization gives a quick view of ${ch.x}.`;
 }
 
 function addCustomChart(ch){
@@ -2746,10 +2774,10 @@ function drawChart(canvasId, ch){
   }
   if(ch.type === "line"){
     makeChart(canvasId,{type:"line",
-      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:"#5fd4d6",backgroundColor:"#5fd4d620",pointRadius:2,tension:0.3}]},
+      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:"#5fd4d6",backgroundColor:"#5fd4d620",pointRadius:ch.sampled?0:2,tension:0.3}]},
       options:{plugins:{legend:{display:false}},
-        scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:"#1f3a5f"}},
-                y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+        scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:"#1f3a5f"}},
+                y:{title:{display:true,text:ch.y_label||ch.y||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
     return;
   }
   if(ch.type === "wordcloud"){
@@ -3454,8 +3482,8 @@ function drawChart(canvasId, ch){
   makeChart(canvasId,{type:"bar",
     data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:color}]},
     options:{plugins:{legend:{display:false}},
-      scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:"#1f3a5f"}},
-              y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+      scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:"#1f3a5f"}},
+              y:{title:{display:true,text:ch.y_label||"Count",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
 }
 
 $("goTrainBtn").addEventListener("click", () => { 
