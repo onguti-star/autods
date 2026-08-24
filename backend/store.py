@@ -6,6 +6,7 @@ any trained models, and metadata in memory for the life of the process.
 DataFrames are also saved to disk (parquet) so sessions survive server
 restarts — the frontend can restore a session even after a reload.
 """
+import logging
 import os
 import uuid
 import shutil
@@ -15,6 +16,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+logger = logging.getLogger("autods.store")
 
 # Directory where session dataframes are persisted between restarts
 _SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".sessions")
@@ -36,7 +38,11 @@ def _save_df_to_disk(session_id: str, df: pd.DataFrame, original_df: pd.DataFram
         df.to_csv(_session_path(session_id), index=False)
         original_df.to_csv(_original_path(session_id), index=False)
     except Exception:
-        pass
+        # Persistence is a safety net, not the source of truth (the in-memory
+        # Session still has the data) — so we don't raise here. But a silent
+        # failure meant a user could lose "unsaved" state on server restart
+        # with zero indication why. Log it so it's at least visible.
+        logger.exception("failed to persist session %s to disk", session_id)
 
 
 def _load_df_from_disk(session_id: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
@@ -50,6 +56,7 @@ def _load_df_from_disk(session_id: str) -> tuple[pd.DataFrame, pd.DataFrame] | N
         original_df = pd.read_csv(op) if os.path.exists(op) else df.copy()
         return df, original_df
     except Exception:
+        logger.exception("failed to load session %s from disk", session_id)
         return None
 
 
@@ -60,7 +67,7 @@ def _delete_session_files(session_id: str):
             if os.path.exists(path):
                 os.remove(path)
         except Exception:
-            pass
+            logger.exception("failed to remove session file %s", path)
 
 
 def _dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,8 +138,15 @@ class Session:
         self.progress_messages: list = []          # progress messages for long-running operations
         self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
         self.notes: str = ""                        # free-form user notes about this dataset, shown in downloads
+        self.last_accessed: datetime = datetime.now()  # drives idle-eviction from memory; see evict_idle_sessions()
         # Persist to disk immediately on creation
         _save_df_to_disk(self.id, self.df, self.original_df)
+
+    def touch(self):
+        """Mark this session as recently used. Called on every get_session()
+        lookup so evict_idle_sessions() only reaps sessions nobody's touched
+        in a while, not ones actively being worked on."""
+        self.last_accessed = datetime.now()
 
     def snapshot_before_change(self):
         """Call this right before mutating self.df, from any cleaning code path
@@ -233,7 +247,9 @@ def create_session(df: pd.DataFrame, filename: str) -> "Session":
 def get_session(session_id: str) -> "Session":
     # Fast path: already in memory
     if session_id in SESSIONS:
-        return SESSIONS[session_id]
+        s = SESSIONS[session_id]
+        s.touch()
+        return s
 
     # Slow path: try to restore from disk (survives server restarts)
     result = _load_df_from_disk(session_id)
@@ -264,6 +280,9 @@ def get_session(session_id: str) -> "Session":
     s.saved_predictions = {}
     s.unsupervised_results = {}
     s.progress_messages = []
+    s.geojson = None
+    s.notes = ""
+    s.last_accessed = datetime.now()
 
     SESSIONS[session_id] = s
     return s
@@ -273,6 +292,29 @@ def delete_session(session_id: str):
     """Remove a session from memory and disk."""
     SESSIONS.pop(session_id, None)
     _delete_session_files(session_id)
+
+
+def evict_idle_sessions(max_idle_hours: int = 24) -> int:
+    """Drop sessions from the in-memory SESSIONS dict that haven't been
+    accessed (via get_session) in over max_idle_hours.
+
+    This only frees memory — it does NOT touch the CSV files on disk, so an
+    evicted session is still transparently restored (via the slow path in
+    get_session) the next time the frontend asks for it; it just won't hold
+    its full in-memory state (trained models, undo history) if it was never
+    otherwise saved. Disk files themselves are cleaned up separately, much
+    later, by purge_stale_session_files. Returns the number of sessions
+    evicted from memory.
+    """
+    cutoff = datetime.now().timestamp() - (max_idle_hours * 3600)
+    stale_ids = [
+        sid for sid, s in SESSIONS.items()
+        if getattr(s, "last_accessed", None) is not None
+        and s.last_accessed.timestamp() < cutoff
+    ]
+    for sid in stale_ids:
+        SESSIONS.pop(sid, None)
+    return len(stale_ids)
 
 
 def purge_stale_session_files(max_age_days: int = 7) -> int:

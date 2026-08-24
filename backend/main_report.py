@@ -1592,8 +1592,26 @@ def _build_html_report(session, extra_charts=None) -> str:
  	                        }
                     };
                 }
-                case 'wordcloud':
-                case 'word_frequency': {
+                case 'word_frequency':
+                    if (!chart.labels || !chart.labels.length) return null;
+                    return {
+                        type: 'bar',
+                        data: {
+                            labels: chart.labels,
+                            datasets: [{
+                                label: chart.x || 'Count',
+                                data: chart.values,
+                                backgroundColor: 'rgba(13,110,253,0.75)',
+                                borderColor: 'rgba(13,110,253,1)',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            ...chartOptions,
+                            scales: { y: { beginAtZero: true } }
+                        }
+                    };
+                case 'wordcloud': {
                     if (!chart.words || !chart.words.length) return null;
                     const cloudContainer = document.createElement('div');
                     cloudContainer.className = 'wordcloud-wrap';
@@ -1724,11 +1742,18 @@ def _build_html_report(session, extra_charts=None) -> str:
             }
             const config = buildChartConfig(chart);
             if (!config) {
-                const notice = document.createElement('div');
-                notice.className = 'chart-notice';
-                notice.textContent = 'This visualization is not rendered as an interactive chart in the downloaded report.';
-                canvas.parentElement.insertBefore(notice, canvas);
-                canvas.remove();
+                // Some chart types (wordcloud, scatter_map) already remove the
+                // canvas themselves inside buildChartConfig. Only insert the
+                // fallback notice if the canvas is still attached — otherwise
+                // canvas.parentElement is null here and this throws, which
+                // would abort the whole forEach and skip every later chart.
+                if (canvas.isConnected) {
+                    const notice = document.createElement('div');
+                    notice.className = 'chart-notice';
+                    notice.textContent = 'This visualization is not rendered as an interactive chart in the downloaded report.';
+                    canvas.parentElement.insertBefore(notice, canvas);
+                    canvas.remove();
+                }
                 return;
             }
             new Chart(canvas, config);

@@ -1,6 +1,8 @@
+import asyncio
 import io
 import html
 import ipaddress
+import logging
 import math
 import multiprocessing as mp
 import os
@@ -36,7 +38,16 @@ from . import simulation as simulation_module
 from . import unsupervised
 from . import viz
 from .main_report import _build_html_report
-from .store import SESSIONS, create_session, get_session, delete_session, purge_stale_session_files
+from .store import (
+    SESSIONS,
+    create_session,
+    get_session,
+    delete_session,
+    purge_stale_session_files,
+    evict_idle_sessions,
+)
+
+logger = logging.getLogger("autods.main")
 
 app = FastAPI(title="AutoDS")
 
@@ -45,19 +56,65 @@ MAX_REMOTE_BYTES = 200 * 1024 * 1024  # 200 MB
 MAX_DATAFRAME_ROWS = 5_500_000  # 5.5 million rows
 MAX_DATAFRAME_COLUMNS = 1_000  # 1000 columns
 
+# CORS: open by default for local dev (frontend runs on a different port than
+# the API), but scopable via env var for real deployments — set
+# ALLOWED_ORIGINS to a comma-separated list (e.g. "https://myapp.netlify.app")
+# so a browser page on some other origin can't call this API using a user's
+# cookies/credentials. Unset/"*" keeps today's wide-open local-dev behavior.
+_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = (
+    ["*"] if _allowed_origins_env == "*"
+    else [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_session_cleanup_task: "asyncio.Task | None" = None
+_SESSION_CLEANUP_INTERVAL_SECONDS = 60 * 60  # sweep hourly
+
+
+async def _periodic_session_cleanup(interval_seconds: int = _SESSION_CLEANUP_INTERVAL_SECONDS):
+    """Runs for the life of the server: evicts in-memory sessions nobody has
+    touched in 24h (freeing RAM) and removes orphaned .sessions/ disk files
+    older than 7 days (freeing disk). Previously this only ran once at
+    startup, so a long-lived server process would grow both memory and disk
+    usage without bound between restarts."""
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            evicted = evict_idle_sessions(max_idle_hours=24)
+            removed = purge_stale_session_files(max_age_days=7)
+            if evicted or removed:
+                logger.info(
+                    "session cleanup: evicted %d idle sessions from memory, removed %d stale files from disk",
+                    evicted, removed,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("periodic session cleanup failed")
 
 
 @app.on_event("startup")
 def _cleanup_stale_sessions_on_startup():
     """Sweep .sessions/ for CSV files from long-closed or crashed sessions so
-    disk usage doesn't grow unbounded run after run."""
+    disk usage doesn't grow unbounded run after run, then kick off a
+    recurring background sweep so the same cleanup keeps happening while the
+    server stays up (not just once at boot)."""
     purge_stale_session_files(max_age_days=7)
+    global _session_cleanup_task
+    _session_cleanup_task = asyncio.create_task(_periodic_session_cleanup())
+
+
+@app.on_event("shutdown")
+async def _stop_session_cleanup():
+    if _session_cleanup_task is not None:
+        _session_cleanup_task.cancel()
 
 
 
