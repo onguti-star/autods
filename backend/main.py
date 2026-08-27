@@ -573,10 +573,14 @@ class CleanChatRequest(BaseModel):
     command: str = Field(min_length=1, max_length=500)
 
 
+class DatabaseAnalysisRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+
+
 @app.post("/api/clean_chat/{session_id}")
 def clean_chat_endpoint(session_id: str, req: CleanChatRequest):
     session = _get_session_or_404(session_id)
-    new_df, message = clean_chat.run_command(session.df, req.command, original_df=session.original_df)
+    new_df, message, table = clean_chat.run_command_with_table(session.df, req.command, original_df=session.original_df)
 
     # Special action: split rows into a brand-new session (new tab)
     if isinstance(message, dict) and message.get("__action__") == "split_to_tab":
@@ -618,6 +622,7 @@ def clean_chat_endpoint(session_id: str, req: CleanChatRequest):
     profile["narrative"] = narrate.narrate_eda(profile)
     profile["can_undo"] = session.can_undo()
     profile["chat_message"] = message
+    profile["chat_table"] = table
     profile["chat_history"] = session.chat_clean_log
     profile["data_changed"] = changed
     return profile
@@ -627,6 +632,19 @@ def clean_chat_endpoint(session_id: str, req: CleanChatRequest):
 def clean_chat_help(session_id: str):
     _get_session_or_404(session_id)  # validate session exists
     return {"help": clean_chat.HELP_TEXT}
+
+
+@app.post("/api/database_analysis/{session_id}")
+def database_analysis(session_id: str, req: DatabaseAnalysisRequest):
+    """Read-only SQL-style grouped analysis for the Data Cleaning panel."""
+    session = _get_session_or_404(session_id)
+    answer = assistant.answer_question(session.df, req.question)
+    table = assistant.answer_question_table(session.df, req.question)
+    return {
+        "answer": answer,
+        "table": table,
+        "data_changed": False,
+    }
 
 
 class TypeChangeRequest(BaseModel):

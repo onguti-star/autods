@@ -39,7 +39,8 @@ ASSISTANT_KEYWORDS = {
     "describe", "distribution", "duplicates", "dtype", "ends", "extreme", "filter",
     "frequency", "group", "histogram", "maximum", "mean", "median", "minimum",
     "missing", "model", "numeric", "outlier", "outliers", "overview",
-    "predict", "prediction", "records", "relationship", "remove", "sample",
+    "percent", "percentage", "predict", "prediction", "rate", "records",
+    "relationship", "remove", "sample",
     "scatter", "schema", "search", "sort", "standardize", "starts", "statistics",
     "study", "summary", "target", "total", "unique", "variance",
     "visualization", "with",
@@ -180,6 +181,8 @@ def _find_columns_in_text(text: str, columns: list) -> list:
                 continue  # skip very short words to avoid false matches
             for tw in text_norm.split():
                 if len(tw) <= 2:
+                    continue
+                if tw in ASSISTANT_KEYWORDS:
                     continue
                 max_len = max(len(cw), len(tw), 1)
                 ratio = 1 - _levenshtein(cw, tw) / max_len
@@ -1474,6 +1477,250 @@ def _distribution_report(df: pd.DataFrame, col: str) -> str:
     return f"Distribution of '{col}' by frequency: " + "; ".join(parts) + ". A bar chart is a good visual for this column."
 
 
+def _json_safe(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _value_counts_table(df: pd.DataFrame, col: str, limit: int = 50) -> dict | None:
+    if col not in df.columns:
+        return None
+    counts = df[col].value_counts(dropna=False).head(limit)
+    if counts.empty:
+        return None
+    rows = []
+    total = len(df)
+    for value, count in counts.items():
+        label = "missing" if pd.isna(value) else value
+        rows.append({
+            col: _json_safe(label),
+            "count": int(count),
+            "pct": round(100 * int(count) / total, 2) if total else 0,
+        })
+    return {"columns": [col, "count", "pct"], "rows": rows}
+
+
+def _value_counts_answer(df: pd.DataFrame, col: str) -> str:
+    table = _value_counts_table(df, col, limit=8)
+    if not table:
+        return f"I could not count values in '{col}'."
+    parts = [f"{row[col]}: {row['count']:,} ({row['pct']}%)" for row in table["rows"]]
+    return f"Distinct values in '{col}', highest counts first: " + "; ".join(parts) + "."
+
+
+def _looks_like_value_counts_question(q: str) -> bool:
+    return (
+        ("distinct" in q and ("count" in q or "counts" in q or "values" in q))
+        or "value count" in q
+        or "value counts" in q
+        or ("frequency" in q and ("by" not in q and "per" not in q))
+        or ("count" in q and "by" in q and not any(w in q for w in ("rate", "percentage", "percent", "mean", "average", "sum", "total")))
+    )
+
+
+def _column_after_group_word(df: pd.DataFrame, question: str) -> str | None:
+    match = re.search(r"\b(?:by|per|across|against|group(?:ed)?\s+by)\b\s+(.+)$", question, flags=re.IGNORECASE)
+    if not match:
+        return None
+    found = _find_columns_in_text(match.group(1), list(df.columns))
+    return found[0] if found else None
+
+
+def _sort_columns_by_question_order(question: str, cols: list) -> list:
+    q_norm = f" {_normalise_text(question)} "
+
+    def pos(col):
+        col_norm = _normalise_text(col)
+        idx = q_norm.find(f" {col_norm} ")
+        return idx if idx >= 0 else len(q_norm) + list(cols).index(col)
+
+    return sorted(cols, key=pos)
+
+
+def _rate_words(q: str) -> bool:
+    return bool(re.search(r"\b(rate|percentage|percent|pct)\b|%", q))
+
+
+def _normalised_unique_values(s: pd.Series, limit: int = 80) -> list[tuple[object, str]]:
+    values = s.dropna().value_counts().head(limit).index.tolist()
+    return [(value, _normalise_text(value)) for value in values]
+
+
+def _detect_positive_condition(df: pd.DataFrame, question: str, mentioned: list) -> tuple[str, object, str, pd.Series] | None:
+    q = _normalise_text(question)
+    preferred_name_bits = ("status", "target", "outcome", "result", "label", "default", "churn", "fraud", "paid")
+    candidates = []
+    for col in mentioned:
+        if col in df.columns and (pd.api.types.is_bool_dtype(df[col]) or not _is_numeric(df[col])):
+            candidates.append(col)
+    for col in df.columns:
+        name = _normalise_text(col)
+        if any(bit in name for bit in preferred_name_bits) and col not in candidates:
+            candidates.append(col)
+    for col in df.columns:
+        if col in candidates:
+            continue
+        nunique = df[col].nunique(dropna=True)
+        if pd.api.types.is_bool_dtype(df[col]) or (not _is_numeric(df[col]) and 1 < nunique <= 12):
+            candidates.append(col)
+
+    explicit_phrases = [
+        ("charged off", ("charged off", "charge off", "charged_off")),
+        ("default", ("default", "defaulted", "charged off", "bad loan", "bad", "yes", "true", "1")),
+        ("churn", ("churn", "churned", "yes", "true", "1")),
+        ("fraud", ("fraud", "fraudulent", "yes", "true", "1")),
+        ("paid", ("paid", "fully paid", "yes", "true", "1")),
+    ]
+    wanted_terms = []
+    for trigger, terms in explicit_phrases:
+        if trigger in q:
+            wanted_terms.extend(terms)
+    if not wanted_terms:
+        wanted_terms = ["yes", "true", "1"]
+
+    for col in candidates:
+        s = df[col]
+        if pd.api.types.is_bool_dtype(s):
+            if any(term in q for term in ("no", "false")):
+                return col, False, "false", s == False
+            return col, True, "true", s == True
+
+        for value, value_norm in _normalised_unique_values(s):
+            for term in wanted_terms:
+                term_norm = _normalise_text(term)
+                if value_norm == term_norm or term_norm in value_norm:
+                    return col, value, str(value), s.astype("string").map(lambda x: _normalise_text(x) == value_norm if not pd.isna(x) else False)
+    return None
+
+
+def _completed_status_mask(s: pd.Series, positive_value) -> pd.Series:
+    positive_norm = _normalise_text(positive_value)
+    value_norms = {_normalise_text(v) for v in s.dropna().unique()}
+    common_negative = ("fully paid", "paid", "non default", "non-default", "not defaulted", "no", "false", "0")
+    allowed = {positive_norm}
+    for neg in common_negative:
+        neg_norm = _normalise_text(neg)
+        if neg_norm in value_norms:
+            allowed.add(neg_norm)
+    if positive_norm == "charged off" and "fully paid" in value_norms:
+        allowed = {"charged off", "fully paid"}
+    return s.astype("string").map(lambda x: _normalise_text(x) in allowed if not pd.isna(x) else False)
+
+
+def _rate_by_group_table(df: pd.DataFrame, question: str, mentioned: list) -> dict | None:
+    q = question.lower()
+    if not _rate_words(q) or not any(w in q for w in (" by ", " per ", " across ", " against ", "group")):
+        return None
+    group_col = _column_after_group_word(df, question)
+    if group_col is None:
+        non_numeric = [c for c in mentioned if c in df.columns and not _is_numeric(df[c])]
+        group_col = non_numeric[-1] if non_numeric else None
+    if group_col is None:
+        return None
+
+    condition = _detect_positive_condition(df, question, mentioned)
+    if condition is None:
+        return None
+    target_col, positive_value, positive_label, positive_mask = condition
+    if target_col == group_col:
+        return None
+
+    denominator_mask = _completed_status_mask(df[target_col], positive_value)
+    work = pd.DataFrame({
+        group_col: df[group_col],
+        "_positive": positive_mask,
+        "_eligible": denominator_mask,
+    })
+    work = work[work["_eligible"] & work[group_col].notna()]
+    if work.empty:
+        return None
+
+    grouped = work.groupby(group_col, dropna=False)["_positive"].agg(["count", "sum"])
+    grouped = grouped.rename(columns={"count": "total_rows", "sum": "matches"})
+    grouped["rate_pct"] = (100 * grouped["matches"] / grouped["total_rows"]).round(2)
+    grouped = grouped.sort_values("rate_pct", ascending=False).head(50)
+    match_col = f"{positive_label}_count"
+    rate_col = f"{positive_label}_rate_pct"
+    rows = []
+    for idx, row in grouped.iterrows():
+        rows.append({
+            group_col: _json_safe(idx),
+            "total_rows": int(row["total_rows"]),
+            match_col: int(row["matches"]),
+            rate_col: float(row["rate_pct"]),
+        })
+    return {"columns": [group_col, "total_rows", match_col, rate_col], "rows": rows}
+
+
+def _rate_by_group_answer(df: pd.DataFrame, question: str, mentioned: list) -> str | None:
+    table = _rate_by_group_table(df, question, mentioned)
+    if not table:
+        return None
+    group_col = table["columns"][0]
+    rate_col = table["columns"][-1]
+    top = table["rows"][:5]
+    parts = [f"{row[group_col]}: {row[rate_col]}% ({row['total_rows']:,} rows)" for row in top]
+    return f"{rate_col.replace('_', ' ').title()} by '{group_col}', highest groups first: " + "; ".join(parts) + "."
+
+
+def _grouped_numeric_table(df: pd.DataFrame, question: str, mentioned: list) -> dict | None:
+    q = question.lower()
+    if not any(w in q for w in (" by ", " per ", " across ", " against ", "group")):
+        return None
+    agg = None
+    if any(w in q for w in ("average", "avg", "mean")):
+        agg = "mean"
+    elif any(w in q for w in ("sum", "total")):
+        agg = "sum"
+    elif "median" in q:
+        agg = "median"
+    if agg is None:
+        return None
+
+    group_col = _column_after_group_word(df, question)
+    if group_col is None:
+        non_numeric = [c for c in mentioned if c in df.columns and not _is_numeric(df[c])]
+        group_col = non_numeric[-1] if non_numeric else None
+    if group_col is None:
+        return None
+    value_cols = [c for c in mentioned if c in df.columns and _is_numeric(df[c]) and c != group_col]
+    value_cols = _sort_columns_by_question_order(question, value_cols)
+    if not value_cols:
+        return None
+
+    grouped = df.groupby(group_col, dropna=False)[value_cols].agg(agg)
+    counts = df.groupby(group_col, dropna=False).size().rename("rows")
+    grouped = grouped.join(counts).sort_index().head(50)
+    rows = []
+    columns = [group_col, "rows"] + [f"{agg}_{col}" for col in value_cols]
+    for idx, row in grouped.iterrows():
+        out = {group_col: _json_safe(idx), "rows": int(row["rows"])}
+        for col in value_cols:
+            out[f"{agg}_{col}"] = round(float(row[col]), 2) if not pd.isna(row[col]) else None
+        rows.append(out)
+    return {"columns": columns, "rows": rows}
+
+
+def _grouped_numeric_answer(df: pd.DataFrame, question: str, mentioned: list) -> str | None:
+    table = _grouped_numeric_table(df, question, mentioned)
+    if not table:
+        return None
+    group_col = table["columns"][0]
+    metric_cols = table["columns"][2:]
+    if len(metric_cols) == 1 and metric_cols[0].startswith("mean_"):
+        value_col = metric_cols[0].removeprefix("mean_")
+        if value_col in df.columns:
+            return _relationship(df, value_col, group_col)
+    shown = []
+    for row in table["rows"][:5]:
+        metrics = ", ".join(f"{col}: {_fmt(row[col])}" for col in metric_cols)
+        shown.append(f"{row[group_col]} ({metrics})")
+    return f"Grouped numeric summary by '{group_col}': " + "; ".join(shown) + "."
+
+
 def _group_question(df: pd.DataFrame, mentioned: list) -> str | None:
     if len(mentioned) < 2:
         return None
@@ -1713,6 +1960,17 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
     q = corrected_question.lower()
     if not q:
         return None
+    mentioned = _find_columns_in_text(corrected_question, list(df.columns))
+    table = _rate_by_group_table(df, corrected_question, mentioned)
+    if table:
+        return table
+    table = _grouped_numeric_table(df, corrected_question, mentioned)
+    if table:
+        return table
+    if mentioned and _looks_like_value_counts_question(q):
+        table = _value_counts_table(df, mentioned[0])
+        if table:
+            return table
     if _is_cluster_question(question) and any(term in q for term in ("mean", "means", "profile", "profiles", "characteristic", "characteristics", "describe", "compare")):
         return _cluster_profile_table(df)
     if (
@@ -1724,7 +1982,6 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
         return _describe_table(df)
     relationship_words = ("relationship", "correlation", "correlate", "associated", "compare", "related")
     if any(w in q for w in relationship_words):
-        mentioned = _find_columns_in_text(corrected_question, list(df.columns))
         target = mentioned[0] if mentioned else None
         table = _correlation_table(df, target)
         if table:
@@ -1740,7 +1997,6 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
     )
     if not lookup_question:
         return None
-    mentioned = _find_columns_in_text(corrected_question, list(df.columns))
     _, matches = _lookup_rows(df, corrected_question, mentioned)
     if matches is None or matches.empty:
         return None
@@ -2195,6 +2451,27 @@ def _data_suggestions(df: pd.DataFrame) -> str:
         parts.extend(f"  • {item}" for item in viz_items)
         parts.append("")
 
+    # --- Database-style grouped analysis suggestions ---
+    group_items = []
+    if good_cats:
+        group_items.append(f"Count distinct values in '{good_cats[0]}' to check category balance.")
+    if good_cats and numeric:
+        group_items.append(f"Compare average '{numeric[0]}' by '{good_cats[0]}'.")
+    status_like = [
+        c for c in categoric
+        if any(bit in _normalise_text(c) for bit in ("status", "outcome", "result", "default", "churn", "fraud"))
+        and 1 < df[c].nunique(dropna=True) <= 20
+    ]
+    other_groups = [c for c in good_cats if c not in status_like]
+    if status_like and other_groups:
+        status_values = {_normalise_text(v) for v in df[status_like[0]].dropna().unique()}
+        event = "default" if {"charged off", "default", "defaulted"} & status_values else str(df[status_like[0]].dropna().mode().iloc[0])
+        group_items.append(f"Ask for the {event} rate by '{other_groups[0]}'.")
+    if group_items:
+        parts.append("📋 Grouped analysis:")
+        parts.extend(f"  • {item}" for item in group_items)
+        parts.append("")
+
     # --- Modelling suggestions ---
     model_items = []
     # Good classification targets: categorical with 2-10 unique values
@@ -2229,6 +2506,10 @@ def _data_suggestions(df: pd.DataFrame) -> str:
         quick.append(f'In the clean assistant, type: fill missing in {missing_cols[0]} with median')
     if good_cats and numeric:
         quick.append(f'In the assistant, ask: show average {numeric[0]} by {good_cats[0]}')
+    if status_like and other_groups:
+        status_values = {_normalise_text(v) for v in df[status_like[0]].dropna().unique()}
+        event = "default" if {"charged off", "default", "defaulted"} & status_values else str(df[status_like[0]].dropna().mode().iloc[0])
+        quick.append(f'In the assistant, ask: show {event} rate by {other_groups[0]}')
     if clf_targets or reg_targets:
         target = (clf_targets or reg_targets)[0]
         quick.append(f"On the Train tab, choose '{target}' as your target column and hit Train.")
@@ -2334,6 +2615,14 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
     if any(w in q for w in _suggestion_triggers):
         return _data_suggestions(df)
 
+    rate_ans = _rate_by_group_answer(df, question, mentioned)
+    if rate_ans:
+        return rate_ans
+
+    grouped_numeric_ans = _grouped_numeric_answer(df, question, mentioned)
+    if grouped_numeric_ans:
+        return grouped_numeric_ans
+
     if "target" in q or "predict" in q or "prediction" in q or "model" in q:
         if mentioned:
             return _target_advice(df, mentioned[0])
@@ -2420,6 +2709,9 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
         if mentioned and _is_numeric(df[mentioned[0]]):
             col = mentioned[0]
             return f"The minimum '{col}' is {_fmt(df[col].min())}."
+
+    if mentioned and _looks_like_value_counts_question(q):
+        return _value_counts_answer(df, mentioned[0])
 
     if "unique" in q or "distinct" in q or "how many different" in q or "cardinality" in q:
         if mentioned:

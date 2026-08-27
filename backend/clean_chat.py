@@ -16,6 +16,8 @@ import pandas as pd
 from . import nlp
 from .assistant import (
     CLEAN_KEYWORDS,
+    answer_question,
+    answer_question_table,
     _correct_column_typos,
     _correct_keyword_typos,
     _find_columns_in_text,
@@ -416,6 +418,9 @@ HELP_TEXT = (
     "• remove outliers in salary\n"
     "• remove rows where status is cancelled\n"
     "• keep only rows where country is Kenya\n"
+    "• check distinct status values and counts\n"
+    "• show default rate by grade\n"
+    "• average revenue and profit by region\n"
     "• convert price to number  (or: integer / text / category / date / time / boolean)\n"
     "• change ORDER_DATE to date / time\n"
     "• round price to 2 decimal places  (also: round latitude to 2 dp / keep 2 decimals in longitude / round all numeric columns to 3 decimals)\n"
@@ -427,9 +432,48 @@ HELP_TEXT = (
 
 
 def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str]:
+    new_df, message, _ = run_command_with_table(df, text, original_df)
+    return new_df, message
+
+
+def run_command_with_table(
+    df: pd.DataFrame,
+    text: str,
+    original_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, str, dict | None]:
     corrected_text, corrections = _correct_keyword_typos(text.strip(), CLEAN_KEYWORDS)
-    new_df, message = _run_command_impl(df, corrected_text, original_df)
-    return new_df, _format_keyword_correction_note(corrections) + message
+    new_df, message, table = _run_command_impl_with_table(df, corrected_text, original_df)
+    return new_df, _format_keyword_correction_note(corrections) + message, table
+
+
+def _analysis_table_for_clean_chat(df: pd.DataFrame, text: str) -> dict | None:
+    q = _normalise_text(text)
+    tokens = set(q.split())
+    analysis_terms = {
+        "average", "avg", "mean", "median", "sum", "total", "rate", "percentage",
+        "percent", "pct", "distinct", "count", "counts", "frequency", "frequencies",
+        "value", "values",
+    }
+    if not tokens.intersection(analysis_terms):
+        return None
+    if not (
+        tokens.intersection({"distinct", "frequency", "frequencies"})
+        or any(term in q for term in (" by ", " per ", " across ", " group ", " grouped ", " value count", " value counts"))
+    ):
+        return None
+    return answer_question_table(df, text)
+
+
+def _run_command_impl_with_table(
+    df: pd.DataFrame,
+    text: str,
+    original_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, str, dict | None]:
+    table = _analysis_table_for_clean_chat(df, text)
+    if table:
+        return df, answer_question(df, text), table
+    new_df, message = _run_command_impl(df, text, original_df)
+    return new_df, message, None
 
 
 def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str]:

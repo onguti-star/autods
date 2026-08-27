@@ -107,6 +107,11 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .clean-chat-input-row input{flex:1;background:var(--panel-bg,transparent);border:1px solid var(--panel-border);color:var(--ink);padding:9px 12px;font-family:inherit;font-size:13px;}
 .clean-chat-input-row input:focus{outline:none;border-color:var(--accent);}
 .clean-chat-input-row button{white-space:nowrap;}
+.db-analysis-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px;margin-top:10px;}
+.db-analysis-grid .pred-field{min-width:0;}
+.db-analysis-grid select[multiple]{min-height:92px;}
+.db-analysis-result{margin-top:12px;padding:12px;border:1px solid var(--panel-border);background:rgba(95,212,214,0.035);}
+.db-analysis-result:empty{display:none;}
 .late-clean{border:1px solid var(--panel-border);padding:11px 13px;margin-bottom:18px;background:rgba(95,212,214,0.035);}
 .late-clean .late-clean-head{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--cyan);margin-bottom:4px;}
 .late-clean .late-clean-row{display:flex;gap:8px;align-items:center;margin-top:9px;}
@@ -464,6 +469,51 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <p class="hint" style="margin-top:0;">This table updates after every cleaning operation so you can see exactly what changed.</p>
       <div id="cleanPreviewWrap" style="overflow-x:auto;"></div>
     </div>
+    <div class="subhead">Database-style analysis</div>
+    <details id="dbAnalysisDropdown" style="margin-bottom:18px;">
+      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:14px;">▾</span>
+        Group, count, rates, and numeric summaries
+      </summary>
+      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
+        <div class="db-analysis-grid">
+          <div class="pred-field">
+            <label>Analysis</label>
+            <select id="dbAnalysisType">
+              <option value="distinct">Distinct values + counts</option>
+              <option value="count">Count rows by group</option>
+              <option value="rate">Rate / percentage by group</option>
+              <option value="numeric">Average / sum / median by group</option>
+            </select>
+          </div>
+          <div class="pred-field">
+            <label>Group / category column</label>
+            <select id="dbGroupCol"></select>
+          </div>
+          <div class="pred-field db-rate-field">
+            <label>Event or status value</label>
+            <input type="text" id="dbEventValue" placeholder="e.g. default, charged off, churned">
+          </div>
+          <div class="pred-field db-numeric-field">
+            <label>Numeric operation</label>
+            <select id="dbNumericAgg">
+              <option value="average">Average</option>
+              <option value="sum">Sum / total</option>
+              <option value="median">Median</option>
+            </select>
+          </div>
+          <div class="pred-field db-numeric-field">
+            <label>Numeric column(s)</label>
+            <select id="dbNumericCols" multiple></select>
+          </div>
+          <div class="pred-field">
+            <button id="dbAnalysisRunBtn" style="margin-top:13px;">Run analysis</button>
+          </div>
+        </div>
+        <div id="dbAnalysisQuery" class="hint" style="margin-top:10px;"></div>
+        <div id="dbAnalysisResult" class="db-analysis-result"></div>
+      </div>
+    </details>
     <div class="subhead">Clean it yourself — chat</div>
     <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email", "create a new column called revenue", or "fill revenue with price * quantity". Type "help" to see everything I understand.</p>
 
@@ -2028,12 +2078,18 @@ $("cleanBtn").addEventListener("click", async () => {
   }finally{ $("cleanBtn").disabled = false; $("cleanBtn").textContent = "Clean now"; }
 });
 
-function appendChatMessage(command, message, isError){
+function appendChatMessage(command, message, isError, table=null){
   const row = document.createElement("div");
   row.className = "clean-chat-msg" + (isError ? " cc-error" : "");
   row.innerHTML = `<div class="cc-you">You</div><div class="cc-you-text"></div><div class="cc-reply"></div>`;
   row.querySelector(".cc-you-text").textContent = command;
-  row.querySelector(".cc-reply").textContent = message;
+  const reply = row.querySelector(".cc-reply");
+  reply.textContent = message;
+  if(table && table.rows && table.rows.length){
+    if(typeof renderAnswerTable === "function"){
+      reply.appendChild(renderAnswerTable(table));
+    }
+  }
   $("cleanChatLog").appendChild(row);
   $("cleanChatLog").scrollTop = $("cleanChatLog").scrollHeight;
   // Save this dataset's chat log so it survives tab switching and page reload
@@ -2112,7 +2168,7 @@ async function sendCleanChat(){
       return;
     }
 
-    appendChatMessage(command, data.chat_message, false);
+    appendChatMessage(command, data.chat_message, false, data.chat_table);
     renderEDA(data);
     renderCleanPreview(data);
     handleDataChanged(data, {reloadViz: true});
@@ -2133,6 +2189,12 @@ async function sendCleanChat(){
 
 $("cleanChatSendBtn").addEventListener("click", sendCleanChat);
 $("cleanChatInput").addEventListener("keydown", (e) => { if(e.key === "Enter") sendCleanChat(); });
+if($("dbAnalysisType")) $("dbAnalysisType").addEventListener("change", updateDatabaseAnalysisControls);
+if($("dbGroupCol")) $("dbGroupCol").addEventListener("change", updateDatabaseAnalysisQueryPreview);
+if($("dbEventValue")) $("dbEventValue").addEventListener("input", updateDatabaseAnalysisQueryPreview);
+if($("dbNumericAgg")) $("dbNumericAgg").addEventListener("change", updateDatabaseAnalysisQueryPreview);
+if($("dbNumericCols")) $("dbNumericCols").addEventListener("change", updateDatabaseAnalysisQueryPreview);
+if($("dbAnalysisRunBtn")) $("dbAnalysisRunBtn").addEventListener("click", runDatabaseAnalysis);
 
 function openCleaningTools(){
   show("panelClean");
@@ -2154,7 +2216,7 @@ async function applyLateClean(context){
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "That cleaning command failed.");
     input.value = "";
-    appendChatMessage(command, data.chat_message, false);
+    appendChatMessage(command, data.chat_message, false, data.chat_table);
     renderEDA(data);
     renderCleanPreview(data);
     handleDataChanged(data, {reloadViz: context === "viz"});
@@ -2320,6 +2382,7 @@ function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
   ["vizColX","vizColY","targetSelect","typeCol","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
+  populateDatabaseAnalysisSelects();
   populateSimulationSelects();
   // Prefer the previously trained target so switching tabs doesn't reset the
   // dropdown to the EDA suggestion and make it look like training was lost.
@@ -2338,6 +2401,106 @@ function numericColumnNames(){
   const cols = profile?.columns || [];
   const numeric = cols.filter(c => c.type === "numeric" || String(c.dtype || "").includes("int") || String(c.dtype || "").includes("float")).map(c => c.name);
   return numeric.length ? numeric : allColumns;
+}
+
+function categoricalColumnNames(){
+  const profile = getState().lastProfile || getState().profile;
+  const cols = profile?.columns || [];
+  const categorical = cols
+    .filter(c => c.type !== "numeric" && !String(c.dtype || "").match(/int|float|double|number/i))
+    .map(c => c.name);
+  return categorical.length ? categorical : allColumns;
+}
+
+function populateDatabaseAnalysisSelects(){
+  const cats = categoricalColumnNames();
+  const nums = numericColumnNames();
+  const catOpts = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  const numOpts = nums.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  if($("dbGroupCol")) $("dbGroupCol").innerHTML = catOpts || allColumns.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  if($("dbNumericCols")){
+    $("dbNumericCols").innerHTML = numOpts;
+    Array.from($("dbNumericCols").options).slice(0, 2).forEach(opt => opt.selected = true);
+  }
+  updateDatabaseAnalysisControls();
+}
+
+function updateDatabaseAnalysisControls(){
+  const type = $("dbAnalysisType")?.value || "distinct";
+  document.querySelectorAll(".db-rate-field").forEach(el => el.style.display = type === "rate" ? "" : "none");
+  document.querySelectorAll(".db-numeric-field").forEach(el => el.style.display = type === "numeric" ? "" : "none");
+  updateDatabaseAnalysisQueryPreview();
+}
+
+function selectedDbNumericCols(){
+  const select = $("dbNumericCols");
+  if(!select) return [];
+  return Array.from(select.selectedOptions).map(opt => opt.value).filter(Boolean);
+}
+
+function joinColumnsForQuestion(cols){
+  if(cols.length <= 1) return cols[0] || "";
+  return cols.slice(0, -1).join(" and ") + " and " + cols[cols.length - 1];
+}
+
+function buildDatabaseAnalysisQuestion(){
+  const type = $("dbAnalysisType")?.value || "distinct";
+  const group = $("dbGroupCol")?.value || "";
+  if(!group) return "";
+  if(type === "distinct") return `check distinct ${group} values and counts`;
+  if(type === "count") return `count rows by ${group}`;
+  if(type === "rate"){
+    const eventValue = $("dbEventValue")?.value.trim() || "default";
+    return `show ${eventValue} rate by ${group}`;
+  }
+  const agg = $("dbNumericAgg")?.value || "average";
+  const numericCols = selectedDbNumericCols();
+  if(!numericCols.length) return "";
+  return `${agg} ${joinColumnsForQuestion(numericCols)} by ${group}`;
+}
+
+function updateDatabaseAnalysisQueryPreview(){
+  const query = buildDatabaseAnalysisQuestion();
+  if($("dbAnalysisQuery")) $("dbAnalysisQuery").textContent = query ? `Query: ${query}` : "Choose columns to build the grouped analysis.";
+}
+
+async function runDatabaseAnalysis(){
+  const sid = getSid();
+  if(!sid){
+    $("dbAnalysisResult").innerHTML = `<div class="error-box">Load a dataset first.</div>`;
+    return;
+  }
+  const question = buildDatabaseAnalysisQuestion();
+  if(!question){
+    $("dbAnalysisResult").innerHTML = `<div class="error-box">Choose the columns needed for this analysis.</div>`;
+    return;
+  }
+  const btn = $("dbAnalysisRunBtn");
+  btn.disabled = true;
+  btn.textContent = "Running...";
+  $("dbAnalysisResult").innerHTML = `<p class="loading">Running grouped analysis</p>`;
+  try{
+    const res = await fetch(`${API}/database_analysis/${sid}`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({question}),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Analysis failed");
+    $("dbAnalysisResult").innerHTML = "";
+    const answer = document.createElement("div");
+    if(typeof renderAssistantContent === "function") renderAssistantContent(answer, data.answer || "");
+    else answer.textContent = data.answer || "";
+    $("dbAnalysisResult").appendChild(answer);
+    if(data.table && data.table.rows && data.table.rows.length){
+      $("dbAnalysisResult").appendChild(renderAnswerTable(data.table));
+    }
+  }catch(err){
+    $("dbAnalysisResult").innerHTML = `<div class="error-box">${escapeHtml(err.message || "Analysis failed")}</div>`;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = "Run analysis";
+  }
 }
 
 function populateSimulationSelects(){
