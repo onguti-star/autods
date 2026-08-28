@@ -1503,8 +1503,11 @@ def _value_counts_table(df: pd.DataFrame, col: str, limit: int = 50) -> dict | N
     return {"columns": [col, "count", "pct"], "rows": rows}
 
 
-def _value_counts_answer(df: pd.DataFrame, col: str) -> str:
-    table = _value_counts_table(df, col, limit=8)
+def _value_counts_answer(df: pd.DataFrame, col: str, table: dict | None = None) -> str:
+    if table is None:
+        table = _value_counts_table(df, col, limit=8)
+    elif len(table["rows"]) > 8:
+        table = {"columns": table["columns"], "rows": table["rows"][:8]}
     if not table:
         return f"I could not count values in '{col}'."
     parts = [f"{row[col]}: {row['count']:,} ({row['pct']}%)" for row in table["rows"]]
@@ -1655,8 +1658,9 @@ def _rate_by_group_table(df: pd.DataFrame, question: str, mentioned: list) -> di
     return {"columns": [group_col, "total_rows", match_col, rate_col], "rows": rows}
 
 
-def _rate_by_group_answer(df: pd.DataFrame, question: str, mentioned: list) -> str | None:
-    table = _rate_by_group_table(df, question, mentioned)
+def _rate_by_group_answer(df: pd.DataFrame, question: str, mentioned: list, table: dict | None = None) -> str | None:
+    if table is None:
+        table = _rate_by_group_table(df, question, mentioned)
     if not table:
         return None
     group_col = table["columns"][0]
@@ -1691,8 +1695,9 @@ def _grouped_numeric_table(df: pd.DataFrame, question: str, mentioned: list) -> 
     if not value_cols:
         return None
 
-    grouped = df.groupby(group_col, dropna=False)[value_cols].agg(agg)
-    counts = df.groupby(group_col, dropna=False).size().rename("rows")
+    gb = df.groupby(group_col, dropna=False)
+    grouped = gb[value_cols].agg(agg)
+    counts = gb.size().rename("rows")
     grouped = grouped.join(counts).sort_index().head(50)
     rows = []
     columns = [group_col, "rows"] + [f"{agg}_{col}" for col in value_cols]
@@ -1704,8 +1709,9 @@ def _grouped_numeric_table(df: pd.DataFrame, question: str, mentioned: list) -> 
     return {"columns": columns, "rows": rows}
 
 
-def _grouped_numeric_answer(df: pd.DataFrame, question: str, mentioned: list) -> str | None:
-    table = _grouped_numeric_table(df, question, mentioned)
+def _grouped_numeric_answer(df: pd.DataFrame, question: str, mentioned: list, table: dict | None = None) -> str | None:
+    if table is None:
+        table = _grouped_numeric_table(df, question, mentioned)
     if not table:
         return None
     group_col = table["columns"][0]
@@ -2001,6 +2007,42 @@ def answer_question_table(df: pd.DataFrame, question: str) -> dict | None:
     if matches is None or matches.empty:
         return None
     return _df_to_table(matches)
+
+
+def answer_question_and_table(df: pd.DataFrame, question: str) -> tuple[str, dict | None]:
+    """Answer a question AND return its table (if any) from a single pass —
+    used by callers that need both (e.g. the Database-style analysis panel)
+    so the underlying group-by/aggregation isn't computed twice.
+
+    Only short-circuits for the question shapes that have a matching
+    table (rate-by-group, grouped numeric, distinct/value counts) — these
+    cover the structured questions the Database-style analysis UI sends.
+    Anything else falls back to the regular answer_question() with no table,
+    identical to calling answer_question() and answer_question_table()
+    separately."""
+    corrected_question, corrections = _correct_keyword_typos(question.strip(), ASSISTANT_KEYWORDS)
+    note = _format_keyword_correction_note(corrections)
+    q = corrected_question.strip().lower()
+    if q:
+        mentioned = _find_columns_in_text(corrected_question, list(df.columns))
+
+        table = _rate_by_group_table(df, corrected_question, mentioned)
+        if table:
+            answer = _rate_by_group_answer(df, corrected_question, mentioned, table=table)
+            return note + answer, table
+
+        table = _grouped_numeric_table(df, corrected_question, mentioned)
+        if table:
+            answer = _grouped_numeric_answer(df, corrected_question, mentioned, table=table)
+            return note + answer, table
+
+        if mentioned and _looks_like_value_counts_question(q):
+            table = _value_counts_table(df, mentioned[0])
+            if table:
+                answer = _value_counts_answer(df, mentioned[0], table=table)
+                return note + answer, table
+
+    return answer_question(df, question), None
 
 
 def _parse_create_column(question: str, columns: list) -> dict | None:

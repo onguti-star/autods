@@ -469,11 +469,11 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <p class="hint" style="margin-top:0;">This table updates after every cleaning operation so you can see exactly what changed.</p>
       <div id="cleanPreviewWrap" style="overflow-x:auto;"></div>
     </div>
-    <div class="subhead">Database-style analysis</div>
+    <div class="subhead">Group &amp; Aggregate</div>
     <details id="dbAnalysisDropdown" style="margin-bottom:18px;">
       <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
         <span style="font-size:14px;">▾</span>
-        Group, count, rates, and numeric summaries
+        Group, count, and summarize your data — no SQL required
       </summary>
       <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
         <div class="db-analysis-grid">
@@ -489,6 +489,23 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="pred-field">
             <label>Group / category column</label>
             <select id="dbGroupCol"></select>
+          </div>
+          <div class="pred-field" style="grid-column: 1 / -1;">
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-weight:400;">
+              <input type="checkbox" id="dbUseBinning" style="width:auto;">
+              Bucket a numeric column into ranges instead — e.g. income into "Under 40k", "40k-80k"...
+            </label>
+          </div>
+          <div class="pred-field db-bin-field" style="display:none;">
+            <label>Numeric column to bucket</label>
+            <select id="dbBinColumn"></select>
+          </div>
+          <div class="pred-field db-bin-field" style="display:none;">
+            <label>Range breakpoints (comma-separated)</label>
+            <input type="text" id="dbBinEdges" placeholder="e.g. 40000, 80000, 120000">
+          </div>
+          <div class="pred-field db-bin-field" style="display:none; grid-column: 1 / -1;">
+            <p class="hint" id="dbBinLabelsPreview" style="margin:2px 0 0;"></p>
           </div>
           <div class="pred-field db-rate-field">
             <label>Event or status value</label>
@@ -2087,7 +2104,7 @@ function appendChatMessage(command, message, isError, table=null){
   reply.textContent = message;
   if(table && table.rows && table.rows.length){
     if(typeof renderAnswerTable === "function"){
-      reply.appendChild(renderAnswerTable(table));
+      reply.appendChild(renderAnswerTable(table, command));
     }
   }
   $("cleanChatLog").appendChild(row);
@@ -2191,6 +2208,9 @@ $("cleanChatSendBtn").addEventListener("click", sendCleanChat);
 $("cleanChatInput").addEventListener("keydown", (e) => { if(e.key === "Enter") sendCleanChat(); });
 if($("dbAnalysisType")) $("dbAnalysisType").addEventListener("change", updateDatabaseAnalysisControls);
 if($("dbGroupCol")) $("dbGroupCol").addEventListener("change", updateDatabaseAnalysisQueryPreview);
+if($("dbUseBinning")) $("dbUseBinning").addEventListener("change", updateDatabaseAnalysisControls);
+if($("dbBinColumn")) $("dbBinColumn").addEventListener("change", updateDatabaseAnalysisQueryPreview);
+if($("dbBinEdges")) $("dbBinEdges").addEventListener("input", updateDatabaseAnalysisQueryPreview);
 if($("dbEventValue")) $("dbEventValue").addEventListener("input", updateDatabaseAnalysisQueryPreview);
 if($("dbNumericAgg")) $("dbNumericAgg").addEventListener("change", updateDatabaseAnalysisQueryPreview);
 if($("dbNumericCols")) $("dbNumericCols").addEventListener("change", updateDatabaseAnalysisQueryPreview);
@@ -2418,6 +2438,7 @@ function populateDatabaseAnalysisSelects(){
   const catOpts = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
   const numOpts = nums.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
   if($("dbGroupCol")) $("dbGroupCol").innerHTML = catOpts || allColumns.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  if($("dbBinColumn")) $("dbBinColumn").innerHTML = numOpts;
   if($("dbNumericCols")){
     $("dbNumericCols").innerHTML = numOpts;
     Array.from($("dbNumericCols").options).slice(0, 2).forEach(opt => opt.selected = true);
@@ -2425,10 +2446,49 @@ function populateDatabaseAnalysisSelects(){
   updateDatabaseAnalysisControls();
 }
 
+function isBinningEnabled(){
+  return !!$("dbUseBinning")?.checked;
+}
+
+// "40000" -> "40k", "1000000" -> "1M", "42500" -> "42,500" (left as-is when not a clean multiple)
+function formatBinEdge(n){
+  if(Number.isInteger(n) && n !== 0 && n % 1_000_000 === 0) return (n / 1_000_000) + "M";
+  if(Number.isInteger(n) && n !== 0 && n % 1000 === 0) return (n / 1000) + "k";
+  return n.toLocaleString();
+}
+
+function generateBinLabels(sortedEdges){
+  const labels = [`Under ${formatBinEdge(sortedEdges[0])}`];
+  for(let i = 0; i < sortedEdges.length - 1; i++){
+    labels.push(`${formatBinEdge(sortedEdges[i])}-${formatBinEdge(sortedEdges[i + 1])}`);
+  }
+  labels.push(`${formatBinEdge(sortedEdges[sortedEdges.length - 1])}+`);
+  return labels;
+}
+
+// Reads and validates the bucketing controls. Returns null if binning is off,
+// or if what's currently typed isn't a usable set of breakpoints yet.
+function getBinConfig(){
+  if(!isBinningEnabled()) return null;
+  const col = $("dbBinColumn")?.value || "";
+  if(!col) return null;
+  const rawParts = ($("dbBinEdges")?.value || "").split(",").map(s => s.trim()).filter(Boolean);
+  if(!rawParts.length) return null;
+  const edges = rawParts.map(Number);
+  if(edges.some(n => !Number.isFinite(n))) return null;
+  const sorted = [...new Set(edges)].sort((a, b) => a - b);
+  if(sorted.length !== edges.length) return null; // had a duplicate breakpoint
+  return { col, edges: sorted, labels: generateBinLabels(sorted), bandCol: `${col}_band` };
+}
+
 function updateDatabaseAnalysisControls(){
   const type = $("dbAnalysisType")?.value || "distinct";
+  const binning = isBinningEnabled();
   document.querySelectorAll(".db-rate-field").forEach(el => el.style.display = type === "rate" ? "" : "none");
   document.querySelectorAll(".db-numeric-field").forEach(el => el.style.display = type === "numeric" ? "" : "none");
+  document.querySelectorAll(".db-bin-field").forEach(el => el.style.display = binning ? "" : "none");
+  const groupField = $("dbGroupCol")?.closest(".pred-field");
+  if(groupField) groupField.style.display = binning ? "none" : "";
   updateDatabaseAnalysisQueryPreview();
 }
 
@@ -2445,7 +2505,8 @@ function joinColumnsForQuestion(cols){
 
 function buildDatabaseAnalysisQuestion(){
   const type = $("dbAnalysisType")?.value || "distinct";
-  const group = $("dbGroupCol")?.value || "";
+  const bin = getBinConfig();
+  const group = bin ? bin.bandCol : ($("dbGroupCol")?.value || "");
   if(!group) return "";
   if(type === "distinct") return `check distinct ${group} values and counts`;
   if(type === "count") return `count rows by ${group}`;
@@ -2460,6 +2521,11 @@ function buildDatabaseAnalysisQuestion(){
 }
 
 function updateDatabaseAnalysisQueryPreview(){
+  const bin = getBinConfig();
+  if($("dbBinLabelsPreview")){
+    $("dbBinLabelsPreview").textContent = bin ? `Buckets: ${bin.labels.join("  ·  ")}`
+      : isBinningEnabled() ? "Pick a column and enter breakpoints, e.g. 40000, 80000, 120000" : "";
+  }
   const query = buildDatabaseAnalysisQuestion();
   if($("dbAnalysisQuery")) $("dbAnalysisQuery").textContent = query ? `Query: ${query}` : "Choose columns to build the grouped analysis.";
 }
@@ -2470,6 +2536,7 @@ async function runDatabaseAnalysis(){
     $("dbAnalysisResult").innerHTML = `<div class="error-box">Load a dataset first.</div>`;
     return;
   }
+  const bin = getBinConfig();
   const question = buildDatabaseAnalysisQuestion();
   if(!question){
     $("dbAnalysisResult").innerHTML = `<div class="error-box">Choose the columns needed for this analysis.</div>`;
@@ -2483,7 +2550,9 @@ async function runDatabaseAnalysis(){
     const res = await fetch(`${API}/database_analysis/${sid}`, {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({question}),
+      body: JSON.stringify(bin
+        ? {question, bin_column: bin.col, bin_edges: bin.edges, bin_labels: bin.labels}
+        : {question}),
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Analysis failed");
@@ -2493,7 +2562,7 @@ async function runDatabaseAnalysis(){
     else answer.textContent = data.answer || "";
     $("dbAnalysisResult").appendChild(answer);
     if(data.table && data.table.rows && data.table.rows.length){
-      $("dbAnalysisResult").appendChild(renderAnswerTable(data.table));
+      $("dbAnalysisResult").appendChild(renderAnswerTable(data.table, question));
     }
   }catch(err){
     $("dbAnalysisResult").innerHTML = `<div class="error-box">${escapeHtml(err.message || "Analysis failed")}</div>`;
@@ -4875,7 +4944,7 @@ async function sendQ(){
     
     // If there's a table, show it
     if(data.table && data.table.rows && data.table.rows.length){
-      bot.appendChild(renderAnswerTable(data.table));
+      bot.appendChild(renderAnswerTable(data.table, q));
     }
     
     // If the assistant modified the data, refresh the UI
@@ -4915,7 +4984,58 @@ async function sendQ(){
   }
 }
 
-function renderAnswerTable(table){
+// Turns a {columns, rows} table into a GitHub-flavoured markdown table —
+// used both for clipboard copy and for pasting into the free-form Notes box.
+function tableToMarkdown(table, title){
+  if(!table || !table.columns || !table.rows) return "";
+  const cols = table.columns;
+  const cell = v => {
+    if(v === null || v === undefined) return "";
+    return String(v).replace(/\|/g, "\\|").replace(/\n/g, " ");
+  };
+  let md = title ? `**${title}**\n\n` : "";
+  md += "| " + cols.map(c => cell(c)).join(" | ") + " |\n";
+  md += "| " + cols.map(() => "---").join(" | ") + " |\n";
+  table.rows.forEach(row => {
+    md += "| " + cols.map(c => cell(row[c])).join(" | ") + " |\n";
+  });
+  return md;
+}
+window.tableToMarkdown = tableToMarkdown;
+
+// Appends a table (as markdown) onto the end of the active dataset's notes,
+// updates the local cache immediately, and persists it to the backend —
+// works whether or not the Notes panel happens to be open right now.
+async function appendTableToNotes(table, title){
+  const id  = (typeof activeDs === "undefined") ? null : activeDs;
+  const sid = (typeof getSid === "function") ? getSid() : null;
+  if(!id || !sid) return false;
+
+  const md = tableToMarkdown(table, title);
+  const existing = (typeof dsState !== "undefined" && dsState[id] && dsState[id].notes) || "";
+  const sep = existing ? (existing.endsWith("\n") ? "\n" : "\n\n") : "";
+  const newNotes = existing + sep + md + "\n";
+
+  if(typeof setDatasetState === "function") setDatasetState(id, { notes: newNotes });
+  const textarea = document.getElementById("notesTextarea");
+  if(textarea) textarea.value = newNotes;
+
+  try{
+    const apiBase = (typeof API !== "undefined") ? API : "";
+    const res = await fetch(`${apiBase}/notes/${sid}`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ notes: newNotes })
+    });
+    if(!res.ok) throw new Error();
+  }catch(e){
+    return "local"; // saved locally, backend sync will retry on next notes edit
+  }
+  return true;
+}
+window.appendTableToNotes = appendTableToNotes;
+
+function renderAnswerTable(table, label){
   const wrap = document.createElement("div");
   wrap.className = "chat-table-wrap";
   let html = `<table class="preview-table"><thead><tr>` +
@@ -4932,6 +5052,46 @@ function renderAnswerTable(table){
   });
   html += "</tbody></table>";
   wrap.innerHTML = html;
+
+  const actions = document.createElement("div");
+  actions.className = "table-actions";
+  actions.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "sec";
+  copyBtn.style.cssText = "font-size:10px;padding:5px 11px;";
+  copyBtn.textContent = "📋 Copy table";
+  copyBtn.onclick = async () => {
+    const md = tableToMarkdown(table, label);
+    try{
+      await navigator.clipboard.writeText(md);
+      copyBtn.textContent = "✓ Copied";
+    }catch(e){
+      copyBtn.textContent = "Copy failed";
+    }
+    setTimeout(() => { copyBtn.textContent = "📋 Copy table"; }, 1500);
+  };
+
+  const notesBtn = document.createElement("button");
+  notesBtn.type = "button";
+  notesBtn.className = "sec";
+  notesBtn.style.cssText = "font-size:10px;padding:5px 11px;";
+  notesBtn.textContent = "📝 Add to notes";
+  notesBtn.onclick = async () => {
+    notesBtn.disabled = true;
+    const result = await appendTableToNotes(table, label);
+    notesBtn.textContent = result === true ? "✓ Added to notes"
+      : result === "local" ? "✓ Added (offline)"
+      : "Load a dataset first";
+    notesBtn.disabled = false;
+    setTimeout(() => { notesBtn.textContent = "📝 Add to notes"; }, 1800);
+  };
+
+  actions.appendChild(copyBtn);
+  actions.appendChild(notesBtn);
+  wrap.appendChild(actions);
+
   return wrap;
 }
 

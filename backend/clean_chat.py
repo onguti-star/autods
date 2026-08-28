@@ -16,8 +16,7 @@ import pandas as pd
 from . import nlp
 from .assistant import (
     CLEAN_KEYWORDS,
-    answer_question,
-    answer_question_table,
+    answer_question_and_table,
     _correct_column_typos,
     _correct_keyword_typos,
     _find_columns_in_text,
@@ -446,7 +445,50 @@ def run_command_with_table(
     return new_df, _format_keyword_correction_note(corrections) + message, table
 
 
-def _analysis_table_for_clean_chat(df: pd.DataFrame, text: str) -> dict | None:
+def run_database_analysis(
+    df: pd.DataFrame,
+    question: str,
+    bin_column: str | None = None,
+    bin_edges: list | None = None,
+    bin_labels: list | None = None,
+) -> tuple[str, dict | None]:
+    """Backs the "Group & Aggregate" panel in the Data Cleaning tab: a
+    plain-English grouped/aggregated question, optionally over a numeric
+    column bucketed into custom ranges first (e.g. income into "Under 40k",
+    "40k-80k", ... — the same idea as a SQL "CASE WHEN ... END" bucketing
+    column). Raises ValueError with a user-facing message on bad input;
+    the caller (the API layer) is expected to turn that into an HTTP error.
+    """
+    if bin_column:
+        if bin_column not in df.columns:
+            raise ValueError(f"Column '{bin_column}' was not found.")
+        if not pd.api.types.is_numeric_dtype(df[bin_column]):
+            raise ValueError(f"'{bin_column}' is not numeric, so it can't be bucketed into ranges.")
+        if not bin_edges or not bin_labels:
+            raise ValueError("Provide range breakpoints and labels to bucket a numeric column.")
+        if len(bin_labels) != len(bin_edges) + 1:
+            raise ValueError("The number of bucket labels must be exactly one more than the number of breakpoints.")
+
+        band_col = f"{bin_column}_band"
+        bins = [-float("inf")] + list(bin_edges) + [float("inf")]
+        # right=False -> half-open [a, b) intervals, matching "annual_inc < 40000" style
+        # SQL CASE WHEN bucketing (each breakpoint is an exclusive upper bound).
+        banded = pd.cut(df[bin_column], bins=bins, labels=bin_labels, right=False, ordered=True)
+        df = df.copy()
+        df[band_col] = banded
+        # Drop the raw numeric column from the working copy: its name (e.g. "annual_inc")
+        # is a text substring of the new band column ("annual_inc_band"), which would
+        # otherwise make the question-parser mistakenly treat it as also mentioned and
+        # pull it into any numeric aggregation alongside the intended metric column(s).
+        df = df.drop(columns=[bin_column])
+
+        if band_col not in question:
+            raise ValueError("The question must reference the bucketed column.")
+
+    return answer_question_and_table(df, question)
+
+
+def _looks_like_analysis_question(text: str) -> bool:
     q = _normalise_text(text)
     tokens = set(q.split())
     analysis_terms = {
@@ -455,13 +497,11 @@ def _analysis_table_for_clean_chat(df: pd.DataFrame, text: str) -> dict | None:
         "value", "values",
     }
     if not tokens.intersection(analysis_terms):
-        return None
-    if not (
+        return False
+    return bool(
         tokens.intersection({"distinct", "frequency", "frequencies"})
         or any(term in q for term in (" by ", " per ", " across ", " group ", " grouped ", " value count", " value counts"))
-    ):
-        return None
-    return answer_question_table(df, text)
+    )
 
 
 def _run_command_impl_with_table(
@@ -469,9 +509,13 @@ def _run_command_impl_with_table(
     text: str,
     original_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, str, dict | None]:
-    table = _analysis_table_for_clean_chat(df, text)
-    if table:
-        return df, answer_question(df, text), table
+    if _looks_like_analysis_question(text):
+        # Single pass: compute the answer text and its table together instead of
+        # calling answer_question() and answer_question_table() separately, which
+        # would redundantly re-parse the question and re-run the same group-by twice.
+        answer, table = answer_question_and_table(df, text)
+        if table:
+            return df, answer, table
     new_df, message = _run_command_impl(df, text, original_df)
     return new_df, message, None
 

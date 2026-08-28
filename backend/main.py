@@ -575,6 +575,39 @@ class CleanChatRequest(BaseModel):
 
 class DatabaseAnalysisRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
+    # Optional: bucket a numeric column into custom ranges (e.g. income into
+    # "Under 40k" / "40k-80k" / ...) before running the grouped analysis —
+    # mirrors a SQL "CASE WHEN ... THEN ... END" bucketing column.
+    bin_column: str | None = Field(default=None, max_length=200)
+    bin_edges: list[float] | None = Field(default=None)
+    bin_labels: list[str] | None = Field(default=None)
+
+    @field_validator("bin_edges")
+    @classmethod
+    def validate_bin_edges(cls, value):
+        if value is None:
+            return value
+        if not (1 <= len(value) <= 8):
+            raise ValueError("Provide between 1 and 8 range breakpoints.")
+        if any(v != v or v in (float("inf"), float("-inf")) for v in value):  # NaN / inf check
+            raise ValueError("Range breakpoints must be finite numbers.")
+        if sorted(set(value)) != sorted(value) or list(value) != sorted(value):
+            raise ValueError("Range breakpoints must be in strictly increasing order with no duplicates.")
+        return value
+
+    @field_validator("bin_labels")
+    @classmethod
+    def validate_bin_labels(cls, value):
+        if value is None:
+            return value
+        cleaned = [str(v).strip() for v in value]
+        if not (2 <= len(cleaned) <= 9):
+            raise ValueError("Provide between 2 and 9 bucket labels.")
+        if any(not v for v in cleaned):
+            raise ValueError("Bucket labels cannot be empty.")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("Bucket labels must be unique.")
+        return cleaned
 
 
 @app.post("/api/clean_chat/{session_id}")
@@ -638,8 +671,12 @@ def clean_chat_help(session_id: str):
 def database_analysis(session_id: str, req: DatabaseAnalysisRequest):
     """Read-only SQL-style grouped analysis for the Data Cleaning panel."""
     session = _get_session_or_404(session_id)
-    answer = assistant.answer_question(session.df, req.question)
-    table = assistant.answer_question_table(session.df, req.question)
+    try:
+        answer, table = clean_chat.run_database_analysis(
+            session.df, req.question, req.bin_column, req.bin_edges, req.bin_labels,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {
         "answer": answer,
         "table": table,
