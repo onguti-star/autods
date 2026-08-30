@@ -156,21 +156,66 @@ def _report_feature_importance(session) -> list:
     return []
 
 
-def _render_notes_html(raw: str) -> str:
-    """Render the lightweight formatting used by the notes widget's toolbar:
-    **bold**, *italic*, ~~strike~~, <u>underline</u>, '- ' bullet lists, and
-    '1. ' numbered lists. Mirrors renderNotesMarkup() in the frontend so the
-    preview there matches what shows up in this downloaded report."""
-    if not raw or not raw.strip():
-        return ""
+_TABLE_SEP_RE = re.compile(r"^\s*:?-{2,}:?\s*$")
 
-    esc = html.escape(raw)
+
+def _is_table_separator_line(line: str) -> bool:
+    t = line.strip()
+    if "|" not in t:
+        return False
+    t = t.removeprefix("|").removesuffix("|")
+    cells = t.split("|")
+    return bool(cells) and all(_TABLE_SEP_RE.match(c) for c in cells)
+
+
+def _split_table_row(line: str) -> list[str]:
+    """Splits "| a | b\\|c | d |" into ["a","b|c","d"], honoring "\\|" as an
+    escaped pipe inside a cell (matches how tableToMarkdown() escapes it
+    on the frontend)."""
+    t = line.strip()
+    if t.startswith("|"):
+        t = t[1:]
+    if t.endswith("|"):
+        t = t[:-1]
+    cells: list[str] = []
+    buf = ""
+    i = 0
+    while i < len(t):
+        if t[i] == "\\" and i + 1 < len(t) and t[i + 1] == "|":
+            buf += "|"
+            i += 2
+            continue
+        if t[i] == "|":
+            cells.append(buf)
+            buf = ""
+            i += 1
+            continue
+        buf += t[i]
+        i += 1
+    cells.append(buf)
+    return [c.strip() for c in cells]
+
+
+def _inline_format(text: str) -> str:
+    esc = html.escape(text)
     esc = esc.replace("&lt;u&gt;", "<u>").replace("&lt;/u&gt;", "</u>")
     esc = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)
     esc = re.sub(r"~~(.+?)~~", r"<del>\1</del>", esc)
     esc = re.sub(r"(^|[^*])\*(?!\*)(.+?)\*(?!\*)", r"\1<em>\2</em>", esc)
+    return esc
 
-    lines = esc.split("\n")
+
+def _render_notes_html(raw: str) -> str:
+    """Render the lightweight formatting used by the notes widget's toolbar:
+    **bold**, *italic*, ~~strike~~, <u>underline</u>, '- ' bullet lists,
+    '1. ' numbered lists, and GitHub-flavoured markdown tables (the shape
+    tableToMarkdown() produces on the frontend for "Add to notes"). Mirrors
+    renderNotesMarkup() in the frontend so the preview there matches what
+    shows up in this downloaded report."""
+    if not raw or not raw.strip():
+        return ""
+
+    lines = raw.split("\n")
     out: list[str] = []
     list_buf: list[str] = []
     list_type: str | None = None
@@ -183,23 +228,50 @@ def _render_notes_html(raw: str) -> str:
             list_buf = []
         list_type = None
 
-    for line in lines:
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        # Table: a "| a | b |" header line immediately followed by a "| --- | --- |" separator.
+        if "|" in line and i + 1 < n and _is_table_separator_line(lines[i + 1]):
+            flush_list()
+            header_cells = _split_table_row(line)
+            j = i + 2
+            body_rows = []
+            while j < n and "|" in lines[j] and lines[j].strip() != "":
+                body_rows.append(_split_table_row(lines[j]))
+                j += 1
+            parts = ['<table><thead><tr>']
+            parts += [f"<th>{_inline_format(c)}</th>" for c in header_cells]
+            parts.append("</tr></thead><tbody>")
+            for row in body_rows:
+                parts.append("<tr>")
+                for ci in range(len(header_cells)):
+                    cell = row[ci] if ci < len(row) else ""
+                    parts.append(f"<td>{_inline_format(cell)}</td>")
+                parts.append("</tr>")
+            parts.append("</tbody></table>")
+            out.append("".join(parts))
+            i = j
+            continue
+
         bullet_m = re.match(r"^-\s+(.*)", line)
         number_m = re.match(r"^\d+\.\s+(.*)", line)
         if bullet_m:
             if list_type != "ul":
                 flush_list()
                 list_type = "ul"
-            list_buf.append(bullet_m.group(1))
+            list_buf.append(_inline_format(bullet_m.group(1)))
         elif number_m:
             if list_type != "ol":
                 flush_list()
                 list_type = "ol"
-            list_buf.append(number_m.group(1))
+            list_buf.append(_inline_format(number_m.group(1)))
         else:
             flush_list()
             if line.strip():
-                out.append(f"<p>{line}</p>")
+                out.append(f"<p>{_inline_format(line)}</p>")
+        i += 1
     flush_list()
     return "".join(out)
 

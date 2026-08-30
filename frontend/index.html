@@ -508,8 +508,12 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
             <p class="hint" id="dbBinLabelsPreview" style="margin:2px 0 0;"></p>
           </div>
           <div class="pred-field db-rate-field">
-            <label>Event or status value</label>
-            <input type="text" id="dbEventValue" placeholder="e.g. default, charged off, churned">
+            <label>Status / outcome column</label>
+            <select id="dbEventColumn"></select>
+          </div>
+          <div class="pred-field db-rate-field">
+            <label>Value to treat as the event</label>
+            <select id="dbEventValue"></select>
           </div>
           <div class="pred-field db-numeric-field">
             <label>Numeric operation</label>
@@ -2211,7 +2215,8 @@ if($("dbGroupCol")) $("dbGroupCol").addEventListener("change", updateDatabaseAna
 if($("dbUseBinning")) $("dbUseBinning").addEventListener("change", updateDatabaseAnalysisControls);
 if($("dbBinColumn")) $("dbBinColumn").addEventListener("change", updateDatabaseAnalysisQueryPreview);
 if($("dbBinEdges")) $("dbBinEdges").addEventListener("input", updateDatabaseAnalysisQueryPreview);
-if($("dbEventValue")) $("dbEventValue").addEventListener("input", updateDatabaseAnalysisQueryPreview);
+if($("dbEventColumn")) $("dbEventColumn").addEventListener("change", populateEventValueSelect);
+if($("dbEventValue")) $("dbEventValue").addEventListener("change", updateDatabaseAnalysisQueryPreview);
 if($("dbNumericAgg")) $("dbNumericAgg").addEventListener("change", updateDatabaseAnalysisQueryPreview);
 if($("dbNumericCols")) $("dbNumericCols").addEventListener("change", updateDatabaseAnalysisQueryPreview);
 if($("dbAnalysisRunBtn")) $("dbAnalysisRunBtn").addEventListener("click", runDatabaseAnalysis);
@@ -2443,7 +2448,43 @@ function populateDatabaseAnalysisSelects(){
     $("dbNumericCols").innerHTML = numOpts;
     Array.from($("dbNumericCols").options).slice(0, 2).forEach(opt => opt.selected = true);
   }
+  populateEventColumnSelect();
   updateDatabaseAnalysisControls();
+}
+
+// Columns worth offering as a "status/outcome" column: categorical, with a
+// small enough set of distinct values that picking one makes sense
+// (mirrors the backend's own candidate-column logic in _detect_positive_condition).
+function statusLikeColumns(){
+  const profile = dsState[activeDs]?.lastProfile;
+  if(!profile || !profile.columns) return [];
+  return profile.columns.filter(c => c.type === "categorical" && Array.isArray(c.top_values) && c.top_values.length >= 2 && c.top_values.length <= 12);
+}
+
+function guessDefaultStatusColumn(cols){
+  const nameBits = ["status","target","outcome","result","label","default","churn","fraud","paid"];
+  return cols.find(c => nameBits.some(bit => c.name.toLowerCase().includes(bit))) || cols[0] || null;
+}
+
+function populateEventColumnSelect(){
+  const colSelect = $("dbEventColumn");
+  if(!colSelect) return;
+  const cols = statusLikeColumns();
+  colSelect.innerHTML = cols.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join("");
+  const def = guessDefaultStatusColumn(cols);
+  if(def) colSelect.value = def.name;
+  populateEventValueSelect();
+}
+
+function populateEventValueSelect(){
+  const valSelect = $("dbEventValue");
+  if(!valSelect) return;
+  const cols = statusLikeColumns();
+  const col = cols.find(c => c.name === $("dbEventColumn")?.value);
+  valSelect.innerHTML = col
+    ? col.top_values.map(t => `<option value="${escapeHtml(t.value)}">${escapeHtml(t.value)} (${t.count.toLocaleString()} rows)</option>`).join("")
+    : `<option value="">No status-like column found</option>`;
+  updateDatabaseAnalysisQueryPreview();
 }
 
 function isBinningEnabled(){
@@ -2511,7 +2552,8 @@ function buildDatabaseAnalysisQuestion(){
   if(type === "distinct") return `check distinct ${group} values and counts`;
   if(type === "count") return `count rows by ${group}`;
   if(type === "rate"){
-    const eventValue = $("dbEventValue")?.value.trim() || "default";
+    const eventValue = $("dbEventValue")?.value || "";
+    if(!eventValue) return "";
     return `show ${eventValue} rate by ${group}`;
   }
   const agg = $("dbNumericAgg")?.value || "average";
@@ -4984,8 +5026,34 @@ async function sendQ(){
   }
 }
 
-// Turns a {columns, rows} table into a GitHub-flavoured markdown table —
-// used both for clipboard copy and for pasting into the free-form Notes box.
+// Turns a {columns, rows} table into a plain-text table with columns padded
+// to line up — looks right in a monospace context like the Notes box
+// (#notesTextarea uses IBM Plex Mono), unlike raw markdown pipes which only
+// render as a grid inside a markdown viewer.
+function tableToAlignedText(table, title){
+  if(!table || !table.columns || !table.rows) return "";
+  const cols = table.columns;
+  const cell = v => (v === null || v === undefined) ? "" : String(v).replace(/\n/g, " ");
+  const widths = cols.map((c, i) => Math.max(
+    cell(c).length,
+    ...table.rows.map(row => cell(row[c]).length)
+  ));
+  const pad = (text, w) => text + " ".repeat(Math.max(0, w - text.length));
+  let out = title ? `${title}\n\n` : "";
+  out += cols.map((c, i) => pad(cell(c), widths[i])).join("  ") + "\n";
+  out += widths.map(w => "-".repeat(w)).join("  ") + "\n";
+  table.rows.forEach(row => {
+    out += cols.map((c, i) => pad(cell(row[c]), widths[i])).join("  ") + "\n";
+  });
+  return out;
+}
+window.tableToAlignedText = tableToAlignedText;
+
+// Turns a {columns, rows} table into a GitHub-flavoured markdown table.
+// This is the format stored in Notes and used as the clipboard's plain-text
+// fallback — both renderNotesMarkup() here and _render_notes_html() in
+// main_report.py recognize this exact "| col | col |" + "| --- | --- |"
+// shape and render it as a real <table> instead of literal pipe characters.
 function tableToMarkdown(table, title){
   if(!table || !table.columns || !table.rows) return "";
   const cols = table.columns;
@@ -5003,18 +5071,66 @@ function tableToMarkdown(table, title){
 }
 window.tableToMarkdown = tableToMarkdown;
 
+// Turns the same table into a real HTML <table> — this is what makes a
+// clipboard paste land as an actual formatted table in Word, LibreOffice
+// Writer, or Google Docs, instead of literal pipe/dash characters.
+function tableToHtml(table, title){
+  if(!table || !table.columns || !table.rows) return "";
+  const cell = v => (v === null || v === undefined) ? "" : escapeHtml(String(v));
+  let html = title ? `<p><strong>${escapeHtml(title)}</strong></p>` : "";
+  html += `<table border="1" cellspacing="0" cellpadding="5" style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">` +
+    `<thead><tr>` + table.columns.map(c => `<th style="border:1px solid #999;background:#f0f0f0;padding:5px 9px;text-align:left;">${cell(c)}</th>`).join("") + `</tr></thead><tbody>`;
+  table.rows.forEach(row => {
+    html += "<tr>" + table.columns.map(c => `<td style="border:1px solid #999;padding:5px 9px;">${cell(row[c])}</td>`).join("") + "</tr>";
+  });
+  html += "</tbody></table>";
+  return html;
+}
+window.tableToHtml = tableToHtml;
+
+// Copies a table to the OS clipboard as BOTH a real HTML table and a
+// markdown plain-text fallback, so it pastes as an actual table into
+// rich-text apps (Word, LibreOffice, Docs, Slack, email) via the HTML
+// version, and as a table Notes/the downloaded report can also render
+// anywhere that only accepts plain text. Returns true/false/"plain-only".
+async function copyTableToClipboard(table, title){
+  const plain = tableToMarkdown(table, title);
+  const html = tableToHtml(table, title);
+  if(navigator.clipboard && window.ClipboardItem){
+    try{
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([plain], {type: "text/plain"}),
+          "text/html": new Blob([html], {type: "text/html"}),
+        })
+      ]);
+      return true;
+    }catch(e){ /* fall through to plain-text copy below */ }
+  }
+  try{
+    await navigator.clipboard.writeText(plain);
+    return "plain-only";
+  }catch(e){
+    return false;
+  }
+}
+window.copyTableToClipboard = copyTableToClipboard;
+
 // Appends a table (as markdown) onto the end of the active dataset's notes,
 // updates the local cache immediately, and persists it to the backend —
-// works whether or not the Notes panel happens to be open right now.
+// works whether or not the Notes panel happens to be open. Markdown, not
+// aligned plain text, because both the Notes "preview" toggle and the
+// downloaded HTML report know how to turn this exact shape into a real
+// <table> (see renderNotesMarkup() and _render_notes_html()).
 async function appendTableToNotes(table, title){
   const id  = (typeof activeDs === "undefined") ? null : activeDs;
   const sid = (typeof getSid === "function") ? getSid() : null;
   if(!id || !sid) return false;
 
-  const md = tableToMarkdown(table, title);
+  const text = tableToMarkdown(table, title);
   const existing = (typeof dsState !== "undefined" && dsState[id] && dsState[id].notes) || "";
   const sep = existing ? (existing.endsWith("\n") ? "\n" : "\n\n") : "";
-  const newNotes = existing + sep + md + "\n";
+  const newNotes = existing + sep + text + "\n";
 
   if(typeof setDatasetState === "function") setDatasetState(id, { notes: newNotes });
   const textarea = document.getElementById("notesTextarea");
@@ -5062,14 +5178,12 @@ function renderAnswerTable(table, label){
   copyBtn.className = "sec";
   copyBtn.style.cssText = "font-size:10px;padding:5px 11px;";
   copyBtn.textContent = "📋 Copy table";
+  copyBtn.title = "Copies as a real table when pasted into Word, LibreOffice, Docs, Slack, etc.";
   copyBtn.onclick = async () => {
-    const md = tableToMarkdown(table, label);
-    try{
-      await navigator.clipboard.writeText(md);
-      copyBtn.textContent = "✓ Copied";
-    }catch(e){
-      copyBtn.textContent = "Copy failed";
-    }
+    const result = await copyTableToClipboard(table, label);
+    copyBtn.textContent = result === true ? "✓ Copied"
+      : result === "plain-only" ? "✓ Copied (text only)"
+      : "Copy failed";
     setTimeout(() => { copyBtn.textContent = "📋 Copy table"; }, 1500);
   };
 
@@ -5651,6 +5765,9 @@ document.addEventListener("DOMContentLoaded", () => {
 #notesPreview ul, #notesPreview ol { margin: 4px 0; padding-left: 20px; }
 #notesPreview p { margin: 0 0 8px; }
 #notesPreview p:last-child { margin-bottom: 0; }
+.notes-table { border-collapse: collapse; width: 100%; margin: 6px 0 12px; font-size: 12px; }
+.notes-table th, .notes-table td { border: 1px solid var(--panel-border); padding: 5px 9px; text-align: left; }
+.notes-table th { background: var(--bg-alt, rgba(255,255,255,0.04)); color: var(--accent); font-family: 'IBM Plex Mono', monospace; }
 @media (max-width: 480px) {
   #notesPanel { width: calc(100vw - 24px); right: 12px; }
   #notesFab { right: 142px; width: 46px; height: 46px; }
@@ -6453,16 +6570,40 @@ document.addEventListener("DOMContentLoaded", () => {
   // Same lightweight rendering the backend HTML report uses (see
   // _render_notes_html in main_report.py) so what you see here matches
   // what ends up in the downloaded report.
+  // A markdown table separator row, e.g. "| --- | --- | --- |" or "|---|:--:|---|"
+  function isTableSeparatorLine(line){
+    const t = line.trim();
+    if(!t.includes("|")) return false;
+    const cells = t.replace(/^\|/, "").replace(/\|$/, "").split("|");
+    return cells.length > 0 && cells.every(c => /^\s*:?-{2,}:?\s*$/.test(c));
+  }
+
+  // Splits "| a | b\|c | d |" into ["a","b|c","d"], honoring "\|" as an
+  // escaped pipe inside a cell (matches how tableToMarkdown() escapes it).
+  function splitTableRow(line){
+    let t = line.trim();
+    if(t.startsWith("|")) t = t.slice(1);
+    if(t.endsWith("|")) t = t.slice(0, -1);
+    const cells = [];
+    let buf = "";
+    for(let i = 0; i < t.length; i++){
+      if(t[i] === "\\" && t[i + 1] === "|"){ buf += "|"; i++; continue; }
+      if(t[i] === "|"){ cells.push(buf); buf = ""; continue; }
+      buf += t[i];
+    }
+    cells.push(buf);
+    return cells.map(c => c.trim());
+  }
+
   function renderNotesMarkup(raw){
     if(!raw) return "";
-    const esc = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    let html = esc
+    const inline = text => escapeHtml(text)
       .replace(/&lt;u&gt;/g, "<u>").replace(/&lt;\/u&gt;/g, "</u>")
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
       .replace(/~~(.+?)~~/g, "<del>$1</del>")
       .replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, "$1<em>$2</em>");
 
-    const lines = html.split("\n");
+    const lines = raw.split("\n");
     const out = [];
     let listBuf = [];
     let listType = null;
@@ -6473,19 +6614,44 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       listType = null;
     };
-    for(const line of lines){
+
+    let i = 0;
+    while(i < lines.length){
+      const line = lines[i];
+      // Table: a "| a | b |" header line immediately followed by a "| --- | --- |" separator.
+      if(line.includes("|") && i + 1 < lines.length && isTableSeparatorLine(lines[i + 1])){
+        flushList();
+        const headerCells = splitTableRow(line);
+        let j = i + 2;
+        const bodyRows = [];
+        while(j < lines.length && lines[j].includes("|") && lines[j].trim() !== ""){
+          bodyRows.push(splitTableRow(lines[j]));
+          j++;
+        }
+        let tbl = `<table class="notes-table"><thead><tr>` +
+          headerCells.map(c => `<th>${inline(c)}</th>`).join("") + `</tr></thead><tbody>`;
+        bodyRows.forEach(row => {
+          tbl += "<tr>" + headerCells.map((_, ci) => `<td>${inline(row[ci] ?? "")}</td>`).join("") + "</tr>";
+        });
+        tbl += "</tbody></table>";
+        out.push(tbl);
+        i = j;
+        continue;
+      }
+
       const bulletM = /^-\s+(.*)/.exec(line);
       const numberM = /^\d+\.\s+(.*)/.exec(line);
       if(bulletM){
         if(listType !== "ul"){ flushList(); listType = "ul"; }
-        listBuf.push(bulletM[1]);
+        listBuf.push(inline(bulletM[1]));
       } else if(numberM){
         if(listType !== "ol"){ flushList(); listType = "ol"; }
-        listBuf.push(numberM[1]);
+        listBuf.push(inline(numberM[1]));
       } else {
         flushList();
-        if(line.trim() !== "") out.push(`<p>${line}</p>`);
+        if(line.trim() !== "") out.push(`<p>${inline(line)}</p>`);
       }
+      i++;
     }
     flushList();
     return out.join("");
