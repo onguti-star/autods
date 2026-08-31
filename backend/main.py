@@ -889,38 +889,85 @@ def visualize_suggestions(session_id: str):
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/column-values/{session_id}")
+def column_values(session_id: str, col: str):
+    """Return the distinct values of a column, so the frontend can offer a
+    Power BI-style slicer (pick which values to compare in a chart)."""
+    session = _get_session_or_404(session_id)
+    df = session.df
+    if col not in df.columns:
+        raise HTTPException(400, f"Column '{col}' not found.")
+    s = df[col].dropna()
+    # Cap how many distinct values we ever send back — a free-text or ID
+    # column can have hundreds of thousands of uniques, which would make
+    # the slicer UI unusable (and the payload huge) for no real benefit.
+    MAX_VALUES = 500
+    counts = s.astype(str).value_counts()
+    truncated = len(counts) > MAX_VALUES
+    values = counts.head(MAX_VALUES).index.tolist()
+    return {"col": col, "values": values, "truncated": truncated, "total_unique": int(len(counts))}
+
+
+def _apply_compare_filter(df: pd.DataFrame, filter_col: str | None, filter_values: str | None) -> pd.DataFrame:
+    """Restrict df to the rows whose filter_col matches one of the selected
+    filter_values (comma-separated). Mirrors a Power BI slicer: picking two
+    or more values lets the resulting chart compare just those groups.
+    Returns df unchanged if no filter was supplied.
+    """
+    if not filter_col or filter_values is None:
+        return df
+    if filter_col not in df.columns:
+        raise ValueError(f"Filter column '{filter_col}' not found.")
+    wanted = [v for v in filter_values.split(",") if v != ""]
+    if not wanted:
+        return df
+    # Compare as strings so numeric/date/category columns all match the
+    # values the frontend sent (which came from the same string-cast list
+    # used to populate the slicer checkboxes).
+    mask = df[filter_col].astype(str).isin(wanted)
+    filtered = df[mask]
+    if filtered.empty:
+        raise ValueError(
+            f"No rows match the selected '{filter_col}' values — pick at least one value that exists in the data."
+        )
+    return filtered
+
+
 @app.get("/api/visualize/{session_id}")
 def visualize_custom(session_id: str, x: str, chart_type: str,
                      y: str | None = None, group: str | None = None,
                      x_min: float | None = None, x_max: float | None = None,
-                     bar_limit: int | None = None, bin_width: float | None = None):
+                     bar_limit: int | None = None, bin_width: float | None = None,
+                     filter_col: str | None = None, filter_values: str | None = None):
     session = _get_session_or_404(session_id)
     try:
+        df = _apply_compare_filter(session.df, filter_col, filter_values)
+
         if chart_type == "choropleth":
             if not session.geojson:
                 raise ValueError("Choropleth maps require an uploaded .geojson dataset.")
-            if x not in session.df.columns:
+            if x not in df.columns:
                 raise ValueError(f"Column '{x}' not found.")
-            if not pd.api.types.is_numeric_dtype(session.df[x]):
+            if not pd.api.types.is_numeric_dtype(df[x]):
                 raise ValueError(f"'{x}' is not numeric. Choose a numeric value column for the choropleth.")
 
             skip_cols = {"_geometry_type", "_feature_index", x}
             text_cols = [
-                c for c in session.df.columns
-                if c not in skip_cols and not pd.api.types.is_numeric_dtype(session.df[c])
+                c for c in df.columns
+                if c not in skip_cols and not pd.api.types.is_numeric_dtype(df[c])
             ]
             name_hints = ("admin", "name", "country", "region", "county", "province", "state", "district", "city")
 
             def name_score(col: str) -> float:
                 hint = 3 if any(h in col.lower() for h in name_hints) else 0
-                non_empty = session.df[col].dropna().astype(str).str.strip()
+                non_empty = df[col].dropna().astype(str).str.strip()
                 non_empty = non_empty[non_empty != ""]
-                return hint + (len(non_empty) / max(len(session.df), 1))
+                return hint + (len(non_empty) / max(len(df), 1))
 
             name_col = max(text_cols, key=name_score) if text_cols else None
             row_cols = ["_feature_index", x] + ([name_col] if name_col else [])
             rows = []
-            for row in session.df[row_cols].to_dict("records"):
+            for row in df[row_cols].to_dict("records"):
                 cleaned = {}
                 for key, value in row.items():
                     cleaned[key] = None if pd.isna(value) else value
@@ -937,7 +984,10 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
             session.last_visualization = chart
             return chart
 
-        chart = viz.chart_data(session.df, x, chart_type, y, group, x_min, x_max, bar_limit, bin_width)
+        chart = viz.chart_data(df, x, chart_type, y, group, x_min, x_max, bar_limit, bin_width)
+        if filter_col:
+            chart["filter_col"] = filter_col
+            chart["filter_values"] = [v for v in (filter_values or "").split(",") if v != ""]
         session.last_visualization = chart
         return chart
     except ValueError as e:

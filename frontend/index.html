@@ -67,6 +67,13 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .pred-row{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end;}
 .pred-field{display:flex;flex-direction:column;gap:3px;min-width:120px;}
 .pred-field label{font-size:9px;color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;text-transform:uppercase;}
+button.tiny{padding:4px 8px;font-size:10px;}
+.filter-value-actions{display:flex;gap:6px;margin-bottom:4px;}
+.filter-value-list{max-height:150px;overflow-y:auto;border:1px solid var(--panel-border);padding:6px 8px;background:#0d1b2e;display:flex;flex-direction:column;gap:2px;}
+.filter-value-list label{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);text-transform:none;cursor:pointer;}
+.filter-value-list input[type=checkbox]{margin:0;cursor:pointer;}
+.filter-value-list .fv-truncated{color:var(--ink-dim);font-size:10px;margin-top:4px;}
+.chart-filter-note{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cyan);padding:2px 14px 0;}
 .result-box{margin-top:14px;padding:14px;border:1px solid var(--good);background:rgba(95,217,140,0.06);font-family:'IBM Plex Mono',monospace;font-size:14px;}
 .error-box{margin-top:10px;padding:10px;border:1px solid var(--bad);background:rgba(239,111,111,0.08);color:var(--bad);font-family:'IBM Plex Mono',monospace;font-size:11px;}
 .loading{color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;font-size:11px;}
@@ -660,6 +667,23 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="ct-btn" data-type="choropleth" onclick="selectChartType(this)"><div class="ct-name">Choropleth Map</div><div class="ct-desc">Colour regions by a numeric value (GeoJSON)</div></div>
       <div class="ct-btn" data-type="word_frequency" onclick="selectChartType(this)"><div class="ct-name">Word frequency</div><div class="ct-desc">Most common words in a text column</div></div>
       <div class="ct-btn" data-type="wordcloud" onclick="selectChartType(this)"><div class="ct-name">Word cloud</div><div class="ct-desc">Text column, sized by how often each word appears</div></div>
+    </div>
+
+    <div class="subhead" style="margin-top:24px;">Compare specific values <span class="hint" style="font-weight:400;">(optional — like a Power BI slicer)</span></div>
+    <p class="hint">Pick a column, then tick two or more values to compare just those in the chart below.</p>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Filter column</label>
+        <select id="vizFilterCol"><option value="">None</option></select>
+      </div>
+      <div class="pred-field" id="vizFilterValuesWrap" style="flex:1 1 320px;min-width:260px;">
+        <label>Values to compare</label>
+        <div class="filter-value-actions">
+          <button type="button" class="sec tiny" id="vizFilterSelectAll">Select all</button>
+          <button type="button" class="sec tiny" id="vizFilterClear">Clear</button>
+        </div>
+        <div id="vizFilterValues" class="filter-value-list"><p class="hint" style="margin:4px 0;">Pick a column to see its values.</p></div>
+      </div>
     </div>
 
     <div class="pred-row">
@@ -1435,11 +1459,13 @@ function clearAnalysisUI(){
   ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName"].forEach(id => {
     if($(id)) $(id).value = "";
   });
-  ["vizColX","vizColY","vizGroup","targetSelect","typeCol","pcaColorCol","predictSourceSelect","simOutcome","simDriver"].forEach(id => {
+  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","pcaColorCol","predictSourceSelect","simOutcome","simDriver"].forEach(id => {
     if($(id)) $(id).innerHTML = "";
   });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
+  if($("vizFilterCol")) $("vizFilterCol").innerHTML = `<option value="">None</option>`;
   if($("pcaColorCol")) $("pcaColorCol").innerHTML = `<option value="">None</option>`;
+  resetVizFilterValues();
   if($("predictSourceWrap")) $("predictSourceWrap").style.display = "none";
   if($("savedRunsHead")) $("savedRunsHead").style.display = "none";
   if($("savedPredictionsHead")) $("savedPredictionsHead").style.display = "none";
@@ -2407,6 +2433,8 @@ function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
   ["vizColX","vizColY","targetSelect","typeCol","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
+  if($("vizFilterCol")) $("vizFilterCol").innerHTML = `<option value="">None</option>` + opts;
+  resetVizFilterValues();
   populateDatabaseAnalysisSelects();
   populateSimulationSelects();
   // Prefer the previously trained target so switching tabs doesn't reset the
@@ -2712,6 +2740,62 @@ function renderVizSuggestions(charts){
   });
 }
 
+// ---------- Compare / slicer filter (Power BI-style value picker) ----------
+let vizFilterValuesCache = null; // { col, values, truncated } for the currently loaded filter column
+
+function resetVizFilterValues(){
+  vizFilterValuesCache = null;
+  if($("vizFilterCol")) $("vizFilterCol").value = "";
+  if($("vizFilterValues")) $("vizFilterValues").innerHTML = `<p class="hint" style="margin:4px 0;">Pick a column to see its values.</p>`;
+}
+
+function getCheckedFilterValues(){
+  const wrap = $("vizFilterValues");
+  if(!wrap) return [];
+  return Array.from(wrap.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+}
+
+async function loadVizFilterValues(col){
+  const wrap = $("vizFilterValues");
+  if(!wrap) return;
+  if(!col){
+    resetVizFilterValues();
+    return;
+  }
+  wrap.innerHTML = `<p class="hint" style="margin:4px 0;">Loading values…</p>`;
+  try{
+    const res = await fetch(`${API}/column-values/${getSid()}?col=${encodeURIComponent(col)}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not load values for this column.");
+    vizFilterValuesCache = data;
+    if(!data.values.length){
+      wrap.innerHTML = `<p class="hint" style="margin:4px 0;">No values found for this column.</p>`;
+      return;
+    }
+    // All values start checked — an unfiltered chart — so the user only
+    // narrows things down when they actively want to compare a subset.
+    wrap.innerHTML = data.values.map((v, i) =>
+      `<label><input type="checkbox" value="${escapeHtml(String(v))}" checked data-idx="${i}"> ${escapeHtml(String(v))}</label>`
+    ).join("") + (data.truncated ? `<div class="fv-truncated">Showing top ${data.values.length} of ${data.total_unique.toLocaleString()} values.</div>` : "");
+  }catch(err){
+    wrap.innerHTML = `<p class="hint" style="margin:4px 0;color:var(--bad,#e05d5d);">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+if($("vizFilterCol")){
+  $("vizFilterCol").addEventListener("change", (e) => loadVizFilterValues(e.target.value));
+}
+if($("vizFilterSelectAll")){
+  $("vizFilterSelectAll").addEventListener("click", () => {
+    $("vizFilterValues").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+  });
+}
+if($("vizFilterClear")){
+  $("vizFilterClear").addEventListener("click", () => {
+    $("vizFilterValues").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+  });
+}
+
 $("vizBtn").addEventListener("click", async () => {
   hide("vizError");
   const x = $("vizColX").value, y = $("vizColY").value, g = $("vizGroup").value;
@@ -2743,6 +2827,23 @@ $("vizBtn").addEventListener("click", async () => {
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
   if(["scatter","line","bubble","area"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
   if(["boxplot","bubble"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+
+  // Power BI-style compare/slicer filter: only send it when a column is
+  // picked AND at least one (but not every) value is checked — "all
+  // checked" behaves the same as no filter, so skip the round-trip.
+  const filterCol = $("vizFilterCol") ? $("vizFilterCol").value : "";
+  if(filterCol){
+    const checked = getCheckedFilterValues();
+    const totalValues = vizFilterValuesCache && vizFilterValuesCache.col === filterCol ? vizFilterValuesCache.values.length : 0;
+    if(checked.length === 0){
+      $("vizError").textContent = "Tick at least one value in \"Values to compare\", or clear the filter column.";
+      show("vizError");
+      return;
+    }
+    if(checked.length < totalValues){
+      url += `&filter_col=${encodeURIComponent(filterCol)}&filter_values=${encodeURIComponent(checked.join(","))}`;
+    }
+  }
   if(t === "histogram"){
     const xMin = $("histXMin").value.trim();
     const xMax = $("histXMax").value.trim();
@@ -2946,7 +3047,10 @@ function _renderCustomChartCard(spec){
   const id = "vizCanvas_" + Date.now() + "_" + Math.floor(Math.random()*1000);
   const panel = document.createElement("div");
   panel.className = "chart-panel";
-  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div><div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${spec.reason || explainChart(spec)}</div>`;
+  const compareNote = spec.filter_col && spec.filter_values && spec.filter_values.length
+    ? `<div class="chart-filter-note">Comparing ${escapeHtml(spec.filter_col)}: ${spec.filter_values.map(escapeHtml).join(", ")}</div>`
+    : "";
+  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div>${compareNote}<div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${spec.reason || explainChart(spec)}</div>`;
   panel.querySelector(".download").addEventListener("click", () => downloadChart(id, chartTitle(spec)));
   if(spec.type === "wordcloud"){
     panel.querySelector(".download").style.display = "none";   // rendered as HTML, not a canvas — nothing to export as PNG
