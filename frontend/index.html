@@ -68,7 +68,9 @@ td.mono{font-family:'IBM Plex Mono',monospace;}
 .pred-field{display:flex;flex-direction:column;gap:3px;min-width:120px;}
 .pred-field label{font-size:9px;color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;text-transform:uppercase;}
 button.tiny{padding:4px 8px;font-size:10px;}
-.filter-value-actions{display:flex;gap:6px;margin-bottom:4px;}
+.filter-value-actions{display:flex;gap:6px;margin-bottom:4px;flex-wrap:wrap;}
+.filter-value-search{flex:1 1 140px;min-width:120px;background:#0d1b2e;border:1px solid var(--panel-border);color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 8px;border-radius:2px;}
+.filter-value-search:focus{outline:none;border-color:var(--cyan);}
 .filter-value-list{max-height:150px;overflow-y:auto;border:1px solid var(--panel-border);padding:6px 8px;background:#0d1b2e;display:flex;flex-direction:column;gap:2px;}
 .filter-value-list label{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);text-transform:none;cursor:pointer;}
 .filter-value-list input[type=checkbox]{margin:0;cursor:pointer;}
@@ -679,6 +681,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="pred-field" id="vizFilterValuesWrap" style="flex:1 1 320px;min-width:260px;">
         <label>Values to compare</label>
         <div class="filter-value-actions">
+          <input type="text" id="vizFilterSearch" placeholder="Search values…" class="filter-value-search">
           <button type="button" class="sec tiny" id="vizFilterSelectAll">Select all</button>
           <button type="button" class="sec tiny" id="vizFilterClear">Clear</button>
         </div>
@@ -688,7 +691,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="pred-row">
       <div class="pred-field"><label id="xLabel">Column (X)</label><select id="vizColX"></select></div>
-      <div class="pred-field" id="yWrap"><label>Column (Y)</label><select id="vizColY"></select></div>
+      <div class="pred-field" id="yWrap"><label id="yLabel">Column (Y)</label><select id="vizColY" multiple size="4"></select><span class="hint" id="yHint" style="display:none;">Ctrl/Cmd-click to compare 2+ columns (e.g. male &amp; female).</span></div>
       <div class="pred-field" id="groupWrap"><label id="groupLabel">Group / Size column</label><select id="vizGroup"></select></div>
       <div class="pred-field" id="histMinWrap"><label>X min</label><input type="number" id="histXMin" step="any" placeholder="auto"></div>
       <div class="pred-field" id="histMaxWrap"><label>X max</label><input type="number" id="histXMax" step="any" placeholder="auto"></div>
@@ -2678,7 +2681,7 @@ function selectChartType(el){
 
 function updateVizFieldVisibility(){
   const t = selectedChartType;
-  $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) ? "" : "none";
+  $("yWrap").style.display = ["scatter","line","bubble","area","bar","radar"].includes(t) ? "" : "none";
   $("groupWrap").style.display = t === "choropleth" ? "none" : "";   // group by works with most chart types
   $("histMinWrap").style.display = t === "histogram" ? "" : "none";
   $("histMaxWrap").style.display = t === "histogram" ? "" : "none";
@@ -2688,8 +2691,19 @@ function updateVizFieldVisibility(){
   $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : "Column (X)";
-  $("groupLabel").textContent = t === "bubble" ? "Size column" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
+  $("groupLabel").textContent = t === "bubble" ? "Size column" : t === "boxplot" ? "Group by (required)"
+    : ["line","area","bar"].includes(t) ? "Compare by / legend (optional)" : "Group by (optional)";
 
+  // Multi-select is only meaningful for line/area/bar (compare 2+ numeric
+  // columns as separate series) and radar (compare numeric columns as
+  // spokes) — for scatter/bubble a single Y still makes sense, so switch
+  // the control back to a plain single-select there to avoid confusing
+  // ctrl-click behaviour where it doesn't apply.
+  const multiOk = ["line","area","bar","radar"].includes(t);
+  $("vizColY").multiple = multiOk;
+  $("vizColY").size = multiOk ? 4 : 1;
+  $("yLabel").textContent = t === "radar" ? "Columns to compare" : (multiOk ? "Column (Y)" : "Column (Y)");
+  $("yHint").style.display = multiOk ? "" : "none";
 }
 updateVizFieldVisibility();
 
@@ -2746,6 +2760,7 @@ let vizFilterValuesCache = null; // { col, values, truncated } for the currently
 function resetVizFilterValues(){
   vizFilterValuesCache = null;
   if($("vizFilterCol")) $("vizFilterCol").value = "";
+  if($("vizFilterSearch")) $("vizFilterSearch").value = "";
   if($("vizFilterValues")) $("vizFilterValues").innerHTML = `<p class="hint" style="margin:4px 0;">Pick a column to see its values.</p>`;
 }
 
@@ -2755,9 +2770,21 @@ function getCheckedFilterValues(){
   return Array.from(wrap.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
+function applyVizFilterSearch(){
+  const wrap = $("vizFilterValues");
+  const searchEl = $("vizFilterSearch");
+  if(!wrap || !searchEl) return;
+  const q = searchEl.value.trim().toLowerCase();
+  wrap.querySelectorAll("label").forEach(label => {
+    const text = (label.textContent || "").toLowerCase();
+    label.style.display = !q || text.includes(q) ? "" : "none";
+  });
+}
+
 async function loadVizFilterValues(col){
   const wrap = $("vizFilterValues");
   if(!wrap) return;
+  if($("vizFilterSearch")) $("vizFilterSearch").value = "";
   if(!col){
     resetVizFilterValues();
     return;
@@ -2785,6 +2812,9 @@ async function loadVizFilterValues(col){
 if($("vizFilterCol")){
   $("vizFilterCol").addEventListener("change", (e) => loadVizFilterValues(e.target.value));
 }
+if($("vizFilterSearch")){
+  $("vizFilterSearch").addEventListener("input", applyVizFilterSearch);
+}
 if($("vizFilterSelectAll")){
   $("vizFilterSelectAll").addEventListener("click", () => {
     $("vizFilterValues").querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
@@ -2798,7 +2828,10 @@ if($("vizFilterClear")){
 
 $("vizBtn").addEventListener("click", async () => {
   hide("vizError");
-  const x = $("vizColX").value, y = $("vizColY").value, g = $("vizGroup").value;
+  const x = $("vizColX").value;
+  const yMulti = Array.from($("vizColY").selectedOptions).map(o => o.value).filter(Boolean);
+  const y = yMulti[0] || "";
+  const g = $("vizGroup").value;
   const t = selectedChartType;
 
   // Guard against the column dropdown not being populated yet — this can
@@ -2818,15 +2851,39 @@ $("vizBtn").addEventListener("click", async () => {
     }
     return;
   }
-  if(["scatter","line","bubble","area"].includes(t) && !y){
+  if(["scatter","line","bubble","area"].includes(t) && !yMulti.length){
     $("vizError").textContent = "This chart type needs a Y column too.";
+    show("vizError");
+    return;
+  }
+  if(t === "radar" && !yMulti.length){
+    $("vizError").textContent = "Pick at least one numeric column to compare.";
+    show("vizError");
+    return;
+  }
+  // A "compare by / legend" column (g) splits a single Y column into
+  // multiple series — it doesn't combine with picking several Y columns
+  // at once (that's the wide-format compare instead), so guard against
+  // sending an ambiguous combination.
+  if(g && ["line","area","bar"].includes(t) && yMulti.length > 1){
+    $("vizError").textContent = `Pick either one Y column with "${$("groupLabel").textContent}", or multiple Y columns with no legend column — not both.`;
+    show("vizError");
+    return;
+  }
+  if(g && ["line","area","bar"].includes(t) && !yMulti.length){
+    $("vizError").textContent = "Pick a Y column to compare across the legend column.";
     show("vizError");
     return;
   }
 
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
-  if(["scatter","line","bubble","area"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
+  if(["scatter","bubble"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
+  if(["line","area"].includes(t)) url += `&y=${encodeURIComponent(yMulti.join(","))}`;
+  if(t === "bar" && yMulti.length) url += `&y=${encodeURIComponent(yMulti.join(","))}`;
+  if(t === "radar" && yMulti.length) url += `&y=${encodeURIComponent(yMulti.join(","))}`;
   if(["boxplot","bubble"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  if(["line","area","bar"].includes(t) && g) url += `&group=${encodeURIComponent(g)}`;
+  if(t === "radar" && g) url += `&group=${encodeURIComponent(g)}`;
 
   // Power BI-style compare/slicer filter: only send it when a column is
   // picked AND at least one (but not every) value is checked — "all
@@ -2877,11 +2934,11 @@ $("clearChartsBtn").addEventListener("click", clearCustomCharts);
 
 function chartTitle(ch){
   if(ch.type === "scatter" || ch.type === "bubble") return `${ch.y} vs ${ch.x}`;
-  if(ch.type === "line") return `${ch.y} over ${ch.x}`;
-  if(ch.type === "area") return `${ch.y} over ${ch.x} (area)`;
+  if(ch.type === "line") return ch.series ? `${(ch.y_columns || ch.series.map(s=>s.name)).join(" vs ")} over ${ch.x}` : `${ch.y} over ${ch.x}`;
+  if(ch.type === "area") return ch.series ? `${(ch.y_columns || ch.series.map(s=>s.name)).join(" vs ")} over ${ch.x} (area)` : `${ch.y} over ${ch.x} (area)`;
   if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
   if(ch.type === "histogram") return `Histogram of ${ch.x}`;
-  if(ch.type === "bar") return `Bar chart of ${ch.x}`;
+  if(ch.type === "bar") return ch.series ? `${ch.y || (ch.y_columns || []).join(" vs ")} by ${ch.x}${ch.group ? ` and ${ch.group}` : ""}` : `Bar chart of ${ch.x}`;
   if(ch.type === "pie") return `Share of ${ch.x}`;
   if(ch.type === "heatmap") return `Correlation heatmap`;
   if(ch.type === "treemap") return `Treemap of ${ch.x}`;
@@ -3151,6 +3208,20 @@ function drawChart(canvasId, ch){
     return;
   }
   if(ch.type === "line"){
+    if(ch.series){
+      const datasets = ch.series.map((s,i) => ({
+        label: s.name, data: s.values,
+        borderColor: PIE_COLORS[i % PIE_COLORS.length],
+        backgroundColor: PIE_COLORS[i % PIE_COLORS.length] + "20",
+        pointRadius: ch.sampled ? 0 : 2, tension: 0.3, spanGaps: true,
+      }));
+      makeChart(canvasId,{type:"line",
+        data:{labels:ch.labels,datasets},
+        options:{plugins:{legend:{display:true,position:"top",labels:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
+          scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:"#1f3a5f"}},
+                  y:{title:{display:true,text:ch.y_label||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+      return;
+    }
     makeChart(canvasId,{type:"line",
       data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:"#5fd4d6",backgroundColor:"#5fd4d620",pointRadius:ch.sampled?0:2,tension:0.3}]},
       options:{plugins:{legend:{display:false}},
@@ -3395,6 +3466,20 @@ function drawChart(canvasId, ch){
   }
   
   if(ch.type === "area" && ch.labels){
+    if(ch.series){
+      const datasets = ch.series.map((s,i) => ({
+        label: s.name, data: s.values,
+        borderColor: PIE_COLORS[i % PIE_COLORS.length],
+        backgroundColor: PIE_COLORS[i % PIE_COLORS.length] + "33",
+        fill: true, pointRadius: ch.sampled ? 0 : 2, tension: 0.3, spanGaps: true,
+      }));
+      makeChart(canvasId,{type:"line",
+        data:{labels:ch.labels,datasets},
+        options:{plugins:{legend:{display:true,position:"top",labels:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
+          scales:{x:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:"#1f3a5f"}},
+                  y:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+      return;
+    }
     makeChart(canvasId,{type:"line",
       data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:"#5fd4d6",backgroundColor:"#5fd4d633",fill:true,pointRadius:2,tension:0.3}]},
       options:{plugins:{legend:{display:false}},
@@ -3856,6 +3941,18 @@ function drawChart(canvasId, ch){
   
   // word_frequency renders like a bar chart — falls through to the shared bar rendering below
   // histogram or bar
+  if(ch.type === "bar" && ch.series){
+    const datasets = ch.series.map((s,i) => ({
+      label: s.name, data: s.values,
+      backgroundColor: PIE_COLORS[i % PIE_COLORS.length] + "cc",
+    }));
+    makeChart(canvasId,{type:"bar",
+      data:{labels:ch.labels,datasets},
+      options:{plugins:{legend:{display:true,position:"top",labels:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
+        scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:"#1f3a5f"}},
+                y:{title:{display:true,text:ch.y_label||"Value",color:"#8fa3bc",font:{size:9}},ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}}}}});
+    return;
+  }
   const color = ch.type==="histogram" ? "#ffb627bb" : "#5fd4d6bb";
   makeChart(canvasId,{type:"bar",
     data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:color}]},

@@ -4,10 +4,24 @@ session. The export intentionally avoids dumping every AutoDS helper function;
 it includes only the successful user-facing results recorded on the session.
 """
 import base64
+import gzip
 import io
 import json
 from datetime import datetime
 from typing import Any
+
+# Cap on the *compressed, base64-encoded* payload we'll embed directly in
+# the notebook. Beyond this, a single-file .ipynb becomes a liability: the
+# JSON file itself gets huge, and many editors (Jupyter, VS Code) slow to a
+# crawl or hang opening it — which is the "large CSV crashes the notebook"
+# problem. Past this size we skip embedding and point the user at the
+# existing "Download data" CSV export instead.
+_MAX_EMBED_B64_BYTES = 15 * 1024 * 1024  # ~15MB of base64 text
+
+# Keep each embedded-data source line short. A single multi-million-character
+# line is what actually freezes most editors when they open a large
+# notebook — chunking into short lines avoids that regardless of total size.
+_B64_LINE_WIDTH = 120
 
 
 def _code_cell(source: str) -> dict:
@@ -96,17 +110,51 @@ def _add_notes_cell(cells: list[dict], session):
 
 
 def _add_data_cell(cells: list[dict], session):
-    csv_buf = io.StringIO()
-    session.df.to_csv(csv_buf, index=False)
-    csv_data_b64 = base64.b64encode(csv_buf.getvalue().encode("utf-8")).decode("ascii")
+    csv_bytes = session.df.to_csv(index=False).encode("utf-8")
+    # Gzip before base64 — CSV text typically compresses 5-10x, which shrinks
+    # both the embedded string and the peak memory needed to decode it.
+    compressed = gzip.compress(csv_bytes, compresslevel=6)
+    csv_data_b64 = base64.b64encode(compressed).decode("ascii")
+
+    if len(csv_data_b64) > _MAX_EMBED_B64_BYTES:
+        # Too large to embed safely. Rather than produce a notebook that
+        # may hang when opened, point the user at AutoDS's own CSV export
+        # (Download data button) and read that from disk instead.
+        cells.append(_markdown_cell(
+            "## Data\n\n"
+            "This dataset is too large to embed directly in the notebook — "
+            "doing so would make the `.ipynb` file itself huge and could "
+            "make Jupyter or VS Code hang just opening it. Use AutoDS's "
+            "**Download data** button to save the CSV, then point the cell "
+            "below at that file (same folder as this notebook works fine)."
+        ))
+        cells.append(_code_cell(
+            "import pandas as pd\n\n"
+            "# Update this filename if you saved the CSV somewhere else.\n"
+            f"df = pd.read_csv({json.dumps(session.filename)})\n"
+            "print(f'Loaded data: {len(df):,} rows x {len(df.columns)} columns')\n"
+            "df.head()"
+        ))
+        return
+
+    # Chunk into short lines instead of one giant line — this is the part
+    # that actually matters for editor responsiveness, independent of the
+    # gzip savings above.
+    chunks = [csv_data_b64[i:i + _B64_LINE_WIDTH] for i in range(0, len(csv_data_b64), _B64_LINE_WIDTH)]
+    chunk_lines = ",\n".join("    " + json.dumps(c) for c in chunks)
+
     cells.append(_code_cell(
         "import base64\n"
+        "import gzip\n"
         "import io\n"
         "import json\n"
         "import numpy as np\n"
         "import pandas as pd\n\n"
-        f"CSV_DATA_B64 = {json.dumps(csv_data_b64)}\n\n"
-        "df = pd.read_csv(io.BytesIO(base64.b64decode(CSV_DATA_B64)))\n"
+        "CSV_DATA_B64_PARTS = [\n"
+        f"{chunk_lines}\n"
+        "]\n"
+        "CSV_DATA_B64 = \"\".join(CSV_DATA_B64_PARTS)\n"
+        "df = pd.read_csv(io.BytesIO(gzip.decompress(base64.b64decode(CSV_DATA_B64))))\n"
         "print(f'Loaded final AutoDS data: {len(df):,} rows x {len(df.columns)} columns')\n"
         "df.head()"
     ))
