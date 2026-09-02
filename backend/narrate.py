@@ -260,3 +260,143 @@ def narrate_prediction(problem_type: str, target: str, prediction, model_name: s
         if isinstance(prediction, (int, float)) else
         f"Given {given}, {model_name} predicts '{target}' = {prediction}."
     )
+
+
+def explain_chart(chart_type: str, x: str, df, y: str | None = None, group: str | None = None) -> str | None:
+    """
+    Data-driven, one-to-two sentence explanation of what a specific chart
+    actually shows — separate from the chart's static "caption" (which just
+    describes chart mechanics, e.g. "box = middle 50%"). This looks at the
+    real values behind the chart and reports the finding: which category
+    dominates, how strong a correlation is, which direction a trend moved,
+    whether a distribution is skewed or has outliers, etc.
+
+    Best-effort only: returns None (never raises) if the chart type isn't
+    covered or the data can't support a finding — callers should treat a
+    missing explanation as "nothing extra to add", not an error.
+    """
+    import pandas as pd  # local import keeps narrate.py import-light for callers that don't need pandas
+
+    try:
+        if x not in df.columns:
+            return None
+        s = df[x]
+
+        if chart_type in ("histogram", "density", "kde"):
+            clean = pd.to_numeric(s, errors="coerce").dropna()
+            if len(clean) < 3:
+                return None
+            mean, median, std = clean.mean(), clean.median(), clean.std()
+            skew = clean.skew()
+            if pd.isna(skew):
+                skew = 0
+            if skew > 0.5:
+                shape = "right-skewed — most values are on the lower end with a tail of higher outliers"
+            elif skew < -0.5:
+                shape = "left-skewed — most values are on the higher end with a tail of lower outliers"
+            else:
+                shape = "roughly symmetric around the average"
+            q1, q3 = clean.quantile([0.25, 0.75])
+            iqr = q3 - q1
+            n_out = int(((clean < q1 - 1.5 * iqr) | (clean > q3 + 1.5 * iqr)).sum())
+            parts = [
+                f"Average '{x}' is {mean:,.2f} (median {median:,.2f}); the distribution is {shape}."
+            ]
+            if n_out:
+                parts.append(
+                    f"{n_out} value(s) ({n_out / len(clean) * 100:.1f}%) sit far enough from the "
+                    f"bulk of the data to count as statistical outliers."
+                )
+            return " ".join(parts)
+
+        if chart_type in ("bar", "pie", "treemap"):
+            counts = s.value_counts(dropna=True)
+            if counts.empty:
+                return None
+            top_val, top_count = counts.index[0], int(counts.iloc[0])
+            total = int(counts.sum())
+            share = top_count / total * 100
+            txt = (
+                f"'{top_val}' is the most common value in '{x}', accounting for {share:.1f}% "
+                f"of {total:,} rows across {len(counts)} distinct value(s)."
+            )
+            if share > 80:
+                txt += (
+                    " That's a heavy skew toward one value — if you plan to predict this column, "
+                    "a model could score misleadingly well just by always guessing it."
+                )
+            return txt
+
+        if chart_type in ("scatter", "bubble"):
+            if not y or y not in df.columns:
+                return None
+            sub = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
+            if len(sub) < 3:
+                return None
+            corr = sub[x].corr(sub[y])
+            if pd.isna(corr):
+                return None
+            strength = "strong" if abs(corr) >= 0.7 else "moderate" if abs(corr) >= 0.4 else "weak"
+            direction = "positive" if corr > 0 else "negative"
+            txt = (
+                f"'{x}' and '{y}' have a {strength} {direction} relationship "
+                f"(correlation {corr:+.2f})."
+            )
+            if abs(corr) >= 0.7:
+                txt += " They move closely together, so using both as model features rarely adds much beyond using one."
+            return txt
+
+        if chart_type in ("line", "area"):
+            if not y or y not in df.columns:
+                return None
+            sub = df[[x, y]].copy()
+            sub[y] = pd.to_numeric(sub[y], errors="coerce")
+            sub = sub.dropna()
+            if len(sub) < 2:
+                return None
+            try:
+                sub = sub.sort_values(x)
+            except TypeError:
+                pass
+            first, last = float(sub[y].iloc[0]), float(sub[y].iloc[-1])
+            change = last - first
+            direction = "increased" if change > 0 else "decreased" if change < 0 else "stayed flat"
+            txt = f"'{y}' {direction} from {first:,.2f} to {last:,.2f} across the range shown"
+            if first != 0:
+                txt += f" ({change / abs(first) * 100:+.1f}%)"
+            peak_pos = sub[y].idxmax()
+            peak_val = float(sub[y].max())
+            if abs(peak_val - max(first, last)) > 1e-9:
+                txt += f", peaking at {peak_val:,.2f} around {x}={sub.loc[peak_pos, x]}."
+            else:
+                txt += "."
+            return txt
+
+        if chart_type in ("boxplot", "violin"):
+            clean = pd.to_numeric(s, errors="coerce").dropna()
+            if len(clean) < 3:
+                return None
+            q1, med, q3 = clean.quantile([0.25, 0.5, 0.75])
+            iqr = q3 - q1
+            n_out = int(((clean < q1 - 1.5 * iqr) | (clean > q3 + 1.5 * iqr)).sum())
+            txt = (
+                f"Median '{x}' is {med:,.2f}, with the middle 50% of values between "
+                f"{q1:,.2f} and {q3:,.2f}."
+            )
+            if n_out:
+                txt += f" {n_out} outlier(s) fall well outside that range."
+            return txt
+
+        if chart_type == "choropleth":
+            clean = pd.to_numeric(s, errors="coerce").dropna()
+            if clean.empty:
+                return None
+            return (
+                f"'{x}' ranges from {clean.min():,.2f} to {clean.max():,.2f} across the mapped "
+                f"regions, averaging {clean.mean():,.2f}."
+            )
+
+        return None
+    except Exception:
+        # Explanations are a bonus, never a reason to break a chart request.
+        return None

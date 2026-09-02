@@ -52,9 +52,9 @@ except Exception:  # XGBoost is optional; scikit-learn models remain the default
 
 
 LARGE_DATASET_THRESHOLD = 100_000
-LARGE_DATASET_MIN_SAMPLE = 20_000
-LARGE_DATASET_MAX_SAMPLE = 75_000
-LARGE_DATASET_SAMPLE_FRACTION = 0.05
+LARGE_DATASET_MIN_SAMPLE = 30_000
+LARGE_DATASET_MAX_SAMPLE = 150_000
+LARGE_DATASET_SAMPLE_FRACTION = 0.08
 
 
 def _large_dataset_sample_size(n_rows: int) -> int:
@@ -338,6 +338,20 @@ def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dic
             n_jobs=-1,
             random_state=42,
         ),
+        # HistGradientBoosting is purpose-built for large N: it bins numeric
+        # features once up front instead of scanning raw values per split,
+        # so it stays fast at 100k+ rows while giving materially better
+        # accuracy than a linear model or a very shallow XGBoost. It has its
+        # own built-in early stopping, so runtime stays bounded even if the
+        # sample size grows.
+        "Histogram Gradient Boosting (Fast)": _dense_model(HistGradientBoostingClassifier(
+            max_iter=200,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=10,
+            class_weight=cw,
+            random_state=42,
+        )),
     }
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
@@ -363,6 +377,15 @@ def _fast_regression_models() -> dict:
     """Fast models optimized for large datasets (>100k rows)."""
     models = {
         "Ridge Regression": Ridge(alpha=1.0),
+        # See note in _fast_classification_models: scales well to large N
+        # with bounded runtime thanks to built-in early stopping.
+        "Histogram Gradient Boosting (Fast)": _dense_model(HistGradientBoostingRegressor(
+            max_iter=200,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=10,
+            random_state=42,
+        )),
     }
     if XGBRegressor is not None:
         models["XGBoost (Fast)"] = XGBRegressor(

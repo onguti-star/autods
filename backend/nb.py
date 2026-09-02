@@ -4,24 +4,10 @@ session. The export intentionally avoids dumping every AutoDS helper function;
 it includes only the successful user-facing results recorded on the session.
 """
 import base64
-import gzip
 import io
 import json
 from datetime import datetime
 from typing import Any
-
-# Cap on the *compressed, base64-encoded* payload we'll embed directly in
-# the notebook. Beyond this, a single-file .ipynb becomes a liability: the
-# JSON file itself gets huge, and many editors (Jupyter, VS Code) slow to a
-# crawl or hang opening it — which is the "large CSV crashes the notebook"
-# problem. Past this size we skip embedding and point the user at the
-# existing "Download data" CSV export instead.
-_MAX_EMBED_B64_BYTES = 15 * 1024 * 1024  # ~15MB of base64 text
-
-# Keep each embedded-data source line short. A single multi-million-character
-# line is what actually freezes most editors when they open a large
-# notebook — chunking into short lines avoids that regardless of total size.
-_B64_LINE_WIDTH = 120
 
 
 def _code_cell(source: str) -> dict:
@@ -52,6 +38,28 @@ def _json_default(value: Any):
 
 def _json_literal(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, default=_json_default)
+
+
+def _py_embed(value: Any) -> str:
+    """
+    Embed a Python value into generated notebook *source code* so it comes
+    back out as the same value when the cell runs.
+
+    _json_literal's output looks like Python (dicts/lists/strings all look
+    the same in both), but it isn't: JSON's `null`/`true`/`false` are not
+    valid Python — they're `None`/`True`/`False`. Any chart or result
+    containing a None (e.g. a histogram with no x_min/x_max set) got
+    embedded as literal `null` in the .ipynb source, which crashed with
+    `NameError: name 'null' is not defined` the moment that cell ran.
+
+    This instead serializes to a JSON *string*, double-encodes it into a
+    valid Python string literal, and has the notebook parse it back with
+    `json.loads(...)` at run time — so the round trip is exact regardless
+    of None/True/False/nested values, and it's still just as inspectable
+    since the underlying JSON is unaffected.
+    """
+    json_str = json.dumps(value, ensure_ascii=False, default=_json_default)
+    return f"json.loads({json.dumps(json_str)})"
 
 
 def _comment_lines(lines: list[str]) -> str:
@@ -110,51 +118,17 @@ def _add_notes_cell(cells: list[dict], session):
 
 
 def _add_data_cell(cells: list[dict], session):
-    csv_bytes = session.df.to_csv(index=False).encode("utf-8")
-    # Gzip before base64 — CSV text typically compresses 5-10x, which shrinks
-    # both the embedded string and the peak memory needed to decode it.
-    compressed = gzip.compress(csv_bytes, compresslevel=6)
-    csv_data_b64 = base64.b64encode(compressed).decode("ascii")
-
-    if len(csv_data_b64) > _MAX_EMBED_B64_BYTES:
-        # Too large to embed safely. Rather than produce a notebook that
-        # may hang when opened, point the user at AutoDS's own CSV export
-        # (Download data button) and read that from disk instead.
-        cells.append(_markdown_cell(
-            "## Data\n\n"
-            "This dataset is too large to embed directly in the notebook — "
-            "doing so would make the `.ipynb` file itself huge and could "
-            "make Jupyter or VS Code hang just opening it. Use AutoDS's "
-            "**Download data** button to save the CSV, then point the cell "
-            "below at that file (same folder as this notebook works fine)."
-        ))
-        cells.append(_code_cell(
-            "import pandas as pd\n\n"
-            "# Update this filename if you saved the CSV somewhere else.\n"
-            f"df = pd.read_csv({json.dumps(session.filename)})\n"
-            "print(f'Loaded data: {len(df):,} rows x {len(df.columns)} columns')\n"
-            "df.head()"
-        ))
-        return
-
-    # Chunk into short lines instead of one giant line — this is the part
-    # that actually matters for editor responsiveness, independent of the
-    # gzip savings above.
-    chunks = [csv_data_b64[i:i + _B64_LINE_WIDTH] for i in range(0, len(csv_data_b64), _B64_LINE_WIDTH)]
-    chunk_lines = ",\n".join("    " + json.dumps(c) for c in chunks)
-
+    csv_buf = io.StringIO()
+    session.df.to_csv(csv_buf, index=False)
+    csv_data_b64 = base64.b64encode(csv_buf.getvalue().encode("utf-8")).decode("ascii")
     cells.append(_code_cell(
         "import base64\n"
-        "import gzip\n"
         "import io\n"
         "import json\n"
         "import numpy as np\n"
         "import pandas as pd\n\n"
-        "CSV_DATA_B64_PARTS = [\n"
-        f"{chunk_lines}\n"
-        "]\n"
-        "CSV_DATA_B64 = \"\".join(CSV_DATA_B64_PARTS)\n"
-        "df = pd.read_csv(io.BytesIO(gzip.decompress(base64.b64decode(CSV_DATA_B64))))\n"
+        f"CSV_DATA_B64 = {json.dumps(csv_data_b64)}\n\n"
+        "df = pd.read_csv(io.BytesIO(base64.b64decode(CSV_DATA_B64)))\n"
         "print(f'Loaded final AutoDS data: {len(df):,} rows x {len(df.columns)} columns')\n"
         "df.head()"
     ))
@@ -194,8 +168,9 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
     cells.append(_markdown_cell(f"## Visualizations Done ({len(all_charts)})"))
     for i, chart in enumerate(all_charts, start=1):
         cells.append(_code_cell(
+            "import json\n"
             "import matplotlib.pyplot as plt\n\n"
-            f"chart = {_json_literal(chart)}\n"
+            f"chart = {_py_embed(chart)}\n"
             "chart_type = chart.get('type')\n"
             "x = chart.get('x')\n"
             "y = chart.get('y')\n\n"
@@ -225,6 +200,19 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "    values = [w.get('count') for w in words][:25][::-1]\n"
             "    plt.barh(labels, values)\n"
             "    plt.xlabel('Count')\n"
+            "elif chart_type == 'choropleth' and chart.get('rows'):\n"
+            "    # Static stand-in for the interactive map: a bar chart ranking\n"
+            "    # regions by the mapped value. A real choropleth would need\n"
+            "    # geopandas + the boundary file, which is more than this\n"
+            "    # lightweight export bundles in.\n"
+            "    value_col = chart.get('value_col')\n"
+            "    name_col = chart.get('name_col')\n"
+            "    rows = [r for r in chart['rows'] if r.get(value_col) is not None]\n"
+            "    rows.sort(key=lambda r: r[value_col], reverse=True)\n"
+            "    labels = [str(r.get(name_col, '?')) for r in rows][:20][::-1]\n"
+            "    values = [r[value_col] for r in rows][:20][::-1]\n"
+            "    plt.barh(labels, values)\n"
+            "    plt.xlabel(value_col)\n"
             "elif x in df.columns:\n"
             "    df[x].value_counts(dropna=True).head(15).sort_values().plot(kind='barh')\n"
             "    plt.xlabel('Count')\n"
@@ -243,6 +231,7 @@ def _add_training_cells(cells: list[dict], session):
 
     cells.append(_markdown_cell("## Model Training Done"))
     cells.append(_code_cell(
+        "import json\n"
         "from sklearn.compose import ColumnTransformer\n"
         "from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor\n"
         "from sklearn.impute import SimpleImputer\n"
@@ -281,7 +270,7 @@ def _add_training_cells(cells: list[dict], session):
 
     for run in runs:
         cells.append(_code_cell(
-            f"run = {_json_literal(run)}\n\n"
+            f"run = {_py_embed(run)}\n\n"
             "print(run['name'])\n"
             "print('target:', run['target'])\n"
             "print('problem_type:', run['problem_type'])\n"
@@ -301,7 +290,8 @@ def _add_prediction_cells(cells: list[dict], session):
 
     cells.append(_markdown_cell("## Predictions Done"))
     cells.append(_code_cell(
-        f"saved_predictions = {_json_literal(list(predictions.values()))}\n\n"
+        "import json\n\n"
+        f"saved_predictions = {_py_embed(list(predictions.values()))}\n\n"
         "for prediction in saved_predictions:\n"
         "    print('target:', prediction.get('target'))\n"
         "    print('model:', prediction.get('model_name'))\n"
@@ -319,7 +309,8 @@ def _add_unsupervised_cells(cells: list[dict], session):
 
     cells.append(_markdown_cell("## Unsupervised Analysis Done"))
     cells.append(_code_cell(
-        f"unsupervised_results = {_json_literal(meaningful)}\n\n"
+        "import json\n\n"
+        f"unsupervised_results = {_py_embed(meaningful)}\n\n"
         "for name, result in unsupervised_results.items():\n"
         "    print(f'[{name}]')\n"
         "    for key, value in result.items():\n"

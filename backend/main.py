@@ -30,6 +30,7 @@ from . import automl
 from . import clean as clean_module
 from . import clean_chat
 from . import eda
+from . import geo
 from . import narrate
 from . import nlp
 from . import nb as nb_module
@@ -877,10 +878,38 @@ def undo_last_change(session_id: str):
 
 # ---------- Visualize ----------
 
+def _ensure_named_geojson(session) -> bool:
+    """
+    Choropleth normally requires an uploaded .geojson file. Most datasets
+    instead just have a plain column of country or US state *names*
+    (e.g. "Egypt", "Texas") with no boundary shapes attached.
+
+    If the session doesn't already have a GeoJSON, this tries to detect such
+    a column by actually matching its values against bundled country/US
+    state boundaries (backend/geo.py + backend/geo_data/). On a good match
+    it attaches a synthetic '_feature_index' column (join key, same
+    convention as an uploaded .geojson) and the matching boundaries, so the
+    rest of the choropleth code path works unchanged.
+
+    Returns True if geojson is available on the session after this call.
+    """
+    if session.geojson:
+        return True
+    col, level, matched = geo.find_name_column(session.df)
+    if not col:
+        return False
+    session.df["_feature_index"] = session.df[col].map(matched)
+    session.geojson = geo.load_geojson(level)
+    session.geo_name_col = col
+    session.geo_level = level
+    return True
+
+
 @app.get("/api/visualize/suggestions/{session_id}")
 def visualize_suggestions(session_id: str):
     session = _get_session_or_404(session_id)
     try:
+        _ensure_named_geojson(session)
         charts = viz.suggest_visuals(session.df, has_geojson=bool(session.geojson))
         if charts:
             session.last_visualization = charts[0]
@@ -944,27 +973,38 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
         df = _apply_compare_filter(session.df, filter_col, filter_values)
 
         if chart_type == "choropleth":
+            _ensure_named_geojson(session)
             if not session.geojson:
-                raise ValueError("Choropleth maps require an uploaded .geojson dataset.")
+                raise ValueError(
+                    "Couldn't build a choropleth: no .geojson was uploaded, and no column "
+                    "looked like recognizable country or US state names. Rename/check your "
+                    "location column, or upload a .geojson."
+                )
             if x not in df.columns:
                 raise ValueError(f"Column '{x}' not found.")
             if not pd.api.types.is_numeric_dtype(df[x]):
                 raise ValueError(f"'{x}' is not numeric. Choose a numeric value column for the choropleth.")
 
-            skip_cols = {"_geometry_type", "_feature_index", x}
-            text_cols = [
-                c for c in df.columns
-                if c not in skip_cols and not pd.api.types.is_numeric_dtype(df[c])
-            ]
-            name_hints = ("admin", "name", "country", "region", "county", "province", "state", "district", "city")
+            # If we auto-attached geojson via name-matching, we already know
+            # exactly which column matched — prefer that over the heuristic
+            # guess below (which is for the manually-uploaded .geojson case,
+            # where the geojson's own properties became the columns).
+            name_col = getattr(session, "geo_name_col", None)
+            if not name_col or name_col not in df.columns:
+                skip_cols = {"_geometry_type", "_feature_index", x}
+                text_cols = [
+                    c for c in df.columns
+                    if c not in skip_cols and not pd.api.types.is_numeric_dtype(df[c])
+                ]
+                name_hints = ("admin", "name", "country", "region", "county", "province", "state", "district", "city")
 
-            def name_score(col: str) -> float:
-                hint = 3 if any(h in col.lower() for h in name_hints) else 0
-                non_empty = df[col].dropna().astype(str).str.strip()
-                non_empty = non_empty[non_empty != ""]
-                return hint + (len(non_empty) / max(len(df), 1))
+                def name_score(col: str) -> float:
+                    hint = 3 if any(h in col.lower() for h in name_hints) else 0
+                    non_empty = df[col].dropna().astype(str).str.strip()
+                    non_empty = non_empty[non_empty != ""]
+                    return hint + (len(non_empty) / max(len(df), 1))
 
-            name_col = max(text_cols, key=name_score) if text_cols else None
+                name_col = max(text_cols, key=name_score) if text_cols else None
             row_cols = ["_feature_index", x] + ([name_col] if name_col else [])
             rows = []
             for row in df[row_cols].to_dict("records"):
@@ -981,6 +1021,9 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
                 "name_col": name_col,
                 "rows": rows,
             }
+            insight = narrate.explain_chart("choropleth", x, df)
+            if insight:
+                chart["insight"] = insight
             session.last_visualization = chart
             return chart
 
@@ -988,6 +1031,9 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
         if filter_col:
             chart["filter_col"] = filter_col
             chart["filter_values"] = [v for v in (filter_values or "").split(",") if v != ""]
+        insight = narrate.explain_chart(chart_type, x, df, y=y, group=group)
+        if insight:
+            chart["insight"] = insight
         session.last_visualization = chart
         return chart
     except ValueError as e:
@@ -1351,10 +1397,35 @@ def download_work(session_id: str):
     )
 
 
+class ReportChartsRequest(BaseModel):
+    charts: list = []   # chart objects the user built in "Build a custom chart",
+                         # in the same shape returned by /api/visualize
+
+
+@app.post("/api/stage_charts/{session_id}")
+def stage_charts(session_id: str, req: ReportChartsRequest):
+    """
+    Save the frontend's full chart history on the session so the plain GET
+    .ipynb/.html downloads below can include every visualization the user
+    built — not just the most recent one.
+
+    This exists because a POST-with-a-blob-response download is unreliable
+    on several mobile browsers (the response never renders/downloads after
+    being opened in a new tab). The plain GET downloads use a real
+    Content-Disposition-driven top-level navigation instead, which is the
+    same reliable mechanism the working CSV/Excel/.md downloads already
+    use — it just can't carry a POST body, hence staging the charts here
+    first, then navigating to the GET endpoint.
+    """
+    session = _get_session_or_404(session_id)
+    session.staged_charts = req.charts or []
+    return {"ok": True, "charts_staged": len(session.staged_charts)}
+
+
 @app.get("/api/download_html/{session_id}")
 def download_html(session_id: str):
     session = _get_session_or_404(session_id)
-    report = _build_html_report(session).encode("utf-8")
+    report = _build_html_report(session, extra_charts=session.staged_charts).encode("utf-8")
     buf = io.BytesIO(report)
     name = session.filename.rsplit(".", 1)[0]
     return StreamingResponse(
@@ -1362,11 +1433,6 @@ def download_html(session_id: str):
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html"},
     )
-
-
-class ReportChartsRequest(BaseModel):
-    charts: list = []   # chart objects the user built in "Build a custom chart",
-                         # in the same shape returned by /api/visualize
 
 
 @app.post("/api/download_html/{session_id}")
@@ -1913,12 +1979,12 @@ def unsupervised_association(session_id: str, req: dict):
 
 @app.get("/api/download_notebook/{session_id}")
 def download_notebook(session_id: str):
-    """Download a fully self-contained .ipynb with all AutoDS functions
-    plus the current session data embedded as CSV. GET only has access to
-    the most recent chart (session.last_visualization) — use the POST
-    variant below to include the full visualization history."""
+    """Download a fully self-contained .ipynb with all AutoDS functions plus
+    the current session data embedded as CSV. Includes the full chart
+    history if it was staged first via /api/stage_charts (falls back to
+    just the most recent chart, session.last_visualization, otherwise)."""
     session = _get_session_or_404(session_id)
-    notebook_json = nb_module.build_notebook(session)
+    notebook_json = nb_module.build_notebook(session, charts=session.staged_charts)
     buf = io.BytesIO(notebook_json.encode("utf-8"))
     name = session.filename.rsplit(".", 1)[0]
     return StreamingResponse(

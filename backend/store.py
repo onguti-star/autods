@@ -131,12 +131,19 @@ class Session:
         self.chat_clean_log: list = []            # history of chat-based cleaning commands + results
         self.last_clean_options: dict = {}         # options used by the structured cleaning pipeline
         self.last_visualization: dict = {}         # latest chart payload produced by /api/visualize
+        self.staged_charts: list = []              # full chart history staged via /api/stage_charts, used by
+                                                      # the GET .ipynb/.html downloads (see main.py) so mobile
+                                                      # browsers can do a plain top-level download navigation
+                                                      # (reliable) instead of a POST + blob download (unreliable
+                                                      # on several mobile browsers)
         self._undo_stack: list = []               # snapshots of df taken before each cleaning change
         self.saved_runs: dict = {}                # run_id -> saved training snapshot (see main.py /api/train_runs)
         self.saved_predictions: dict = {}         # prediction_id -> prediction result snapshot
         self.unsupervised_results: dict = {}       # latest unsupervised analysis snapshots for reports
         self.progress_messages: list = []          # progress messages for long-running operations
         self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
+        self.geo_name_col: str | None = None         # column auto-matched to country/state names, if any
+        self.geo_level: str | None = None            # 'world' | 'us_states' — which bundled boundaries matched
         self.notes: str = ""                        # free-form user notes about this dataset, shown in downloads
         self.last_accessed: datetime = datetime.now()  # drives idle-eviction from memory; see evict_idle_sessions()
         # Persist to disk immediately on creation
