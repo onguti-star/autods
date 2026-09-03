@@ -688,7 +688,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="pred-row">
       <div class="pred-field"><label id="xLabel">Column (X)</label><select id="vizColX"></select></div>
-      <div class="pred-field" id="yWrap"><label>Column (Y)</label><select id="vizColY"></select></div>
+      <div class="pred-field" id="yWrap"><label id="yLabel">Column (Y)</label><select id="vizColY"></select></div>
       <div class="pred-field" id="groupWrap"><label id="groupLabel">Group / Size column</label><select id="vizGroup"></select></div>
       <div class="pred-field" id="histMinWrap"><label>X min</label><input type="number" id="histXMin" step="any" placeholder="auto"></div>
       <div class="pred-field" id="histMaxWrap"><label>X max</label><input type="number" id="histXMax" step="any" placeholder="auto"></div>
@@ -2680,7 +2680,12 @@ function selectChartType(el){
 
 function updateVizFieldVisibility(){
   const t = selectedChartType;
-  $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) ? "" : "none";
+  const isMap = t === "scatter_map" || t === "heatmap_map";
+  // scatter_map/heatmap_map need BOTH lat (x) and lon (y) — this was missing
+  // Y entirely, which forced people to put longitude into the Group field
+  // (mislabeled "Group by") and then hit "Scatter map needs latitude and
+  // longitude columns" with no Y field visible to fix it.
+  $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) || isMap ? "" : "none";
   $("groupWrap").style.display = t === "choropleth" ? "none" : "";   // group by works with most chart types
   $("histMinWrap").style.display = t === "histogram" ? "" : "none";
   $("histMaxWrap").style.display = t === "histogram" ? "" : "none";
@@ -2689,8 +2694,9 @@ function updateVizFieldVisibility(){
   $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
   $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
-  $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : "Column (X)";
-  $("groupLabel").textContent = t === "bubble" ? "Size column" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
+  $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : isMap ? "Latitude" : "Column (X)";
+  $("yLabel").textContent = isMap ? "Longitude" : "Column (Y)";
+  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
 
 }
 updateVizFieldVisibility();
@@ -2820,15 +2826,17 @@ $("vizBtn").addEventListener("click", async () => {
     }
     return;
   }
-  if(["scatter","line","bubble","area"].includes(t) && !y){
-    $("vizError").textContent = "This chart type needs a Y column too.";
+  if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t) && !y){
+    $("vizError").textContent = t === "scatter_map" || t === "heatmap_map"
+      ? "Pick both a Latitude and a Longitude column."
+      : "This chart type needs a Y column too.";
     show("vizError");
     return;
   }
 
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
-  if(["scatter","line","bubble","area"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
-  if(["boxplot","bubble"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
+  if(["boxplot","bubble","scatter_map","heatmap_map"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
 
   // Power BI-style compare/slicer filter: only send it when a column is
   // picked AND at least one (but not every) value is checked — "all
@@ -3520,6 +3528,10 @@ function drawChart(canvasId, ch){
         loadingBadge.remove();
 
         const map = L.map(mapDiv, {preferCanvas: false, zoomControl: true, scrollWheelZoom: false}).setView([20, 15], 2);
+        // A soft ocean colour behind the tile layer so the map still looks
+        // intentional (not broken/blank) on the split-second before tiles
+        // load, or if a tile request drops on a slow connection.
+        mapDiv.style.background = "#dbe9f1";
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           attribution: "© OpenStreetMap contributors", maxZoom: 19, opacity: 0.72
         }).addTo(map);
@@ -3676,16 +3688,47 @@ function drawChart(canvasId, ch){
           const zoom = map.getZoom();
           const maxLabels = zoom <= 2 ? 42 : zoom === 3 ? 82 : 180;
           const minSpan = zoom <= 2 ? 35 : zoom === 3 ? 10 : 0;
+          const fontSize = zoom <= 2 ? 9 : 10;
+          // Rough per-character pixel width for this monospace font/size —
+          // used to estimate each label's on-screen box so we can check for
+          // real overlap, not just guess by country area. Deliberately
+          // generous (wider than the raw glyph advance width) because the
+          // bold weight + multi-directional white halo around each letter
+          // visually eats into neighbouring labels even when the plain text
+          // boxes wouldn't quite touch — an earlier, tighter estimate still
+          // let a few pairs (e.g. Saudi Arabia / India) visually collide.
+          const charWidth = fontSize * 0.78;
+          const placedBoxes = []; // {left, right, top, bottom} in container pixels
+
+          function overlaps(box){
+            const pad = 8; // generous breathing room between labels, incl. halo bleed
+            return placedBoxes.some(b =>
+              box.left   - pad < b.right &&
+              box.right  + pad > b.left &&
+              box.top    - pad < b.bottom &&
+              box.bottom + pad > b.top
+            );
+          }
+
           labelItems
             .filter(item => item.span >= minSpan)
-            .slice(0, maxLabels)
             .forEach(item => {
+              if(placedBoxes.length >= maxLabels) return;
               const shortName = item.name.length > 18 ? item.name.slice(0, 16) + "." : item.name;
+              const point = map.latLngToContainerPoint(item.center);
+              const halfW = (shortName.length * charWidth) / 2;
+              const halfH = fontSize * 1.0;
+              const box = {
+                left: point.x - halfW, right: point.x + halfW,
+                top: point.y - halfH, bottom: point.y + halfH,
+              };
+              if(overlaps(box)) return;   // would collide with an already-placed (larger/higher-priority) label — skip it rather than garble both
+              placedBoxes.push(box);
               L.marker(item.center, {
                 interactive: false,
                 icon: L.divIcon({
                   className: "",
-                  html: `<div style="transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;font-family:'IBM Plex Mono',monospace;font-size:${zoom <= 2 ? 9 : 10}px;font-weight:700;color:#07131f;text-shadow:0 1px 0 rgba(255,255,255,0.95),1px 0 0 rgba(255,255,255,0.95),0 -1px 0 rgba(255,255,255,0.95),-1px 0 0 rgba(255,255,255,0.95),0 2px 5px rgba(255,255,255,0.8);">${escapeHtml(shortName)}</div>`,
+                  html: `<div style="transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;font-family:'IBM Plex Mono',monospace;font-size:${fontSize}px;font-weight:700;color:#07131f;text-shadow:0 1px 0 rgba(255,255,255,0.95),1px 0 0 rgba(255,255,255,0.95),0 -1px 0 rgba(255,255,255,0.95),-1px 0 0 rgba(255,255,255,0.95),0 2px 5px rgba(255,255,255,0.8);">${escapeHtml(shortName)}</div>`,
                   iconSize: [0, 0],
                   iconAnchor: [0, 0],
                 })

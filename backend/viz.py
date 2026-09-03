@@ -201,110 +201,6 @@ def _area_data(df: pd.DataFrame, x: str, y: str) -> dict:
     }
 
 
-def _split_cols(value: str | None) -> list[str]:
-    """Split a comma-separated column list (sent by the frontend's Y
-    multi-select) into a clean list of column names."""
-    if not value:
-        return []
-    return [c.strip() for c in value.split(",") if c.strip()]
-
-
-def _multi_series_xy(df: pd.DataFrame, x: str, ys: list[str], max_points: int = MAX_LINE_POINTS) -> dict:
-    """
-    Build one aligned series per Y column so several numeric columns (e.g.
-    separate 'male' and 'female' columns) can be compared against the same
-    X-axis on one chart. Rows sharing an X value are aggregated (mean) so
-    each X tick maps to exactly one point per series.
-    """
-    cols = [x] + ys
-    sub = df[cols].dropna(subset=[x])
-    sub = sub.dropna(subset=ys, how="all")
-    if sub.empty:
-        return {
-            "labels": [], "series": [{"name": y, "values": []} for y in ys],
-            "sampled": False, "total_points": 0, "shown_points": 0,
-        }
-
-    grouped = sub.groupby(x, as_index=False, sort=True)[ys].mean()
-    total_points = len(grouped)
-    sampled = False
-
-    if total_points > max_points:
-        sampled = True
-        if pd.api.types.is_numeric_dtype(grouped[x]):
-            bin_idx = pd.cut(grouped[x], bins=max_points, labels=False, duplicates="drop")
-            grouped = grouped.groupby(bin_idx, observed=True).mean().reset_index(drop=True)
-        else:
-            idx = np.linspace(0, total_points - 1, max_points).astype(int)
-            grouped = grouped.iloc[idx].reset_index(drop=True)
-
-    if pd.api.types.is_numeric_dtype(grouped[x]):
-        xs = [float(v) for v in grouped[x]]
-    else:
-        xs = [str(v) for v in grouped[x]]
-
-    series = [
-        {"name": y, "values": [None if pd.isna(v) else float(v) for v in grouped[y]]}
-        for y in ys
-    ]
-    return {
-        "labels": xs, "series": series,
-        "sampled": sampled, "total_points": total_points, "shown_points": len(grouped),
-    }
-
-
-def _grouped_series_xy(df: pd.DataFrame, x: str, y: str, group_col: str,
-                        max_points: int = MAX_LINE_POINTS, max_series: int = 12) -> dict:
-    """
-    Split a single numeric Y column into one series per distinct value of
-    group_col, aligned on a shared X-axis — mirrors Power BI's "Legend"
-    field (e.g. one line per 'Indicator_name', X-axis 'Year', Y-axis
-    'Value'). Rows sharing the same (x, group) pair are summed, matching
-    Power BI's default "Sum of Value" aggregation.
-    """
-    cols = [x, y, group_col]
-    sub = df[cols].dropna(subset=[x, y, group_col])
-    if sub.empty:
-        return {"labels": [], "series": [], "sampled": False, "total_points": 0, "shown_points": 0, "truncated_groups": False}
-
-    value_counts = sub[group_col].value_counts()
-    top_groups = value_counts.head(max_series).index.tolist()
-    truncated_groups = len(value_counts) > max_series
-    sub = sub[sub[group_col].isin(top_groups)]
-
-    pivot = sub.groupby([x, group_col], as_index=False)[y].sum()
-    wide = pivot.pivot(index=x, columns=group_col, values=y).sort_index()
-
-    total_points = len(wide)
-    sampled = False
-    if total_points > max_points:
-        sampled = True
-        if pd.api.types.is_numeric_dtype(wide.index):
-            bin_idx = pd.cut(wide.index.to_series(index=wide.index), bins=max_points, labels=False, duplicates="drop")
-            wide = wide.groupby(bin_idx, observed=True).mean()
-        else:
-            idx = np.linspace(0, total_points - 1, max_points).astype(int)
-            wide = wide.iloc[idx]
-
-    if pd.api.types.is_numeric_dtype(wide.index):
-        xs = [float(v) for v in wide.index]
-    else:
-        xs = [str(v) for v in wide.index]
-
-    series = []
-    for g in top_groups:
-        if g not in wide.columns:
-            continue
-        vals = wide[g]
-        series.append({"name": str(g), "values": [None if pd.isna(v) else float(v) for v in vals]})
-
-    return {
-        "labels": xs, "series": series,
-        "sampled": sampled, "total_points": total_points, "shown_points": len(wide),
-        "truncated_groups": truncated_groups,
-    }
-
-
 def _violin_data(df: pd.DataFrame, x: str, group_col: str = None) -> dict:
     """Generate data for violin plot - distribution with density."""
     def compute_violin_stats(s):
@@ -314,6 +210,7 @@ def _violin_data(df: pd.DataFrame, x: str, group_col: str = None) -> dict:
         
         # Create bins for violin shape
         try:
+            import numpy as np
             bins = min(20, max(5, len(s) // 10))
             counts, edges = np.histogram(s, bins=bins)
             # Normalize counts
@@ -542,38 +439,6 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
         }
 
     if chart_type == "bar":
-        # Legend/series split (Power BI style): one set of bars per group_col
-        # value, e.g. compare 'male' vs 'female' Value across 'Year'.
-        if group and y:
-            if group not in df.columns:
-                raise ValueError(f"Column '{group}' not found.")
-            if y not in df.columns:
-                raise ValueError(f"Column '{y}' not found.")
-            if not pd.api.types.is_numeric_dtype(df[y]):
-                raise ValueError(f"'{y}' must be numeric to compare on a bar chart.")
-            multi = _grouped_series_xy(df, x, y, group, max_points=200)
-            caption = f"Sum of '{y}' for each '{x}', split by '{group}'."
-            if multi["truncated_groups"]:
-                caption += f" Showing the {len(multi['series'])} largest '{group}' groups."
-            return {"type": "bar", "x": x, "y": y, "group": group,
-                    "x_label": x, "y_label": y, "caption": caption, **multi}
-
-        # Wide-format compare: two or more separate numeric Y columns
-        # plotted as grouped bars against the same X.
-        ys = _split_cols(y)
-        if ys:
-            for col in ys:
-                if col not in df.columns:
-                    raise ValueError(f"Column '{col}' not found.")
-                if not pd.api.types.is_numeric_dtype(df[col]):
-                    raise ValueError(f"'{col}' must be numeric to compare on a bar chart.")
-            multi = _multi_series_xy(df, x, ys, max_points=200)
-            caption = f"Average of {', '.join(ys)} for each '{x}'."
-            if multi["sampled"]:
-                caption += f" (Grouped into {multi['shown_points']:,} '{x}' buckets from {multi['total_points']:,} distinct values.)"
-            return {"type": "bar", "x": x, "y_columns": ys,
-                    "x_label": x, "y_label": "Average value", "caption": caption, **multi}
-
         top_n = min(max(int(bar_limit), 1), 1000) if bar_limit is not None else None
         bar = _bar_data(s, top_n=top_n)
         total_categories = s.nunique(dropna=True)
@@ -644,51 +509,19 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
         }
 
     if chart_type == "line":
-        # Legend/series split (Power BI style): one line per group_col value,
-        # e.g. 'Indicator_name' = male vs female, X-axis 'Year', Y-axis 'Value'.
-        if group and y:
-            if group not in df.columns:
-                raise ValueError(f"Column '{group}' not found.")
-            if y not in df.columns:
-                raise ValueError(f"Column '{y}' not found.")
-            if not pd.api.types.is_numeric_dtype(df[y]):
-                raise ValueError(f"'{y}' must be numeric for a line chart.")
-            multi = _grouped_series_xy(df, x, y, group)
-            caption = f"'{y}' over '{x}', split by '{group}'."
-            if multi["truncated_groups"]:
-                caption += f" Showing the {len(multi['series'])} largest '{group}' groups."
-            if multi["sampled"]:
-                caption += f" (Showing {multi['shown_points']:,} points aggregated from {multi['total_points']:,} rows.)"
-            return {"type": "line", "x": x, "y": y, "group": group,
-                    "x_label": x, "y_label": y, "caption": caption, **multi}
-
-        # Wide-format compare: two or more separate numeric Y columns (e.g.
-        # 'male' and 'female' columns) plotted as separate lines over X.
-        ys = _split_cols(y)
-        if not ys:
+        if not y or y not in df.columns:
             raise ValueError("Line chart needs a Y column.")
-        for col in ys:
-            if col not in df.columns:
-                raise ValueError(f"Column '{col}' not found.")
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                raise ValueError(f"'{col}' must be numeric for a line chart.")
-
-        if len(ys) == 1:
-            line = _line_data(df, x, ys[0])
-            if line["sampled"]:
-                caption = (
-                    f"'{ys[0]}' over '{x}' — showing {line['shown_points']:,} points aggregated "
-                    f"(averaged) from {line['total_points']:,} rows to keep the chart readable and fast."
-                )
-            else:
-                caption = f"'{ys[0]}' plotted over '{x}' for all {line['total_points']:,} rows."
-            return {"type": "line", "x": x, "y": ys[0], "x_label": x, "y_label": ys[0], "caption": caption, **line}
-
-        multi = _multi_series_xy(df, x, ys)
-        caption = f"Comparing {', '.join(ys)} over '{x}'."
-        if multi["sampled"]:
-            caption += f" (Showing {multi['shown_points']:,} points aggregated from {multi['total_points']:,} rows.)"
-        return {"type": "line", "x": x, "y_columns": ys, "x_label": x, "y_label": "Value", "caption": caption, **multi}
+        if not pd.api.types.is_numeric_dtype(df[y]):
+            raise ValueError(f"'{y}' must be numeric for a line chart.")
+        line = _line_data(df, x, y)
+        if line["sampled"]:
+            caption = (
+                f"'{y}' over '{x}' — showing {line['shown_points']:,} points aggregated "
+                f"(averaged) from {line['total_points']:,} rows to keep the chart readable and fast."
+            )
+        else:
+            caption = f"'{y}' plotted over '{x}' for all {line['total_points']:,} rows."
+        return {"type": "line", "x": x, "y": y, "x_label": x, "y_label": y, "caption": caption, **line}
 
 
     if chart_type == "word_frequency":
@@ -717,64 +550,26 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
         return _treemap_data(s)
 
     if chart_type == "radar":
-        ys = _split_cols(y)
-        if not ys:
+        if not y:
             raise ValueError("Radar chart needs numeric columns.")
-        cols = [x] + ys
-        seen = set()
-        deduped = []
-        for c in cols:
-            if c in df.columns and pd.api.types.is_numeric_dtype(df[c]) and c not in seen:
-                seen.add(c)
-                deduped.append(c)
-        if not deduped:
+        cols = [x] + ([y] if y and y != x else [])
+        cols = [c for c in cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+        if not cols:
             raise ValueError("Radar chart needs at least one numeric column.")
-        return _radar_data(df, deduped, group)
+        return _radar_data(df, cols, group)
 
     if chart_type == "area":
-        # Legend/series split (Power BI style): one filled series per
-        # group_col value, e.g. male vs female Value over Year.
-        if group and y:
-            if group not in df.columns:
-                raise ValueError(f"Column '{group}' not found.")
-            if y not in df.columns:
-                raise ValueError(f"Column '{y}' not found.")
-            if not pd.api.types.is_numeric_dtype(df[y]):
-                raise ValueError(f"'{y}' must be numeric for an area chart.")
-            multi = _grouped_series_xy(df, x, y, group)
-            caption = f"'{y}' over '{x}', split by '{group}' (area)."
-            if multi["truncated_groups"]:
-                caption += f" Showing the {len(multi['series'])} largest '{group}' groups."
-            if multi["sampled"]:
-                caption += f" (Showing {multi['shown_points']:,} points aggregated from {multi['total_points']:,} rows.)"
-            return {"type": "area", "x": x, "y": y, "group": group,
-                    "x_label": x, "y_label": y, "caption": caption, **multi}
-
-        ys = _split_cols(y)
-        if not ys:
+        if not y or y not in df.columns:
             raise ValueError("Area chart needs a Y column.")
-        for col in ys:
-            if col not in df.columns:
-                raise ValueError(f"Column '{col}' not found.")
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                raise ValueError(f"'{col}' must be numeric for an area chart.")
-
-        if len(ys) == 1:
-            area = _area_data(df, x, ys[0])
-            if area["sampled"]:
-                caption = (
-                    f"'{ys[0]}' over '{x}' — showing {area['shown_points']:,} points aggregated "
-                    f"(averaged) from {area['total_points']:,} rows to keep the chart readable and fast."
-                )
-            else:
-                caption = f"'{ys[0]}' plotted over '{x}' for all {area['total_points']:,} rows."
-            return {"x": x, "y": ys[0], "x_label": x, "y_label": ys[0], "caption": caption, **area}
-
-        multi = _multi_series_xy(df, x, ys)
-        caption = f"Comparing {', '.join(ys)} over '{x}' (area)."
-        if multi["sampled"]:
-            caption += f" (Showing {multi['shown_points']:,} points aggregated from {multi['total_points']:,} rows.)"
-        return {"type": "area", "x": x, "y_columns": ys, "x_label": x, "y_label": "Value", "caption": caption, **multi}
+        area = _area_data(df, x, y)
+        if area["sampled"]:
+            caption = (
+                f"'{y}' over '{x}' — showing {area['shown_points']:,} points aggregated "
+                f"(averaged) from {area['total_points']:,} rows to keep the chart readable and fast."
+            )
+        else:
+            caption = f"'{y}' plotted over '{x}' for all {area['total_points']:,} rows."
+        return {"x_label": x, "y_label": y, "caption": caption, **area}
 
     if chart_type == "violin":
         if not pd.api.types.is_numeric_dtype(s):
@@ -790,6 +585,19 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
         if not y or y not in df.columns:
             raise ValueError("Scatter map needs latitude and longitude columns.")
         return _scatter_map_data(df, x, y, group)
+
+    if chart_type == "heatmap_map":
+        # Was only ever produced as a pre-built auto-suggestion (see
+        # suggest_visuals below) — requesting it directly (e.g. from "Build
+        # a custom chart") always hit "Unknown chart type 'heatmap_map'"
+        # below instead. Same underlying data as scatter_map, just allows
+        # more points since density is the point, and doesn't need a
+        # size/color column.
+        if not y or y not in df.columns:
+            raise ValueError("Density heatmap needs latitude and longitude columns.")
+        result = _scatter_map_data(df, x, y, max_points=5000)
+        result["type"] = "heatmap_map"
+        return result
 
     if chart_type == "choropleth":
         raise ValueError("Choropleth maps require GeoJSON data. Use the GeoJSON upload option.")
