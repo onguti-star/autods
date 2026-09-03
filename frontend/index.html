@@ -8,6 +8,18 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  /* Flatter, cleaner Leaflet chrome for the choropleth map — matches the
+     rest of the light legend/status cards instead of Leaflet's stock
+     boxy-gray-button look. */
+  .map-container .leaflet-control-zoom{border:none!important;box-shadow:0 2px 10px rgba(23,38,58,0.14)!important;border-radius:6px!important;overflow:hidden;}
+  .map-container .leaflet-control-zoom a{background:#ffffff!important;color:#33465d!important;border:none!important;border-bottom:1px solid #eef1f5!important;width:28px!important;height:28px!important;line-height:28px!important;font-weight:600;}
+  .map-container .leaflet-control-zoom a:last-child{border-bottom:none!important;}
+  .map-container .leaflet-control-zoom a:hover{background:#f4f7fa!important;color:#0d1b2e!important;}
+  .map-container .leaflet-control-attribution{background:rgba(255,255,255,0.75)!important;font-family:'IBM Plex Sans',sans-serif;font-size:9px!important;color:#8493a8!important;padding:1px 6px!important;border-radius:3px 0 0 0;}
+  .choropleth-tooltip{background:#ffffff!important;border:none!important;box-shadow:0 4px 16px rgba(23,38,58,0.2)!important;border-radius:6px!important;padding:8px 11px!important;}
+  .choropleth-tooltip::before{border-top-color:#ffffff!important;}
+</style>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 :root{--bg:#0d1b2e;--bg-grid:#16273f;--panel:#112239;--panel-border:#24405f;--ink:#e9eef5;--ink-dim:#8fa3bc;--accent:#ffb627;--accent-dim:#c98f1c;--cyan:#5fd4d6;--good:#5fd98c;--bad:#ef6f6f;}
@@ -3527,14 +3539,18 @@ function drawChart(canvasId, ch){
       .then(geojson => {
         loadingBadge.remove();
 
-        const map = L.map(mapDiv, {preferCanvas: false, zoomControl: true, scrollWheelZoom: false}).setView([20, 15], 2);
-        // A soft ocean colour behind the tile layer so the map still looks
-        // intentional (not broken/blank) on the split-second before tiles
-        // load, or if a tile request drops on a slow connection.
-        mapDiv.style.background = "#dbe9f1";
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          attribution: "© OpenStreetMap contributors", maxZoom: 19, opacity: 0.72
+        const map = L.map(mapDiv, {preferCanvas: false, zoomControl: true, scrollWheelZoom: false, attributionControl: false}).setView([20, 15], 2);
+        // A soft, neutral ocean colour behind the tile layer — matches the
+        // flat, uncluttered basemap look (light gray land / pale water,
+        // no busy street-map detail) instead of a loud raster street tile.
+        // Esri's "Light Gray Base" canvas is free and keyless (unlike
+        // CARTO's hosted basemaps, which now require an API key and stamp
+        // an "API KEY REQUIRED" watermark across every tile without one).
+        mapDiv.style.background = "#eef1f5";
+        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+          attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 19, maxNativeZoom: 16, opacity: 1
         }).addTo(map);
+        L.control.attribution({position: "bottomleft", prefix: false}).addTo(map);
 
         // Build value lookup: feature index → value
         const valueCol = ch.value_col;
@@ -3632,10 +3648,10 @@ function drawChart(canvasId, ch){
           const v   = valueMap[idx];
           return {
             fillColor:   getColor(v),
-            fillOpacity: 0.86,
-            color:       "#17263a",
-            weight:      0.9,
-            opacity:     0.9,
+            fillOpacity: 0.88,
+            color:       "#ffffff",
+            weight:      0.7,
+            opacity:     1,
           };
         }
 
@@ -3644,14 +3660,14 @@ function drawChart(canvasId, ch){
           const v    = valueMap[idx];
           const name = nameMap[idx] || feature.properties?.NAME || feature.properties?.name || `Feature ${idx}`;
           layer.bindTooltip(
-            `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.45;color:#17263a;">
-               <strong style="color:#0d1b2e;">${escapeHtml(String(name))}</strong><br>
-               <span style="color:#556575;">${escapeHtml(valueCol)}:</span> <strong>${fmtValue(v)}</strong>
+            `<div style="font-family:'IBM Plex Sans',sans-serif;font-size:12px;line-height:1.5;color:#1c2b3d;">
+               <strong style="display:block;font-size:12.5px;color:#0d1b2e;margin-bottom:2px;">${escapeHtml(String(name))}</strong>
+               <span style="color:#66758a;">${escapeHtml(valueCol)}</span> &nbsp;<strong>${fmtValue(v)}</strong>
              </div>`,
-            {sticky: true}
+            {sticky: true, className: "choropleth-tooltip"}
           );
           layer.on({
-            mouseover(e){ e.target.setStyle({weight:2.3,color:"#0d1b2e",fillOpacity:0.98}); e.target.bringToFront?.(); },
+            mouseover(e){ e.target.setStyle({weight:2,color:"#0d1b2e",fillOpacity:1}); e.target.bringToFront?.(); },
             mouseout(e){ geoLayer.resetStyle(e.target); },
           });
         }
@@ -3686,18 +3702,19 @@ function drawChart(canvasId, ch){
         function updateCountryLabels(){
           labelLayer.clearLayers();
           const zoom = map.getZoom();
-          const maxLabels = zoom <= 2 ? 42 : zoom === 3 ? 82 : 180;
-          const minSpan = zoom <= 2 ? 35 : zoom === 3 ? 10 : 0;
-          const fontSize = zoom <= 2 ? 9 : 10;
-          // Rough per-character pixel width for this monospace font/size —
+          // Fewer, larger-region-only labels at low zoom — a clean map shows
+          // just the handful of names that matter, not every sliver country,
+          // which is what made the old view feel cluttered.
+          const maxLabels = zoom <= 2 ? 22 : zoom === 3 ? 55 : 140;
+          const minSpan = zoom <= 2 ? 90 : zoom === 3 ? 14 : 0;
+          const fontSize = zoom <= 2 ? 10 : 11;
+          // Rough per-character pixel width for this sans-serif font/size —
           // used to estimate each label's on-screen box so we can check for
           // real overlap, not just guess by country area. Deliberately
-          // generous (wider than the raw glyph advance width) because the
-          // bold weight + multi-directional white halo around each letter
-          // visually eats into neighbouring labels even when the plain text
-          // boxes wouldn't quite touch — an earlier, tighter estimate still
-          // let a few pairs (e.g. Saudi Arabia / India) visually collide.
-          const charWidth = fontSize * 0.78;
+          // generous (wider than the raw glyph advance width) so a soft
+          // halo around each letter can't visually collide with a neighbour
+          // even when the plain text boxes wouldn't quite touch.
+          const charWidth = fontSize * 0.62;
           const placedBoxes = []; // {left, right, top, bottom} in container pixels
 
           function overlaps(box){
@@ -3728,7 +3745,7 @@ function drawChart(canvasId, ch){
                 interactive: false,
                 icon: L.divIcon({
                   className: "",
-                  html: `<div style="transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;font-family:'IBM Plex Mono',monospace;font-size:${fontSize}px;font-weight:700;color:#07131f;text-shadow:0 1px 0 rgba(255,255,255,0.95),1px 0 0 rgba(255,255,255,0.95),0 -1px 0 rgba(255,255,255,0.95),-1px 0 0 rgba(255,255,255,0.95),0 2px 5px rgba(255,255,255,0.8);">${escapeHtml(shortName)}</div>`,
+                  html: `<div style="transform:translate(-50%,-50%);white-space:nowrap;pointer-events:none;font-family:'IBM Plex Sans',sans-serif;font-size:${fontSize}px;font-weight:600;letter-spacing:.1px;color:#26364a;text-shadow:0 0 3px #fff,0 0 3px #fff,0 1px 2px rgba(255,255,255,0.9);">${escapeHtml(shortName)}</div>`,
                   iconSize: [0, 0],
                   iconAnchor: [0, 0],
                 })
@@ -3743,32 +3760,32 @@ function drawChart(canvasId, ch){
         const status = L.control({position:"topleft"});
         status.onAdd = () => {
           const d = L.DomUtil.create("div");
-          d.style.cssText = "background:rgba(13,27,46,0.92);border:1px solid rgba(255,255,255,0.16);padding:7px 10px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.45;color:#e9eef5;";
-          d.innerHTML = `<strong style="color:#5fd4d6;">${escapeHtml(valueCol)}</strong><br>${mappedCount.toLocaleString()} / ${featureCount.toLocaleString()} regions mapped`;
+          d.style.cssText = "background:#ffffff;box-shadow:0 2px 10px rgba(23,38,58,0.12);padding:8px 12px;border-radius:6px;font-family:'IBM Plex Sans',sans-serif;font-size:11px;line-height:1.5;color:#33465d;";
+          d.innerHTML = `<div style="font-weight:600;color:#0d1b2e;">${escapeHtml(valueCol)}</div><div style="color:#7c8ba0;">${mappedCount.toLocaleString()} of ${featureCount.toLocaleString()} regions mapped</div>`;
           return d;
         };
         status.addTo(map);
 
-        // Legend
+        // Legend — a clean, minimal card with a smooth gradient bar rather
+        // than boxy discrete swatches, closer to a BI-tool ("Looker Studio"
+        // style) choropleth legend.
         const legend = L.control({position:"bottomright"});
         legend.onAdd = () => {
           const d = L.DomUtil.create("div");
-          d.style.cssText = "background:rgba(255,255,255,0.96);box-shadow:0 8px 24px rgba(0,0,0,0.18);padding:10px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.55;color:#17263a;min-width:190px;";
-          const steps = 5;
-          d.innerHTML = `<div style="font-weight:bold;margin-bottom:2px;color:#0d1b2e;">${escapeHtml(valueCol)}</div>
-            <div style="color:#556575;margin-bottom:6px;">${escapeHtml(scaleNames[colorScale] || "Viridis")} · ${valueScale === "log" ? "Log" : "Linear"} scale</div>
-            <div style="height:10px;border-radius:2px;background:${rampGradient(ramp)};border:1px solid #d0d7de;margin-bottom:5px;"></div>
-            <div style="display:flex;justify-content:space-between;color:#556575;margin-bottom:7px;"><span>${fmtValue(minVal)}</span><span>${fmtValue(maxVal)}</span></div>` +
-            Array.from({length:steps}, (_,i) => {
-              const scaled = minScaled + (maxScaled - minScaled) * (steps-1-i) / (steps-1);
-              const v   = untransformValue(scaled);
-              const col = getColor(v);
-              return `<div style="display:flex;align-items:center;gap:6px;">
-                <span style="width:18px;height:12px;background:${col};display:inline-block;border:1px solid #9aa7b4;"></span>
-                <span>${fmtValue(v)}</span></div>`;
-            }).join("") +
-            `<div style="display:flex;align-items:center;gap:6px;margin-top:5px;color:#556575;">
-              <span style="width:18px;height:12px;background:#b8c1cc;display:inline-block;border:1px solid #9aa7b4;"></span>
+          d.style.cssText = "background:#ffffff;box-shadow:0 4px 18px rgba(23,38,58,0.16);padding:12px 14px;border-radius:8px;font-family:'IBM Plex Sans',sans-serif;font-size:11px;line-height:1.5;color:#1c2b3d;min-width:180px;";
+          const steps = 4;
+          const midLabels = Array.from({length:steps}, (_,i) => {
+            const scaled = minScaled + (maxScaled - minScaled) * i / (steps - 1);
+            return fmtValue(untransformValue(scaled));
+          });
+          d.innerHTML = `<div style="font-weight:600;color:#0d1b2e;margin-bottom:1px;">${escapeHtml(valueCol)}</div>
+            <div style="color:#8493a8;font-size:10px;margin-bottom:8px;">${valueScale === "log" ? "Log scale" : "Linear scale"}</div>
+            <div style="height:8px;border-radius:4px;background:${rampGradient(ramp)};margin-bottom:5px;"></div>
+            <div style="display:flex;justify-content:space-between;color:#5c6b80;font-size:10px;">` +
+              midLabels.map(v => `<span>${v}</span>`).join("") +
+            `</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:10px;padding-top:8px;border-top:1px solid #eef1f5;color:#8493a8;font-size:10px;">
+              <span style="width:12px;height:12px;border-radius:3px;background:#dbe1e8;display:inline-block;"></span>
               <span>No data</span></div>`;
           return d;
         };

@@ -83,6 +83,7 @@ _COUNTRY_ALIASES = {
     "moldova republic of": "Moldova", "iran islamic republic of": "Iran",
     "venezuela bolivarian republic of": "Venezuela", "bolivia plurinational state of": "Bolivia",
     "guinea bissau": "Guinea Bissau",
+    "west bank": "Palestine", "palestinian territories": "Palestine", "gaza": "Palestine",
 }
 
 _US_STATE_ABBR = {
