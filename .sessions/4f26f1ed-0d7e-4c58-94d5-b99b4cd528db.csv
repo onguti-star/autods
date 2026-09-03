@@ -1,0 +1,11 @@
+Country_Code,Country_Name,Latitude,Longitude,GDP_Nominal_Billion_USD,GDP_Per_Capita_USD,Economic_Status,Major_Export_Sector
+USA,United States,37.0902,-95.7129,28780,85400,Advanced,Technology & Services
+CHN,China,35.8617,104.1954,18530,13100,Emerging,Manufacturing & Electronics
+DEU,Germany,51.1657,10.4515,4590,54300,Advanced,Automotive & Machinery
+JPN,Japan,36.2048,138.2529,4110,33100,Advanced,Electronics & Vehicles
+IND,India,20.5937,78.9629,3940,2700,Emerging,IT Services & Pharmaceuticals
+GBR,United Kingdom,55.3781,-3.436,3500,51200,Advanced,Financial Services
+FRA,France,46.2276,2.2137,3130,4750,Advanced,Aerospace & Luxury Goods
+BRA,Brazil,-14.235,-51.9253,2330,11300,Emerging,Agriculture & Mining
+CAN,Canada,56.1304,-106.3468,2240,55100,Advanced,Energy & Natural Resources
+KEN,Kenya,-1.2864,36.8172,115,2200,Developing,Agriculture & Tourism

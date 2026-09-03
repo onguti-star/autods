@@ -9,6 +9,309 @@ import json
 from datetime import datetime
 from typing import Any
 
+# Country name -> ISO-3 code, matching the exact canonical names used by
+# backend/geo_data/world_countries.geojson (see geo.py) -- lets exported
+# notebooks build a Plotly choropleth without needing that boundary file.
+_NAME_TO_ISO3 = {
+    "Zimbabwe": "ZWE",
+    "Zambia": "ZMB",
+    "Yemen": "YEM",
+    "Vietnam": "VNM",
+    "Venezuela": "VEN",
+    "Vatican": "VAT",
+    "Vanuatu": "VUT",
+    "Uzbekistan": "UZB",
+    "Uruguay": "URY",
+    "Federated States of Micronesia": "FSM",
+    "Marshall Islands": "MHL",
+    "Northern Mariana Islands": "MNP",
+    "United States Virgin Islands": "VIR",
+    "Guam": "GUM",
+    "American Samoa": "ASM",
+    "Puerto Rico": "PRI",
+    "United States of America": "USA",
+    "South Georgia and the Islands": "SGS",
+    "British Indian Ocean Territory": "IOT",
+    "Saint Helena": "SHN",
+    "Pitcairn Islands": "PCN",
+    "Anguilla": "AIA",
+    "Falkland Islands": "FLK",
+    "Cayman Islands": "CYM",
+    "Bermuda": "BMU",
+    "British Virgin Islands": "VGB",
+    "Turks and Caicos Islands": "TCA",
+    "Montserrat": "MSR",
+    "Jersey": "JEY",
+    "Guernsey": "GGY",
+    "Isle of Man": "IMN",
+    "United Kingdom": "GBR",
+    "United Arab Emirates": "ARE",
+    "Ukraine": "UKR",
+    "Uganda": "UGA",
+    "Turkmenistan": "TKM",
+    "Turkey": "TUR",
+    "Tunisia": "TUN",
+    "Trinidad and Tobago": "TTO",
+    "Tonga": "TON",
+    "Togo": "TGO",
+    "East Timor": "TLS",
+    "Thailand": "THA",
+    "United Republic of Tanzania": "TZA",
+    "Tajikistan": "TJK",
+    "Taiwan": "TWN",
+    "Syria": "SYR",
+    "Switzerland": "CHE",
+    "Sweden": "SWE",
+    "Swaziland": "SWZ",
+    "Suriname": "SUR",
+    "South Sudan": "SSD",
+    "Sudan": "SDN",
+    "Sri Lanka": "LKA",
+    "Spain": "ESP",
+    "South Korea": "KOR",
+    "South Africa": "ZAF",
+    "Somalia": "SOM",
+    "Somaliland": "SOL",
+    "Solomon Islands": "SLB",
+    "Slovakia": "SVK",
+    "Slovenia": "SVN",
+    "Singapore": "SGP",
+    "Sierra Leone": "SLE",
+    "Seychelles": "SYC",
+    "Republic of Serbia": "SRB",
+    "Senegal": "SEN",
+    "Saudi Arabia": "SAU",
+    "São Tomé and Principe": "STP",
+    "San Marino": "SMR",
+    "Samoa": "WSM",
+    "Saint Vincent and the Grenadines": "VCT",
+    "Saint Lucia": "LCA",
+    "Saint Kitts and Nevis": "KNA",
+    "Rwanda": "RWA",
+    "Russia": "RUS",
+    "Romania": "ROU",
+    "Qatar": "QAT",
+    "Portugal": "PRT",
+    "Poland": "POL",
+    "Philippines": "PHL",
+    "Peru": "PER",
+    "Paraguay": "PRY",
+    "Papua New Guinea": "PNG",
+    "Panama": "PAN",
+    "Palau": "PLW",
+    "Pakistan": "PAK",
+    "Oman": "OMN",
+    "Norway": "NOR",
+    "North Korea": "PRK",
+    "Nigeria": "NGA",
+    "Niger": "NER",
+    "Nicaragua": "NIC",
+    "New Zealand": "NZL",
+    "Niue": "NIU",
+    "Cook Islands": "COK",
+    "Netherlands": "NLD",
+    "Aruba": "ABW",
+    "Curaçao": "CUW",
+    "Nepal": "NPL",
+    "Nauru": "NRU",
+    "Namibia": "NAM",
+    "Mozambique": "MOZ",
+    "Morocco": "MAR",
+    "Western Sahara": "ESH",
+    "Montenegro": "MNE",
+    "Mongolia": "MNG",
+    "Moldova": "MDA",
+    "Monaco": "MCO",
+    "Mexico": "MEX",
+    "Mauritius": "MUS",
+    "Mauritania": "MRT",
+    "Malta": "MLT",
+    "Mali": "MLI",
+    "Maldives": "MDV",
+    "Malaysia": "MYS",
+    "Malawi": "MWI",
+    "Madagascar": "MDG",
+    "Macedonia": "MKD",
+    "Luxembourg": "LUX",
+    "Lithuania": "LTU",
+    "Liechtenstein": "LIE",
+    "Libya": "LBY",
+    "Liberia": "LBR",
+    "Lesotho": "LSO",
+    "Lebanon": "LBN",
+    "Latvia": "LVA",
+    "Laos": "LAO",
+    "Kyrgyzstan": "KGZ",
+    "Kuwait": "KWT",
+    "Kosovo": "KOS",
+    "Kiribati": "KIR",
+    "Kenya": "KEN",
+    "Kazakhstan": "KAZ",
+    "Jordan": "JOR",
+    "Japan": "JPN",
+    "Jamaica": "JAM",
+    "Italy": "ITA",
+    "Israel": "ISR",
+    "Palestine": "PSE",
+    "Ireland": "IRL",
+    "Iraq": "IRQ",
+    "Iran": "IRN",
+    "Indonesia": "IDN",
+    "India": "IND",
+    "Iceland": "ISL",
+    "Hungary": "HUN",
+    "Honduras": "HND",
+    "Haiti": "HTI",
+    "Guyana": "GUY",
+    "Guinea-Bissau": "GNB",
+    "Guinea": "GIN",
+    "Guatemala": "GTM",
+    "Grenada": "GRD",
+    "Greece": "GRC",
+    "Ghana": "GHA",
+    "Germany": "DEU",
+    "Georgia": "GEO",
+    "Gambia": "GMB",
+    "Gabon": "GAB",
+    "France": "FRA",
+    "Saint Pierre and Miquelon": "SPM",
+    "Wallis and Futuna": "WLF",
+    "Saint Martin": "MAF",
+    "Saint Barthelemy": "BLM",
+    "French Polynesia": "PYF",
+    "New Caledonia": "NCL",
+    "French Southern and Antarctic Lands": "ATF",
+    "Aland": "ALA",
+    "Finland": "FIN",
+    "Fiji": "FJI",
+    "Ethiopia": "ETH",
+    "Estonia": "EST",
+    "Eritrea": "ERI",
+    "Equatorial Guinea": "GNQ",
+    "El Salvador": "SLV",
+    "Egypt": "EGY",
+    "Ecuador": "ECU",
+    "Dominican Republic": "DOM",
+    "Dominica": "DMA",
+    "Djibouti": "DJI",
+    "Greenland": "GRL",
+    "Faroe Islands": "FRO",
+    "Denmark": "DNK",
+    "Czech Republic": "CZE",
+    "Northern Cyprus": "CYN",
+    "Cyprus": "CYP",
+    "Cuba": "CUB",
+    "Croatia": "HRV",
+    "Ivory Coast": "CIV",
+    "Costa Rica": "CRI",
+    "Democratic Republic of the Congo": "COD",
+    "Republic of the Congo": "COG",
+    "Comoros": "COM",
+    "Colombia": "COL",
+    "China": "CHN",
+    "Macao S.A.R": "MAC",
+    "Hong Kong S.A.R.": "HKG",
+    "Chile": "CHL",
+    "Chad": "TCD",
+    "Central African Republic": "CAF",
+    "Cape Verde": "CPV",
+    "Canada": "CAN",
+    "Cameroon": "CMR",
+    "Cambodia": "KHM",
+    "Myanmar": "MMR",
+    "Burundi": "BDI",
+    "Burkina Faso": "BFA",
+    "Bulgaria": "BGR",
+    "Brunei": "BRN",
+    "Brazil": "BRA",
+    "Botswana": "BWA",
+    "Bosnia and Herzegovina": "BIH",
+    "Bolivia": "BOL",
+    "Bhutan": "BTN",
+    "Benin": "BEN",
+    "Belize": "BLZ",
+    "Belgium": "BEL",
+    "Belarus": "BLR",
+    "Barbados": "BRB",
+    "Bangladesh": "BGD",
+    "Bahrain": "BHR",
+    "The Bahamas": "BHS",
+    "Azerbaijan": "AZE",
+    "Austria": "AUT",
+    "Australia": "AUS",
+    "Indian Ocean Territories": "AUS",
+    "Heard Island and McDonald Islands": "HMD",
+    "Norfolk Island": "NFK",
+    "Ashmore and Cartier Islands": "AUS",
+    "Armenia": "ARM",
+    "Argentina": "ARG",
+    "Antigua and Barbuda": "ATG",
+    "Angola": "AGO",
+    "Andorra": "AND",
+    "Algeria": "DZA",
+    "Albania": "ALB",
+    "Afghanistan": "AFG",
+    "Siachen Glacier": "KAS",
+    "Antarctica": "ATA",
+    "Sint Maarten": "SXM",
+    "Tuvalu": "TUV"
+}
+
+# Full US state name -> USPS 2-letter code, for Plotly's 'USA-states' locationmode.
+_STATE_TO_ABBR = {
+    "Alabama": "AL",
+    "Alaska": "AK",
+    "Arizona": "AZ",
+    "Arkansas": "AR",
+    "California": "CA",
+    "Colorado": "CO",
+    "Connecticut": "CT",
+    "Delaware": "DE",
+    "Florida": "FL",
+    "Georgia": "GA",
+    "Hawaii": "HI",
+    "Idaho": "ID",
+    "Illinois": "IL",
+    "Indiana": "IN",
+    "Iowa": "IA",
+    "Kansas": "KS",
+    "Kentucky": "KY",
+    "Louisiana": "LA",
+    "Maine": "ME",
+    "Maryland": "MD",
+    "Massachusetts": "MA",
+    "Michigan": "MI",
+    "Minnesota": "MN",
+    "Mississippi": "MS",
+    "Missouri": "MO",
+    "Montana": "MT",
+    "Nebraska": "NE",
+    "Nevada": "NV",
+    "New Hampshire": "NH",
+    "New Jersey": "NJ",
+    "New Mexico": "NM",
+    "New York": "NY",
+    "North Carolina": "NC",
+    "North Dakota": "ND",
+    "Ohio": "OH",
+    "Oklahoma": "OK",
+    "Oregon": "OR",
+    "Pennsylvania": "PA",
+    "Rhode Island": "RI",
+    "South Carolina": "SC",
+    "South Dakota": "SD",
+    "Tennessee": "TN",
+    "Texas": "TX",
+    "Utah": "UT",
+    "Vermont": "VT",
+    "Virginia": "VA",
+    "Washington": "WA",
+    "West Virginia": "WV",
+    "Wisconsin": "WI",
+    "Wyoming": "WY",
+    "District of Columbia": "DC"
+}
+
 
 def _code_cell(source: str) -> dict:
     return {
@@ -173,7 +476,8 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             f"chart = {_py_embed(chart)}\n"
             "chart_type = chart.get('type')\n"
             "x = chart.get('x')\n"
-            "y = chart.get('y')\n\n"
+            "y = chart.get('y')\n"
+            "_plotted = False  # set True below once a chart type renders via a non-matplotlib path\n\n"
             "if chart_type in {'scatter', 'line'} and x in df.columns and y in df.columns:\n"
             "    plot_df = df[[x, y]].dropna()\n"
             "    if chart_type == 'line':\n"
@@ -201,26 +505,62 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "    plt.barh(labels, values)\n"
             "    plt.xlabel('Count')\n"
             "elif chart_type == 'choropleth' and chart.get('rows'):\n"
-            "    # Static stand-in for the interactive map: a bar chart ranking\n"
-            "    # regions by the mapped value. A real choropleth would need\n"
-            "    # geopandas + the boundary file, which is more than this\n"
-            "    # lightweight export bundles in.\n"
+            "    # Renders as an actual interactive map via Plotly Express, which ships\n"
+            "    # its own world/US-state boundaries -- no geopandas or shapefile needed.\n"
+            "    # Falls back to a static ranked bar chart if plotly isn't installed, or\n"
+            "    # if this map used a custom-uploaded .geojson whose shapes Plotly has no\n"
+            "    # built-in knowledge of.\n"
             "    value_col = chart.get('value_col')\n"
             "    name_col = chart.get('name_col')\n"
-            "    rows = [r for r in chart['rows'] if r.get(value_col) is not None]\n"
-            "    rows.sort(key=lambda r: r[value_col], reverse=True)\n"
-            "    labels = [str(r.get(name_col, '?')) for r in rows][:20][::-1]\n"
-            "    values = [r[value_col] for r in rows][:20][::-1]\n"
-            "    plt.barh(labels, values)\n"
-            "    plt.xlabel(value_col)\n"
+            "    level = chart.get('level')\n"
+            "    rows = [r for r in chart['rows'] if r.get(value_col) is not None and r.get(name_col)]\n"
+            "    _NAME_TO_ISO3 = " + _py_embed(_NAME_TO_ISO3) + "\n"
+            "    _STATE_TO_ABBR = " + _py_embed(_STATE_TO_ABBR) + "\n"
+            "    try:\n"
+            "        import plotly.express as px\n"
+            "        if level == 'world':\n"
+            "            for r in rows:\n"
+            "                r['_loc'] = _NAME_TO_ISO3.get(str(r.get(name_col)).strip())\n"
+            "            locationmode, scope = 'ISO-3', 'world'\n"
+            "        elif level == 'us_states':\n"
+            "            for r in rows:\n"
+            "                raw = str(r.get(name_col)).strip()\n"
+            "                r['_loc'] = _STATE_TO_ABBR.get(raw, raw.upper() if len(raw) == 2 else None)\n"
+            "            locationmode, scope = 'USA-states', 'usa'\n"
+            "        else:\n"
+            "            raise ValueError('this map used a custom .geojson -- Plotly has no built-in boundaries for it')\n"
+            "        mapped_rows = [r for r in rows if r.get('_loc')]\n"
+            "        if not mapped_rows:\n"
+            "            raise ValueError(\"none of the region names matched Plotly's built-in boundaries\")\n"
+            "        fig = px.choropleth(\n"
+            "            mapped_rows, locations='_loc', locationmode=locationmode, color=value_col,\n"
+            "            hover_name=name_col, color_continuous_scale='Viridis', scope=scope,\n"
+            f"            title=chart.get('title') or 'AutoDS chart {i}',\n"
+            "        )\n"
+            "        skipped = len(rows) - len(mapped_rows)\n"
+            "        if skipped:\n"
+            "            print(f'{skipped} region(s) had no matching Plotly boundary and were left blank on the map.')\n"
+            "        fig.show()\n"
+            "        _plotted = True\n"
+            "    except ImportError:\n"
+            "        print('plotly is not installed (pip install plotly) -- showing a ranked bar chart instead.')\n"
+            "    except Exception as _map_err:\n"
+            "        print(f'Could not build an interactive map ({_map_err}) -- showing a ranked bar chart instead.')\n"
+            "    if not _plotted:\n"
+            "        rows.sort(key=lambda r: r[value_col], reverse=True)\n"
+            "        labels = [str(r.get(name_col, '?')) for r in rows][:20][::-1]\n"
+            "        values = [r[value_col] for r in rows][:20][::-1]\n"
+            "        plt.barh(labels, values)\n"
+            "        plt.xlabel(value_col)\n"
             "elif x in df.columns:\n"
             "    df[x].value_counts(dropna=True).head(15).sort_values().plot(kind='barh')\n"
             "    plt.xlabel('Count')\n"
             "else:\n"
             "    print('The recorded chart columns are not present in the exported data.')\n\n"
-            f"plt.title(chart.get('title') or 'AutoDS chart {i}')\n"
-            "plt.tight_layout()\n"
-            "plt.show()\n"
+            "if not _plotted:\n"
+            f"    plt.title(chart.get('title') or 'AutoDS chart {i}')\n"
+            "    plt.tight_layout()\n"
+            "    plt.show()\n"
         ))
 
 

@@ -1020,6 +1020,11 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
                 "value_col": x,
                 "name_col": name_col,
                 "rows": rows,
+                # "world" / "us_states" when auto-matched against our bundled
+                # boundary files, or None for a manually-uploaded .geojson —
+                # nb.py uses this to know which Plotly locationmode/lookup
+                # table applies when exporting an interactive map.
+                "level": getattr(session, "geo_level", None),
             }
             insight = narrate.explain_chart("choropleth", x, df)
             if insight:
