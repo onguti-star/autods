@@ -180,6 +180,20 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .icon-btn{background:transparent;color:var(--ink-dim);border:1px solid var(--panel-border);padding:4px 8px;line-height:1;}
 .icon-btn:hover{color:var(--cyan);border-color:var(--cyan);}
 .icon-btn.close:hover{color:var(--bad);border-color:var(--bad);}
+/* BI-visual styling for the choropleth ("Power BI" / "Looker Studio" look):
+   a clean, elevated light card that reads as a self-contained report tile
+   floating on the dark canvas, instead of the flat dark terminal panel used
+   for every other chart type. Applied only to choropleth cards via JS. */
+.chart-panel--map{background:#f7f9fb;border:1px solid #e3e8ef;border-radius:14px;padding:16px 16px 14px;box-shadow:0 18px 48px rgba(4,10,20,0.55),0 2px 6px rgba(4,10,20,0.25);}
+.chart-panel--map .chart-panel-head,.chart-panel--map .viz-card-head{margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid #e3e8ef;}
+.chart-panel--map .chart-panel-title,.chart-panel--map .vc-title{font-family:'IBM Plex Sans',sans-serif;font-weight:600;font-size:14px;color:#0d1b2e;letter-spacing:0;}
+.chart-panel--map .vc-reason{color:#5c6b80;font-size:11px;}
+.chart-panel--map .icon-btn{color:#8493a8;border-color:#dbe1e8;}
+.chart-panel--map .icon-btn:hover{color:#2563eb;border-color:#2563eb;}
+.chart-panel--map .icon-btn.close:hover{color:#ef6f6f;border-color:#ef6f6f;}
+.chart-panel--map .chart-explain{color:#5c6b80;border-left-color:#2563eb;}
+.chart-panel--map .chart-filter-note{color:#5c6b80;}
+.chart-panel--map .chart-box{border-radius:10px;overflow:hidden;}
 .chart-type-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:7px;margin-bottom:14px;}
 .ct-btn{border:1px solid var(--panel-border);padding:8px 10px;cursor:pointer;text-align:left;background:var(--panel);transition:border-color .12s,background .12s;}
 .ct-btn:hover{border-color:var(--cyan);}
@@ -2733,7 +2747,8 @@ function renderVizSuggestions(charts){
   $("vizSuggestions").innerHTML = "";
   charts.forEach((ch,idx) => {
     const id = `sc${idx}`;
-    const card = document.createElement("div"); card.className = "viz-card";
+    const card = document.createElement("div");
+    card.className = "viz-card" + (ch.type === "choropleth" ? " chart-panel--map" : "");
     card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div>`;
     const reportSpec = {...ch, title: ch.title || chartTitle(ch), reason: "", _reportSource: "auto"};
     customChartSpecs.push(reportSpec);
@@ -3068,7 +3083,7 @@ function addCustomChart(ch){
 function _renderCustomChartCard(spec){
   const id = "vizCanvas_" + Date.now() + "_" + Math.floor(Math.random()*1000);
   const panel = document.createElement("div");
-  panel.className = "chart-panel";
+  panel.className = "chart-panel" + (spec.type === "choropleth" ? " chart-panel--map" : "");
   const compareNote = spec.filter_col && spec.filter_values && spec.filter_values.length
     ? `<div class="chart-filter-note">Comparing ${escapeHtml(spec.filter_col)}: ${spec.filter_values.map(escapeHtml).join(", ")}</div>`
     : "";
@@ -3525,11 +3540,11 @@ function drawChart(canvasId, ch){
 
     const mapDiv = document.createElement("div");
     mapDiv.className = "map-container";
-    mapDiv.style.cssText = "width:100%;height:100%;min-height:560px;border-radius:4px;overflow:hidden;position:relative;background:#eef3f7;";
+    mapDiv.style.cssText = "width:100%;height:100%;min-height:560px;border-radius:10px;overflow:hidden;position:relative;background:#eef3f7;";
     box.appendChild(mapDiv);
 
     const loadingBadge = document.createElement("div");
-    loadingBadge.style.cssText = "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(15,25,44,0.88);color:#5fd4d6;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:10px 18px;border-radius:4px;z-index:999;";
+    loadingBadge.style.cssText = "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#ffffff;color:#33465d;box-shadow:0 4px 16px rgba(23,38,58,0.18);font-family:'IBM Plex Sans',sans-serif;font-size:12px;font-weight:500;padding:10px 18px;border-radius:8px;z-index:999;";
     loadingBadge.textContent = "Loading map…";
     mapDiv.appendChild(loadingBadge);
 
