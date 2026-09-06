@@ -839,7 +839,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <button id="cancelTrainBtnCollapsed" class="sec" style="display:none;">Cancel</button>
-        <button class="sec" id="trainSetupExpandBtn">＋ Train another target</button>
       </div>
     </div>
 
@@ -4049,7 +4048,6 @@ function syncTrainSetupCollapse(){
   if(s.training || cards.length) collapseTrainSetup(lastTarget);
   else expandTrainSetup();
 }
-$("trainSetupExpandBtn").addEventListener("click", () => $("trainAnotherBtn").click());
 
 $("trainBtn").addEventListener("click", async () => {
   const datasetId = activeDs;
@@ -4356,18 +4354,31 @@ function renderImportance(items){ renderImportanceInto("importanceCanvas", "impo
 
 $("downloadModelBtn").addEventListener("click", () => window.open(`${API}/download_model/${getSid()}`, "_blank"));
 
-// "Train another target" — scroll back up to the target selector so the user
-// can pick a new column and run AutoML again. Model cards remain visible below.
-$("trainAnotherBtn").addEventListener("click", () => {
-  show("panelTrain"); setStep(6); scrollPanel("panelTrain");
+// "Train another target" — bring the target picker back cleanly.
+// Clears stale results from the previous run so the panel looks fresh,
+// then scrolls directly to the target selector in a single smooth motion
+// (no double-jump from scrollPanel + scrollIntoView firing back-to-back).
+function _goTrainAnother(){
+  // Clear previous run's results so the panel doesn't show stale data
+  // while the user is choosing a new target.
+  hide("trainNarrative");
+  hide("leaderboardWrap");
+  $("trainStatus").innerHTML = "";
+
+  show("panelTrain"); setStep(6);
   expandTrainSetup();
-  show("panelModelCards"); // keep model cards panel visible so user can see prior models
+  show("panelModelCards"); // keep model cards panel visible
+
+  // Single scroll directly to the target picker — avoids the double-jump
+  // that occurred when scrollPanel("panelTrain") fired first and then
+  // scrollIntoView() fired again immediately after.
   const targetSelect = $("targetSelect");
   if(targetSelect){
     targetSelect.scrollIntoView({behavior:"smooth", block:"center"});
     targetSelect.focus({preventScroll:true});
   }
-});
+}
+$("trainAnotherBtn").addEventListener("click", _goTrainAnother);
 
 // ---------- PREDICT ----------
 $("goPredictBtn").addEventListener("click", () => { openModelCards(); });
@@ -5024,19 +5035,53 @@ function renderModelCards(){
     </div>`;
   }).join("");
 
-  // Draw each card's chart after the HTML above is actually in the DOM and
-  // (in the tab-switch/restore path) after the panel has been made visible --
-  // a canvas measured while its container is display:none reports 0 width,
-  // and Chart.js then grows/misrenders it once the container appears. The
-  // rest of this codebase works around the same Chart.js quirk with the same
-  // short delay (see restoreDataset's setTimeout for importanceCanvas/viz
-  // charts) -- this keeps per-card charts consistent with that pattern.
-  setTimeout(() => {
-    if(modelCardsRenderToken !== myRenderToken) return; // superseded by a newer render — skip
+  // Draw each card's importance chart only once its canvas has non-zero
+  // dimensions. A fixed setTimeout(80ms) works for the *first* card (which
+  // is in the viewport when the panel appears) but fails for cards further
+  // down: they are off-screen when the timer fires, their canvas still has
+  // offsetWidth=0, and Chart.js commits to a 0-width draw that stays blank
+  // even after the user scrolls down to them.
+  //
+  // Instead we use an IntersectionObserver: it fires for each canvas the
+  // moment it enters the viewport (even partially), at which point the
+  // browser has already laid it out and given it real dimensions. We fall
+  // back to the old 80ms path if IntersectionObserver isn't available.
+  if(typeof IntersectionObserver === "undefined"){
+    setTimeout(() => {
+      if(modelCardsRenderToken !== myRenderToken) return;
+      all.forEach((m, idx) => {
+        renderImportanceInto(`modelCardImportance-${idx}`, `modelCardImportanceHint-${idx}`, m.featureImportance);
+      });
+    }, 80);
+  } else {
     all.forEach((m, idx) => {
-      renderImportanceInto(`modelCardImportance-${idx}`, `modelCardImportanceHint-${idx}`, m.featureImportance);
+      const canvasId = `modelCardImportance-${idx}`;
+      const hintId   = `modelCardImportanceHint-${idx}`;
+      const canvas   = $(canvasId);
+      if(!canvas) return;
+
+      // If it's already visible (e.g. only one card, panel just shown),
+      // render immediately on the next tick so the panel layout is settled.
+      if(canvas.offsetWidth > 0){
+        setTimeout(() => {
+          if(modelCardsRenderToken !== myRenderToken) return;
+          renderImportanceInto(canvasId, hintId, m.featureImportance);
+        }, 0);
+        return;
+      }
+
+      // Otherwise watch for it to scroll into view.
+      const obs = new IntersectionObserver((entries, observer) => {
+        entries.forEach(entry => {
+          if(!entry.isIntersecting) return;
+          observer.disconnect();
+          if(modelCardsRenderToken !== myRenderToken) return; // stale render — skip
+          renderImportanceInto(canvasId, hintId, m.featureImportance);
+        });
+      }, { threshold: 0.05 }); // 5% visible is enough — canvas has real dimensions by then
+      obs.observe(canvas);
     });
-  }, 80);
+  }
 
   // Wire collapse toggles
   list.querySelectorAll(".model-card-collapse-btn").forEach(btn => {
@@ -5109,9 +5154,10 @@ function openModelCards(){
 }
 
 $("goTrainFromModelsBtn").addEventListener("click", () => {
-  show("panelTrain"); setStep(6); scrollPanel("panelTrain");
-  const targetSelect = $("targetSelect");
-  if(targetSelect) targetSelect.focus({preventScroll:true});
+  // Reuse the same helper as the in-panel button: clears stale results,
+  // expands the setup form if it was collapsed, and scrolls directly to
+  // the target selector in one smooth motion.
+  _goTrainAnother();
 });
 
 // ---------- PCA ----------

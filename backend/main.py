@@ -1846,6 +1846,7 @@ def train_status(session_id: str):
     session.feature_columns = [c for c in session.df.columns if c != target]
 
     importance = _best_model_feature_importance(fitted, best_name)
+    session.feature_importance = importance  # cache so report + auto-save carry it
 
     training_narrative = narrate.narrate_training(
         problem_type, target, leaderboard, best_name, importance
