@@ -209,9 +209,15 @@ def _compute_sample_weights(y_train):
     return np.array([weight_map[c] for c in y_train])
 
 
-def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_neighbors, n_rows):
+def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_neighbors, n_rows, class_ratio=1.0):
     """Average k-fold cross-validation score for one candidate on the training
     split only (the held-out test set stays untouched for final reporting).
+
+    The scoring metric deliberately mirrors the primary_score logic in
+    _train_single_model so that CV ranking and single-split ranking agree on
+    *which* model is best.  Previously this always used f1_weighted for
+    classification while the ranking step used f1_macro for imbalanced datasets
+    — causing the two to disagree and crown a different winner.
 
     Returns None (never raises) if CV isn't a good fit for this candidate or
     this dataset size -- callers fall back to the single-split score, so this
@@ -228,11 +234,23 @@ def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_
             # Enough folds to be meaningful, few enough to stay fast; never
             # more folds than the smallest class has members.
             min_class_count = int(pd.Series(y_train).value_counts().min())
-            n_splits = max(2, min(5, min_class_count))
-            if n_splits < 2:
+            # Need at least 2 members per class to split; if any class is a
+            # singleton we cannot do stratified CV safely — skip and fall back
+            # to the single-split score rather than triggering sklearn warnings.
+            if min_class_count < 2:
                 return None
+            n_splits = max(2, min(5, min_class_count))
             splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-            scoring = "f1_weighted"
+            # Mirror the primary_score logic: prefer roc_auc for imbalanced
+            # binary, f1_macro for imbalanced multiclass, f1_weighted otherwise.
+            imbalanced = class_ratio > 3.0
+            n_classes_train = len(np.unique(y_train))
+            if imbalanced and n_classes_train == 2 and hasattr(candidate_model, "predict_proba"):
+                scoring = "roc_auc"
+            elif imbalanced:
+                scoring = "f1_macro"
+            else:
+                scoring = "f1_weighted"
         else:
             n_splits = 5 if len(y_train) >= 50 else 3
             if len(y_train) < n_splits * 2:
@@ -246,8 +264,13 @@ def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_
         return None
 
 
-def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors, class_ratio=1.0):
-    """Train a single model and return results."""
+def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors, class_ratio=1.0):  # noqa: E501
+    """Train a single model and return results.
+
+    y_train is used alongside y_test to build the full label set for
+    per_class_recall, so that rare classes absent from the test split still
+    appear in the output (with recall=0.0) rather than being silently dropped.
+    """
     try:
         candidate_model = clone(model)
         if name == "K-Nearest Neighbors":
@@ -286,12 +309,24 @@ def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_t
             except Exception:
                 roc_auc = None
 
-            # Per-class recall (how many of each class did we catch)
+            # Per-class recall (how many of each class did we catch).
+            # np.unique(y_test) only contains classes that appear in the test
+            # split — extremely rare classes may be absent entirely, making the
+            # per_class_recall dict incomplete.  Using the full set of labels
+            # seen during training (all unique encoded values across y_train +
+            # y_test) ensures every class is represented, with 0.0 recall for
+            # any that were too rare to land in the test split.
             from sklearn.metrics import classification_report
-            report = classification_report(y_test, preds, output_dict=True, zero_division=0)
+            all_labels = np.unique(np.concatenate([y_train, y_test]))
+            report = classification_report(
+                y_test, preds,
+                labels=all_labels,
+                output_dict=True,
+                zero_division=0,
+            )
             per_class_recall = {
                 str(cls): round(float(report[str(cls)]["recall"]), 4)
-                for cls in np.unique(y_test)
+                for cls in all_labels
                 if str(cls) in report
             }
 
@@ -679,7 +714,8 @@ def train_all(
         )
         if "error" not in result and not use_fast_models:
             result["cv_score"] = _cv_mean_score(
-                name, model, X_train, y_train, problem_type, preprocessor, n_neighbors, n_rows
+                name, model, X_train, y_train, problem_type, preprocessor, n_neighbors, n_rows,
+                class_ratio=class_ratio,
             )
         results.append(result)
 

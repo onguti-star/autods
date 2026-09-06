@@ -1642,11 +1642,13 @@ function restoreDataset(state){
   renderSavedPredictionsList();
   refreshSavedPredictions(activeDs, state.sessionId);
 
-  // Restore persistent model cards for all trained targets
-  renderModelCards();
+  // Restore persistent model cards for all trained targets.
+  // Show the panel BEFORE renderModelCards for the same reason as openModelCards:
+  // Chart.js needs the panel visible so canvas elements have non-zero dimensions.
   if((state.modelCards && state.modelCards.length) || state.training){
     show("panelModelCards");
   }
+  renderModelCards();
 
   // Set the stepper to the most advanced step the user had reached
   if((state.modelCards && state.modelCards.length) || state.training){
@@ -4181,7 +4183,16 @@ $("trainBtn").addEventListener("click", async () => {
         $("saveRunName").value = "";
         $("saveRunStatus").innerHTML = "";
       }
-      refreshSavedRuns(datasetId, sid);
+      // refreshSavedRuns is async and calls renderModelCards() itself when it
+      // completes -- if we also call openModelCards() right here, two concurrent
+      // renderModelCards() invocations race each other and the second one's
+      // deferred setTimeout (80ms) overwrites charts from the first, causing the
+      // feature-importance bars to disappear or show stale data when a second
+      // column is trained. Awaiting it here ensures the final render happens once.
+      // skipRender=true: openModelCards() below will show the panel first then
+      // call renderModelCards() itself — so we skip the premature render inside
+      // refreshSavedRuns that would fire while the panel is still hidden.
+      await refreshSavedRuns(datasetId, sid, {skipRender: true});
       if(activeDs === datasetId) openModelCards();
     }catch(e){
       // transient network hiccup while polling -- try again on the next tick
@@ -4207,7 +4218,7 @@ async function _cancelTraining(){
 $("cancelTrainBtn").addEventListener("click", _cancelTraining);
 $("cancelTrainBtnCollapsed").addEventListener("click", _cancelTraining);
 
-async function refreshSavedRuns(datasetId = activeDs, sid = getState().sessionId){
+async function refreshSavedRuns(datasetId = activeDs, sid = getState().sessionId, {skipRender = false} = {}){
   if(!sid) return;
   try{
     const res = await fetch(`${API}/train_runs/${sid}`);
@@ -4243,7 +4254,11 @@ async function refreshSavedRuns(datasetId = activeDs, sid = getState().sessionId
   if(activeDs === datasetId){
     renderSavedRunsList();
     renderPredictSourceOptions();
-    renderModelCards();
+    // Skip renderModelCards when the caller (e.g. the training poll completion)
+    // is about to call openModelCards itself -- that call shows the panel first,
+    // so the canvas has real dimensions. Rendering here while the panel may still
+    // be hidden produces a 0-width canvas that Chart.js draws into invisibly.
+    if(!skipRender) renderModelCards();
   }
 }
 
@@ -5082,9 +5097,14 @@ function renderModelCards(){
 }
 
 function openModelCards(){
-  renderModelCards();
+  // Show the panel BEFORE calling renderModelCards so that the canvas elements
+  // have non-zero dimensions when Chart.js measures them inside the setTimeout.
+  // Previously, renderModelCards ran first (panel still hidden, offsetWidth=0),
+  // then show() made it visible — but Chart.js had already committed to a 0-width
+  // canvas, leaving the feature-importance box blank.
   show("panelModelCards");
   setStep(7);
+  renderModelCards();
   scrollPanel("panelModelCards");
 }
 

@@ -295,6 +295,12 @@ def get_session(session_id: str) -> "Session":
     s.unsupervised_results = {}
     s.progress_messages = []
     s.geojson = None
+    # Fields added after initial release — must be initialised here as well
+    # so that a session restored from disk (pre-dating these fields) never
+    # raises AttributeError when the API tries to read them.
+    s.staged_charts = []
+    s.geo_name_col = None
+    s.geo_level = None
     s.notes = ""
     s.last_accessed = datetime.now()
 
