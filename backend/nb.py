@@ -3,6 +3,7 @@ Generate a compact Jupyter Notebook (.ipynb) for the work completed in a
 session. The export intentionally avoids dumping every AutoDS helper function;
 it includes only the successful user-facing results recorded on the session.
 """
+from __future__ import annotations  # makes list|None work on Python < 3.10 (fixes VS Code squiggles)
 import base64
 import io
 import json
@@ -256,6 +257,12 @@ _NAME_TO_ISO3 = {
     "Sint Maarten": "SXM",
     "Tuvalu": "TUV"
 }
+
+# Reverse: ISO-3 code -> full lowercase country name.
+# Used when a dataset column already contains codes like "VEN", "USA", "GBR"
+# rather than spelled-out names -- the choropleth still renders, and hover
+# labels show the readable name instead of the raw code.
+_ISO3_TO_NAME: dict[str, str] = {code: name.lower() for name, code in _NAME_TO_ISO3.items()}
 
 # Full US state name -> USPS 2-letter code, for Plotly's 'USA-states' locationmode.
 _STATE_TO_ABBR = {
@@ -515,17 +522,35 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "    level = chart.get('level')\n"
             "    rows = [r for r in chart['rows'] if r.get(value_col) is not None and r.get(name_col)]\n"
             "    _NAME_TO_ISO3 = " + _py_embed(_NAME_TO_ISO3) + "\n"
+            "    _ISO3_TO_NAME = " + _py_embed(_ISO3_TO_NAME) + "\n"
             "    _STATE_TO_ABBR = " + _py_embed(_STATE_TO_ABBR) + "\n"
             "    try:\n"
             "        import plotly.express as px\n"
             "        if level == 'world':\n"
+            "            # Detect whether the column holds ISO-3 codes (e.g. 'VEN', 'USA')\n"
+            "            # or full/partial country names -- handle both transparently.\n"
+            "            sample_vals = [str(r.get(name_col, '')).strip().upper() for r in rows[:10]]\n"
+            "            col_has_iso3 = sum(1 for v in sample_vals if v in _ISO3_TO_NAME) >= len(sample_vals) // 2\n"
             "            for r in rows:\n"
-            "                r['_loc'] = _NAME_TO_ISO3.get(str(r.get(name_col)).strip())\n"
+            "                raw = str(r.get(name_col, '')).strip()\n"
+            "                if col_has_iso3:\n"
+            "                    # Column already has ISO-3 codes -- use directly for Plotly;\n"
+            "                    # also set a display-friendly full lowercase name for hover.\n"
+            "                    iso3 = raw.upper()\n"
+            "                    r['_loc'] = iso3 if iso3 in _ISO3_TO_NAME else None\n"
+            "                    r['_display_name'] = _ISO3_TO_NAME.get(iso3, raw.lower())\n"
+            "                else:\n"
+            "                    # Column has country names -- look up the ISO-3 code.\n"
+            "                    r['_loc'] = _NAME_TO_ISO3.get(raw)\n"
+            "                    r['_display_name'] = raw.lower()\n"
+            "            hover_col = '_display_name'\n"
             "            locationmode, scope = 'ISO-3', 'world'\n"
             "        elif level == 'us_states':\n"
             "            for r in rows:\n"
             "                raw = str(r.get(name_col)).strip()\n"
             "                r['_loc'] = _STATE_TO_ABBR.get(raw, raw.upper() if len(raw) == 2 else None)\n"
+            "                r['_display_name'] = raw.lower()\n"
+            "            hover_col = '_display_name'\n"
             "            locationmode, scope = 'USA-states', 'usa'\n"
             "        else:\n"
             "            raise ValueError('this map used a custom .geojson -- Plotly has no built-in boundaries for it')\n"
@@ -534,7 +559,7 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "            raise ValueError(\"none of the region names matched Plotly's built-in boundaries\")\n"
             "        fig = px.choropleth(\n"
             "            mapped_rows, locations='_loc', locationmode=locationmode, color=value_col,\n"
-            "            hover_name=name_col, color_continuous_scale='Viridis', scope=scope,\n"
+            "            hover_name=hover_col, color_continuous_scale='Viridis', scope=scope,\n"
             f"            title=chart.get('title') or 'AutoDS chart {i}',\n"
             "        )\n"
             "        skipped = len(rows) - len(mapped_rows)\n"

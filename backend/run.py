@@ -16,11 +16,17 @@ os.environ["PYTHONPATH"] = PROJECT_ROOT + os.pathsep + os.environ.get("PYTHONPAT
 
 import uvicorn
 
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dev", action="store_true", help="Enable hot-reload (dev only — kills training mid-run if backend files change)")
+args = parser.parse_args()
+
 if __name__ == "__main__":
     uvicorn.run(
         "backend.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        reload_dirs=[BACKEND_DIR],
+        reload=args.dev,
+        reload_dirs=[BACKEND_DIR] if args.dev else None,
     )

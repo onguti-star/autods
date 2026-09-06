@@ -1532,13 +1532,35 @@ TRAIN_JOBS: dict = {}
 
 def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
     """Runs in a child process. Talks back to the parent only via progress_list/result_queue."""
+    import time
+    import traceback
+
+    worker_start = time.time()
+
     def _report(msg: str):
-        progress_list.append(msg)
+        elapsed = time.time() - worker_start
+        # Prefix every message with elapsed time so if the process is killed
+        # we can see exactly where it got to and how long it had been running.
+        progress_list.append(f"[{elapsed:.0f}s] {msg}")
+
+    # Log memory at startup so slow-start OOM issues are visible.
+    try:
+        import psutil, os as _os
+        proc = psutil.Process(_os.getpid())
+        mem_mb = proc.memory_info().rss / 1_048_576
+        vm = psutil.virtual_memory()
+        _report(f"Worker started — process memory: {mem_mb:.0f} MB | system free: {vm.available // 1_048_576} MB")
+    except Exception:
+        _report("Worker started.")
 
     try:
         problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
             df, target, use_pca=use_pca, progress_callback=_report
         )
+
+        elapsed_total = time.time() - worker_start
+        _report(f"All models trained in {elapsed_total:.1f}s — packaging results...")
+
         result_queue.put({
             "status": "done",
             "problem_type": problem_type,
@@ -1548,7 +1570,12 @@ def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
             "label_encoder": label_encoder,
         })
     except Exception as e:
-        result_queue.put({"status": "error", "error": str(e)})
+        elapsed_total = time.time() - worker_start
+        tb = traceback.format_exc()
+        result_queue.put({
+            "status": "error",
+            "error": f"{e}\n\nTraining had been running for {elapsed_total:.1f}s.\n\nFull traceback:\n{tb}",
+        })
 
 
 def _cleanup_train_job(session_id: str):
@@ -1561,6 +1588,17 @@ def _cleanup_train_job(session_id: str):
         if job["process"].is_alive():
             job["process"].kill()
     job["manager"].shutdown()
+
+
+def _best_model_feature_importance(models: dict, best_model_name: str | None) -> list:
+    """Feature importance for the leaderboard winner. Takes only the fitted
+    pipeline (feature names/importances come from what's already fitted inside
+    it) -- no need to hand over a copy of the training dataframe, which used to
+    be built fresh at every save/status check and could be sizeable on a large
+    dataset."""
+    if best_model_name and best_model_name in models:
+        return automl.feature_importance(models[best_model_name])
+    return []
 
 
 @app.post("/api/train/{session_id}")
@@ -1583,6 +1621,7 @@ def train(session_id: str, req: TrainRequest):
             "best_model_name": session.best_model_name,
             "label_encoder": session.label_encoder,
             "feature_columns": session.feature_columns,
+            "feature_importance": _best_model_feature_importance(session.models, session.best_model_name),
         }
 
     # Starting a new run always replaces any previous one for this session.
@@ -1605,9 +1644,55 @@ def train(session_id: str, req: TrainRequest):
         "progress": progress,
         "result_queue": result_queue,
         "target": req.target,
+        "cancel_requested": False,
+        "n_rows": len(session.df),
+        "started_at": __import__("time").time(),
     }
 
     return {"status": "started"}
+
+
+@app.get("/api/train/{session_id}/diag")
+def train_diag(session_id: str):
+    """Diagnostic endpoint — returns full progress log, elapsed time, memory
+    usage, and process state. Open in browser while training is running to see
+    exactly which model was active and how much memory is being used."""
+    import time, psutil
+
+    job = TRAIN_JOBS.get(session_id)
+    if job is None:
+        return {"status": "idle", "messages": [], "elapsed_s": 0}
+
+    messages = list(job["progress"])
+    alive = job["process"].is_alive()
+    pid = job["process"].pid
+
+    mem_info = {}
+    if pid:
+        try:
+            proc = psutil.Process(pid)
+            rss_mb = proc.memory_info().rss / 1_048_576
+            vm = psutil.virtual_memory()
+            mem_info = {
+                "worker_rss_mb": round(rss_mb, 1),
+                "system_free_mb": round(vm.available / 1_048_576, 1),
+                "system_used_pct": vm.percent,
+            }
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            mem_info = {"note": "process ended before memory could be read"}
+
+    started_at = job.get("started_at", 0)
+    elapsed = round(time.time() - started_at, 1) if started_at else None
+    n_rows = job.get("n_rows")
+
+    return {
+        "status": "running" if alive else "exited",
+        "pid": pid,
+        "elapsed_s": elapsed,
+        "n_rows": n_rows,
+        "messages": messages,
+        **mem_info,
+    }
 
 
 @app.get("/api/train/{session_id}/status")
@@ -1628,11 +1713,50 @@ def train_status(session_id: str):
     except Exception:
         result = None
 
+    exitcode = job["process"].exitcode
+    was_cancelled = job.get("cancel_requested", False)
     _cleanup_train_job(session_id)
 
     if result is None:
-        # No result means it was cancelled (killed) or crashed without reporting.
-        return {"status": "cancelled", "messages": messages}
+        if was_cancelled:
+            return {"status": "cancelled", "messages": messages}
+        # The process died without putting anything on the result queue and the
+        # user never clicked Cancel -- it was killed (most likely by the OS, e.g.
+        # an out-of-memory kill) or crashed natively (a segfault deep inside a
+        # C/C++ extension). Either way this is NOT a user cancellation, and
+        # calling it "cancelled" was actively misleading, especially on large
+        # datasets where memory pressure is the most likely cause. Report it as
+        # an error with an honest, specific explanation instead.
+        if exitcode is not None and exitcode < 0:
+            n_rows = job.get("n_rows")
+            large_hint = (
+                f" This dataset has {n_rows:,} rows, which increases memory pressure during training."
+                if n_rows and n_rows > automl.LARGE_DATASET_THRESHOLD else ""
+            )
+            if exitcode == -9:
+                error = (
+                    "Training was stopped by the system, most likely because it ran out of memory."
+                    + large_hint
+                    + " Try again, or if this keeps happening, remove very high-cardinality text columns "
+                      "(e.g. free-text titles or addresses) before training."
+                )
+            elif exitcode == -15:
+                error = (
+                    "Training was stopped by a SIGTERM signal (signal 15). "
+                    "The most common cause is uvicorn's hot-reload: if you're running the server "
+                    "with 'python backend/run.py' (no --dev flag), this should not happen. "
+                    "If you are using --dev mode, any file change inside backend/ will restart "
+                    "the server mid-training. Check the diagnostic log at "
+                    "/api/train/<session_id>/diag for the full progress before it was killed."
+                )
+            else:
+                error = (
+                    f"Training crashed unexpectedly (signal {-exitcode})." + large_hint
+                    + " Try again; if it keeps happening, please report this."
+                )
+        else:
+            error = "Training exited unexpectedly without reporting a result. Please try again."
+        return {"status": "error", "messages": messages, "error": error}
 
     if result["status"] == "error":
         return {"status": "error", "messages": messages, "error": result["error"]}
@@ -1652,10 +1776,7 @@ def train_status(session_id: str):
     session.label_encoder = label_encoder
     session.feature_columns = [c for c in session.df.columns if c != target]
 
-    importance = []
-    if best_name and best_name in fitted:
-        X = session.df.drop(columns=[target])
-        importance = automl.feature_importance(fitted[best_name], X)
+    importance = _best_model_feature_importance(fitted, best_name)
 
     training_narrative = narrate.narrate_training(
         problem_type, target, leaderboard, best_name, importance
@@ -1679,6 +1800,7 @@ def cancel_train(session_id: str):
     job = TRAIN_JOBS.get(session_id)
     if job is None:
         return {"status": "idle"}
+    job["cancel_requested"] = True
     _cleanup_train_job(session_id)
     return {"status": "cancelled"}
 
@@ -1703,6 +1825,9 @@ def _run_summary(run_id: str, run: dict) -> dict:
         "best_model": run["best_model_name"],
         "top_metric": _run_metric_summary(run["problem_type"], run["leaderboard"], run["best_model_name"]),
         "feature_columns": run["feature_columns"],
+        # Older saved runs (from before this field existed) fall back to [] --
+        # the frontend already treats an empty list as "not available".
+        "feature_importance": run.get("feature_importance", []),
     }
 
 
@@ -1730,6 +1855,7 @@ def save_train_run(session_id: str, req: SaveRunRequest):
         "best_model_name": session.best_model_name,
         "label_encoder": session.label_encoder,
         "feature_columns": session.feature_columns,
+        "feature_importance": _best_model_feature_importance(session.models, session.best_model_name),
     }
     return {
         "saved": _run_summary(run_id, session.saved_runs[run_id]),

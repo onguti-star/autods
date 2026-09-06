@@ -292,6 +292,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .model-card-collapse-btn:hover{color:var(--cyan);border-color:var(--cyan);}
 .model-card-body.collapsed{display:none;}
 #panelModelCards{margin-top:0;}
+/* Compact per-card feature-importance chart -- deliberately NOT using the
+   generic .chart-box (70vh) since many of these can be stacked in one page. */
+.model-card-chart-box{position:relative;width:100%;height:220px;margin-top:4px;}
+.model-card-chart-box canvas{width:100%!important;height:100%!important;}
 </style>
 </head>
 <body>
@@ -828,6 +832,15 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="late-clean-status" id="trainCleanStatus"></div>
     </div>
 
+    <div id="trainSetupCollapsedBar" class="hidden" style="background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div class="subhead" style="margin:0;">Training setup</div>
+        <p class="hint" style="margin:4px 0 0;">Last trained target: <strong id="trainSetupCollapsedTarget" style="color:var(--accent);"></strong></p>
+      </div>
+      <button class="sec" id="trainSetupExpandBtn">＋ Train another target</button>
+    </div>
+
+    <div id="trainSetupSection">
     <div class="subhead">Learning Type</div>
     <div class="pred-row" style="margin-bottom:18px;">
       <div class="pred-field"><button id="supervisedLearningBtn">Supervised learning</button></div>
@@ -875,6 +888,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <button id="cancelTrainBtn" class="sec" style="margin-top:13px;display:none;">Cancel</button>
       </div>
     </div>
+    </div><!-- /trainSetupSection -->
     <div id="trainStatus"></div>
     <div class="narrative hidden" id="trainNarrative"></div>
     <div id="leaderboardWrap" class="hidden">
@@ -1582,6 +1596,7 @@ function restoreDataset(state){
   } else {
     clearTrainingUI();
   }
+  syncTrainSetupCollapse();
 
   if(state.panelVizVisible){
     show("panelViz");
@@ -1949,6 +1964,11 @@ function handleDataChanged(profile, opts = {}){
         dsState[activeDs].modelCards = validCards;
       }
     }
+    // Re-evaluate whether the setup form should be expanded again — training
+    // was just cleared above, so if no other model cards survived either,
+    // the collapsed "last trained target" bar would otherwise be left
+    // pointing at a model that no longer exists.
+    syncTrainSetupCollapse();
   }
 
   clearVisualizationUIAfterDataChange();
@@ -3994,12 +4014,42 @@ function setTrainingInProgress(inProgress){
   $("cancelTrainBtn").style.display = inProgress ? "inline-block" : "none";
 }
 
+// Collapsing the setup form (Learning Type / Supervised AutoML / PCA /
+// Training Options / target picker) once a training run has been kicked off
+// frees up the vertical space it was taking for the actual results (the
+// Trained Models cards below) instead of leaving a big, already-used form
+// sitting at the top of the panel. "＋ Train another target" brings it back.
+function collapseTrainSetup(targetLabel){
+  hide("trainSetupSection");
+  if(targetLabel) $("trainSetupCollapsedTarget").textContent = targetLabel;
+  show("trainSetupCollapsedBar");
+}
+function expandTrainSetup(){
+  show("trainSetupSection");
+  hide("trainSetupCollapsedBar");
+}
+// Single source of truth for which state the setup form should be in,
+// used whenever we're restoring/reconciling state rather than reacting to a
+// direct user action (a fresh click or an explicit "train another").
+function syncTrainSetupCollapse(){
+  const s = getState();
+  const cards = s.modelCards || [];
+  const lastTarget = s.training?.target || (cards.length ? cards[cards.length - 1].target : "");
+  if(s.training || cards.length) collapseTrainSetup(lastTarget);
+  else expandTrainSetup();
+}
+$("trainSetupExpandBtn").addEventListener("click", () => $("trainAnotherBtn").click());
+
 $("trainBtn").addEventListener("click", async () => {
   const datasetId = activeDs;
   const sid = getSid();
   const target = $("targetSelect").value;
   const usePca = $("usePcaForTraining").checked;
   if(!sid || !target) return;
+
+  // Free up the space the setup form was taking as soon as the user commits
+  // to a training run — "＋ Train another target" brings it back later.
+  collapseTrainSetup(target);
 
   // If there's already a trained model on a different target, let the user know
   // it will be auto-saved so they don't lose it.
@@ -4030,7 +4080,18 @@ $("trainBtn").addEventListener("click", async () => {
   }
 
   // Poll job status until it's done, cancelled, or errored.
+  // pollInFlight guards against overlapping ticks: setInterval doesn't wait
+  // for a previous callback to finish before firing the next one, so a slow
+  // request (or just bad luck on timing right as the job finishes) could
+  // otherwise have two ticks in flight at once. That mattered concretely
+  // here: the backend deletes a finished job's record the first time any
+  // status check sees it, so a second overlapping request could land after
+  // that and get back {"status": "idle"} for a job that, from the user's
+  // side, just legitimately finished a moment ago.
+  let pollInFlight = false;
   trainPollTimer = setInterval(async () => {
+    if(pollInFlight) return;
+    pollInFlight = true;
     try{
       const res = await fetch(`${API}/train/${sid}/status`);
       const data = await res.json();
@@ -4042,6 +4103,18 @@ $("trainBtn").addEventListener("click", async () => {
 
       if(data.status === "running") return; // keep polling
 
+      if(data.status === "idle"){
+        // No job on record for this session. Under the pollInFlight guard
+        // above this shouldn't happen mid-poll anymore, but if it ever does
+        // it means there's nothing left to report (most likely a stray tick
+        // arriving after another one already handled the real outcome) —
+        // stop polling quietly rather than fabricating a result from an
+        // empty response.
+        stopTrainPolling();
+        setTrainingInProgress(false);
+        return;
+      }
+
       stopTrainPolling();
       setTrainingInProgress(false);
 
@@ -4051,6 +4124,12 @@ $("trainBtn").addEventListener("click", async () => {
       }
       if(data.status === "error"){
         if(activeDs === datasetId) $("trainStatus").innerHTML = `<div class="error-box">${data.error || "Training failed"}</div>`;
+        return;
+      }
+      if(data.status !== "done" || !data.target){
+        // Unrecognized or malformed response — never build a model card out
+        // of this. A card with no target is worse than no card at all.
+        if(activeDs === datasetId) $("trainStatus").innerHTML = `<div class="error-box">Training finished but returned an unexpected response. Please try again.</div>`;
         return;
       }
 
@@ -4097,6 +4176,8 @@ $("trainBtn").addEventListener("click", async () => {
       if(activeDs === datasetId) openModelCards();
     }catch(e){
       // transient network hiccup while polling -- try again on the next tick
+    }finally{
+      pollInFlight = false;
     }
   }, 700);
 });
@@ -4227,14 +4308,25 @@ function renderLeaderboard(rows, ptype){
   $("leaderboardTable").innerHTML = html;
 }
 
-function renderImportance(items){
-  if(!items?.length){ $("importanceHint").textContent = "Not available for this model type."; show("importanceHint"); return; }
-  hide("importanceHint");
-  makeChart("importanceCanvas",{type:"bar",
+// Generic bar-chart renderer for feature importance, used by both the single
+// training-panel chart (importanceCanvas) and each per-card chart in the
+// Trained Models panel (modelCardImportance-N) -- one function so the two
+// never drift out of sync visually.
+function renderImportanceInto(canvasId, hintId, items){
+  const canvasEl = $(canvasId);
+  if(!canvasEl) return; // panel/card not in the DOM (e.g. re-rendered away) -- nothing to draw
+  if(!items?.length){
+    destroyChart(canvasId);
+    if($(hintId)){ $(hintId).textContent = "Not available for this model type."; show(hintId); }
+    return;
+  }
+  if($(hintId)) hide(hintId);
+  makeChart(canvasId,{type:"bar",
     data:{labels:items.map(i=>i.feature.split("__").pop()),datasets:[{data:items.map(i=>i.importance),backgroundColor:"#ffb627bb"}]},
     options:{indexAxis:'y',plugins:{legend:{display:false}},
       scales:{x:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}},y:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}},grid:{display:false}}}}});
 }
+function renderImportance(items){ renderImportanceInto("importanceCanvas", "importanceHint", items); }
 
 $("downloadModelBtn").addEventListener("click", () => window.open(`${API}/download_model/${getSid()}`, "_blank"));
 
@@ -4242,6 +4334,7 @@ $("downloadModelBtn").addEventListener("click", () => window.open(`${API}/downlo
 // can pick a new column and run AutoML again. Model cards remain visible below.
 $("trainAnotherBtn").addEventListener("click", () => {
   show("panelTrain"); setStep(6); scrollPanel("panelTrain");
+  expandTrainSetup();
   show("panelModelCards"); // keep model cards panel visible so user can see prior models
   const targetSelect = $("targetSelect");
   if(targetSelect){
@@ -4796,13 +4889,26 @@ $("predictBtn").addEventListener("click", async () => {
 // Each trained target gets its own card that stacks in panelModelCards.
 // Cards survive switching the active target and switching dataset tabs.
 
+// Bumped on every renderModelCards() call so a chart draw deferred from an
+// earlier call (see setTimeout below) can tell it's been superseded -- e.g.
+// the user switched dataset tabs inside the 80ms delay -- and skip itself
+// instead of painting stale/wrong data onto a canvas that now belongs to a
+// different render. Without this, fast tab-switching could make one
+// dataset's feature-importance bars flash onto another dataset's card.
+let modelCardsRenderToken = 0;
+
 function renderModelCards(){
   const list = $("modelCardsList");
   if(!list) return;
 
+  const myRenderToken = ++modelCardsRenderToken;
   const state      = getState();
-  const cards      = state.modelCards  || [];
-  const savedRuns  = state.savedRuns   || [];
+  // Defensive filter: a card with no target is never valid to show (see the
+  // pollInFlight/"idle"-handling fix above for how one could previously get
+  // created) — drop any such card here too so one already sitting in a
+  // restored/autosaved session disappears instead of lingering forever.
+  const cards      = (state.modelCards || []).filter(c => c.target);
+  const savedRuns  = (state.savedRuns  || []).filter(r => r.target);
 
   // Build a combined list: live cards from this session + any saved runs that
   // aren't already represented as a live card (user may have refreshed).
@@ -4810,17 +4916,30 @@ function renderModelCards(){
   const savedCards  = savedRuns
     .filter(r => !liveTargets.has(r.target))
     .map(r => ({
-      target:       r.target,
-      bestModel:    r.best_model || "—",
-      problemType:  r.problem_type || "",
-      feedColumns:  r.feature_columns || [],
-      narrative:    r.narrative || "",
-      trainedAt:    r.created_at || "",
-      runId:        r.id,
-      fromSaved:    true,
+      target:            r.target,
+      bestModel:         r.best_model || "—",
+      problemType:       r.problem_type || "",
+      feedColumns:       r.feature_columns || [],
+      featureImportance: r.feature_importance || [],
+      narrative:         r.narrative || "",
+      trainedAt:         r.created_at || "",
+      runId:             r.id,
+      fromSaved:         true,
     }));
 
   const all = [...cards, ...savedCards];
+
+  // Tear down any importance charts from the previous render before rebuilding
+  // the list below. Card indices get reused across renders (idx 0, 1, 2...),
+  // and while makeChart() already destroys-then-recreates a chart on a given
+  // canvas id, that only covers ids that get reused -- if the card count
+  // shrinks (e.g. a saved run gets deleted) the now-unused higher-index
+  // canvases would otherwise leave orphaned Chart.js instances behind
+  // pointing at detached canvases. Clearing all of them here, every time,
+  // is what actually prevents charts bleeding/overlapping across re-renders
+  // (e.g. when switching between dataset tabs that each have their own
+  // trained-model cards).
+  Object.keys(charts).filter(id => id.startsWith("modelCardImportance-")).forEach(destroyChart);
 
   if(!all.length){
     list.innerHTML = `<p class="hint" style="margin-top:8px;">No models trained yet — go to the Training panel, pick a target column, and click <strong>Run AutoML</strong>.</p>`;
@@ -4868,13 +4987,30 @@ function renderModelCards(){
       </div>
       <div class="model-card-body" id="model-card-body-${idx}">
         ${m.narrative ? `<div class="narrative" style="margin-bottom:12px;"><div class="nlabel">What this model learned</div><p>${escapeHtml(m.narrative)}</p></div>` : ""}
-        <div class="subhead" style="margin-top:10px;margin-bottom:8px;">Make a prediction</div>
+        <div class="subhead" style="margin-top:10px;margin-bottom:6px;">Feature importance (${escapeHtml(m.bestModel || "best model")})</div>
+        <div class="model-card-chart-box"><canvas id="modelCardImportance-${idx}"></canvas></div>
+        <p class="hint hidden" id="modelCardImportanceHint-${idx}"></p>
+        <div class="subhead" style="margin-top:14px;margin-bottom:8px;">Make a prediction</div>
         <div class="model-card-predict-row">${fields}</div>
         <button class="sec model-card-predict-btn" data-idx="${idx}" style="margin-top:4px;">▶ Predict</button>
         <div class="model-card-result" id="model-card-result-${idx}"></div>
       </div>
     </div>`;
   }).join("");
+
+  // Draw each card's chart after the HTML above is actually in the DOM and
+  // (in the tab-switch/restore path) after the panel has been made visible --
+  // a canvas measured while its container is display:none reports 0 width,
+  // and Chart.js then grows/misrenders it once the container appears. The
+  // rest of this codebase works around the same Chart.js quirk with the same
+  // short delay (see restoreDataset's setTimeout for importanceCanvas/viz
+  // charts) -- this keeps per-card charts consistent with that pattern.
+  setTimeout(() => {
+    if(modelCardsRenderToken !== myRenderToken) return; // superseded by a newer render — skip
+    all.forEach((m, idx) => {
+      renderImportanceInto(`modelCardImportance-${idx}`, `modelCardImportanceHint-${idx}`, m.featureImportance);
+    });
+  }, 80);
 
   // Wire collapse toggles
   list.querySelectorAll(".model-card-collapse-btn").forEach(btn => {

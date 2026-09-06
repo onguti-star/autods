@@ -106,6 +106,7 @@ def build_preprocessor(
     *,
     max_text_features: int = 300,
     one_hot_min_frequency: int | None = None,
+    one_hot_max_categories: int | None = None,
 ) -> ColumnTransformer:
     numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     remaining_cols = [c for c in X.columns if c not in numeric_cols]
@@ -127,6 +128,14 @@ def build_preprocessor(
     }
     if one_hot_min_frequency is not None:
         categorical_kwargs["min_frequency"] = one_hot_min_frequency
+    if one_hot_max_categories is not None:
+        # Hard cap on output columns per categorical feature. min_frequency alone
+        # can still leave a wide matrix if a high-cardinality column (job titles,
+        # addresses, zip codes...) has many categories that individually clear the
+        # frequency bar. Capping the width here bounds how big the dense array
+        # built downstream (see _to_dense) can get, which is what actually risks
+        # exhausting memory -- and getting OS-killed -- on large datasets.
+        categorical_kwargs["max_categories"] = one_hot_max_categories
     categorical_pipe = Pipeline(steps=[
         ("impute", SimpleImputer(strategy="most_frequent")),
         ("onehot", OneHotEncoder(**categorical_kwargs)),
@@ -515,6 +524,7 @@ def train_all(
         use_pca=use_pca,
         max_text_features=120 if is_large_dataset else 300,
         one_hot_min_frequency=10 if is_large_dataset else None,
+        one_hot_max_categories=50 if is_large_dataset else None,
     )
     
     # OPTIMIZATION: Use faster models for large datasets
@@ -549,7 +559,17 @@ def train_all(
     for name, model in candidates.items():
         if progress_callback:
             try:
-                progress_callback(f"Training {name}...")
+                # Include memory snapshot per model so it's visible in /diag
+                # even if the process is killed between models.
+                try:
+                    import psutil, os as _os, time as _time
+                    proc = psutil.Process(_os.getpid())
+                    rss_mb = proc.memory_info().rss / 1_048_576
+                    mem_note = f" | mem: {rss_mb:.0f} MB"
+                except Exception:
+                    mem_note = ""
+                    _time = __import__("time")
+                progress_callback(f"Training {name}...{mem_note}")
             except Exception:
                 pass  # never let a progress-reporting hiccup break training
         result = _train_single_model(
@@ -586,8 +606,13 @@ def train_all(
     return problem_type, leaderboard, fitted, best_name, label_encoder
 
 
-def feature_importance(pipe: Pipeline, X: pd.DataFrame) -> list:
-    """Best-effort feature importance extraction for tree models / linear coefs."""
+def feature_importance(pipe: Pipeline, X: pd.DataFrame = None) -> list:
+    """Best-effort feature importance extraction for tree models / linear coefs.
+
+    X is accepted for backward compatibility but is not used -- feature names
+    come from the already-fitted preprocessor and importances from the already
+    -fitted estimator, so callers no longer need to hand over a (possibly huge)
+    copy of the training frame just to call this."""
     try:
         prep = pipe.named_steps["prep"]
         model = pipe.named_steps["model"]

@@ -126,6 +126,10 @@ class Session:
         self.leaderboard: list = []              # list of dicts (sorted)
         self.best_model_name: Optional[str] = None
         self.feature_columns: list = []
+        self.feature_importance: list = []        # cached importance for the CURRENT target's best model
+                                                     # (set by main.py right after training finishes; kept in
+                                                     # lockstep with self.target so auto-saved snapshots never
+                                                     # attach the wrong target's bars to a saved run)
         self.label_encoder = None                # for classification target encoding
         self.cleaning_log: list = []
         self.chat_clean_log: list = []            # history of chat-based cleaning commands + results
@@ -214,6 +218,7 @@ class Session:
             "best_model_name": self.best_model_name,
             "label_encoder": self.label_encoder,
             "feature_columns": self.feature_columns,
+            "feature_importance": self.feature_importance or [],
             "auto_saved": True,   # marks this as an automatic snapshot (not a user-named run)
         }
 
@@ -238,6 +243,7 @@ class Session:
         self.leaderboard = []
         self.best_model_name = None
         self.feature_columns = []
+        self.feature_importance = []
         self.label_encoder = None
         self.progress_messages = []
 
@@ -277,6 +283,7 @@ def get_session(session_id: str) -> "Session":
     s.leaderboard = []
     s.best_model_name = None
     s.feature_columns = []
+    s.feature_importance = []
     s.label_encoder = None
     s.cleaning_log = []
     s.chat_clean_log = []
