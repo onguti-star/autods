@@ -10,10 +10,11 @@ importance, then make live predictions or download the trained model.
   - `POST /api/upload` — upload CSV/Excel/JSON
   - `GET /api/health` — quick backend readiness check with active session count and dataset limits
   - `GET /api/eda/{session_id}` — automated profile (missingness, types, histograms, correlation)
-  - `POST /api/train/{session_id}` — auto-detects classification vs. regression, trains a stronger
-    model panel (linear baselines, Random Forest, Extra Trees, Gradient Boosting, Histogram Gradient
-    Boosting, KNN, and optional XGBoost when installed), validates on a held-out split, returns a
-    ranked leaderboard + feature importance
+  - `POST /api/train/{session_id}` — auto-detects classification vs. regression, trains a model panel
+    (linear baselines, Random Forest, Extra Trees, Gradient Boosting, Histogram Gradient Boosting, KNN,
+    and optional XGBoost when installed), validates on a held-out split, returns a ranked leaderboard
+    + feature importance. Datasets above 30k rows automatically switch to a faster model subset with
+    built-in early stopping (SGD, HistGradientBoosting, XGBoost) to keep training time bounded.
   - `POST /api/predict/{session_id}` — predict on new rows using the best (or chosen) model
   - `GET /api/download_model/{session_id}` — download the fitted pipeline as a `.pkl`
 - **Frontend** (`frontend/index.html`) — single-page UI: drag-and-drop upload, EDA dashboard with

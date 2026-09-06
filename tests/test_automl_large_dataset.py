@@ -14,6 +14,54 @@ def test_large_dataset_sample_size_scales_and_caps():
     assert automl._large_dataset_sample_size(2_000_000) == 150_000
 
 
+def test_fast_models_threshold_kicks_in_below_large_dataset_threshold():
+    # Datasets above FAST_MODELS_THRESHOLD (30k) but below
+    # LARGE_DATASET_THRESHOLD (100k) -- e.g. 45k rows -- should use the fast
+    # model panel (with early stopping) WITHOUT being downsampled.
+    assert automl.FAST_MODELS_THRESHOLD < automl.LARGE_DATASET_THRESHOLD
+    # 45k rows: above fast-models threshold, below sampling threshold
+    assert 45_000 > automl.FAST_MODELS_THRESHOLD
+    assert 45_000 < automl.LARGE_DATASET_THRESHOLD
+    # Sampling should NOT kick in for 45k (below LARGE_DATASET_THRESHOLD)
+    assert automl._large_dataset_sample_size(45_000) == 45_000
+
+
+def test_medium_dataset_uses_fast_models_and_completes_quickly():
+    """A 45k-row dataset with a categorical column should use the fast model
+    panel (early-stopping HistGradientBoosting) and finish without hanging."""
+    rng = np.random.default_rng(42)
+    n_rows = 45_000
+
+    df = pd.DataFrame(
+        {
+            "target": rng.integers(0, 2, size=n_rows),
+            "num1": rng.normal(size=n_rows),
+            "num2": rng.normal(size=n_rows),
+            "cat": rng.choice(["a", "b", "c", "d"], size=n_rows),
+        }
+    )
+
+    import time
+    start = time.time()
+    problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+        df,
+        "target",
+        progress_callback=lambda _: None,
+    )
+    elapsed = time.time() - start
+
+    assert problem_type == "classification"
+    assert leaderboard
+    assert fitted
+    assert best_name is not None
+
+    # The fast panel should produce 3 models (Linear, HistGBM, XGBoost)
+    # and finish well under 60 seconds on 45k rows.
+    assert elapsed < 60, f"Training took {elapsed:.1f}s -- expected < 60s"
+    model_names = [r.get("model") for r in leaderboard if "error" not in r]
+    assert len(model_names) <= 5  # fast panel has 3, plus possible error rows
+
+
 def test_train_all_handles_large_dataset_without_crashing():
     rng = np.random.default_rng(42)
     n_rows = 120_000

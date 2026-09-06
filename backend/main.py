@@ -10,6 +10,8 @@ import pickle
 import socket
 import sqlite3
 import tempfile
+import threading
+import time
 import urllib.parse
 import urllib.request
 import json
@@ -1529,6 +1531,32 @@ class TrainRequest(BaseModel):
 # cooperatively from within the same process once they've started.
 TRAIN_JOBS: dict = {}
 
+# Hard ceiling on how long a single training run is allowed to run before it
+# is killed automatically -- independent of whether anyone is watching the
+# page or clicks Cancel. Without this, a run that gets stuck (e.g. thrashing
+# on a slow/overloaded machine, or a pathological column) can sit there for
+# hours or days with nothing to stop it, since the old behaviour only ever
+# stopped training in response to an explicit user click. Configurable via
+# env var so it can be tuned per deployment without editing code.
+TRAIN_TIMEOUT_SECONDS = int(os.environ.get("AUTODS_TRAIN_TIMEOUT_SECONDS", 20 * 60))
+
+
+def _watchdog_timeout(session_id: str, pid: int):
+    """Runs on a background timer thread. If the job for session_id is still
+    the same process (matched by pid, in case a new run already replaced it)
+    and it's still alive once TRAIN_TIMEOUT_SECONDS has elapsed, kill it and
+    flag it as a timeout (not a user cancel) so the status endpoint can report
+    an honest, specific message instead of a misleading "cancelled"."""
+    job = TRAIN_JOBS.get(session_id)
+    if job is None or job["process"].pid != pid:
+        return
+    if job["process"].is_alive():
+        job["timed_out"] = True
+        try:
+            job["process"].terminate()
+        except Exception:
+            pass
+
 
 def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
     """Runs in a child process. Talks back to the parent only via progress_list/result_queue."""
@@ -1582,6 +1610,9 @@ def _cleanup_train_job(session_id: str):
     job = TRAIN_JOBS.pop(session_id, None)
     if job is None:
         return
+    watchdog = job.get("watchdog")
+    if watchdog is not None:
+        watchdog.cancel()
     if job["process"].is_alive():
         job["process"].terminate()
         job["process"].join(timeout=2)
@@ -1627,16 +1658,30 @@ def train(session_id: str, req: TrainRequest):
     # Starting a new run always replaces any previous one for this session.
     _cleanup_train_job(session_id)
 
-    manager = mp.Manager()
+    # HistGradientBoosting (and other OpenMP-parallel sklearn code) can
+    # deadlock permanently -- not just run slow, but hang forever -- when the
+    # worker process is created with the platform-default "fork" start
+    # method, because it clones the parent's already-initialized OpenMP
+    # thread pool along with it, and that state doesn't survive the fork
+    # correctly. "spawn" starts a clean interpreter with no inherited thread
+    # state, which avoids this entirely. This is a little slower to start
+    # (a few hundred ms) but that's a rounding error next to a training run
+    # that would otherwise hang indefinitely.
+    ctx = mp.get_context("spawn")
+    manager = ctx.Manager()
     progress = manager.list(["Starting training...", "Preparing data and features..."])
     result_queue = manager.Queue()
 
-    process = mp.Process(
+    process = ctx.Process(
         target=_train_worker,
         args=(session.df.copy(), req.target, req.use_pca, progress, result_queue),
         daemon=True,
     )
     process.start()
+
+    watchdog = threading.Timer(TRAIN_TIMEOUT_SECONDS, _watchdog_timeout, args=(session_id, process.pid))
+    watchdog.daemon = True
+    watchdog.start()
 
     TRAIN_JOBS[session_id] = {
         "process": process,
@@ -1645,8 +1690,10 @@ def train(session_id: str, req: TrainRequest):
         "result_queue": result_queue,
         "target": req.target,
         "cancel_requested": False,
+        "timed_out": False,
         "n_rows": len(session.df),
-        "started_at": __import__("time").time(),
+        "started_at": time.time(),
+        "watchdog": watchdog,
     }
 
     return {"status": "started"}
@@ -1715,9 +1762,25 @@ def train_status(session_id: str):
 
     exitcode = job["process"].exitcode
     was_cancelled = job.get("cancel_requested", False)
+    timed_out = job.get("timed_out", False)
+    started_at = job.get("started_at")
     _cleanup_train_job(session_id)
 
     if result is None:
+        if timed_out:
+            minutes = TRAIN_TIMEOUT_SECONDS // 60
+            return {
+                "status": "error",
+                "messages": messages,
+                "error": (
+                    f"Training was automatically stopped after running for {minutes} minutes "
+                    "without finishing. This is a safety limit so a run can never be left going "
+                    "indefinitely (e.g. overnight or for days) even if nobody is watching. "
+                    "Try again with 'Use PCA for training' enabled to reduce dimensionality, "
+                    "remove very high-cardinality text/ID columns, or increase "
+                    "AUTODS_TRAIN_TIMEOUT_SECONDS if this dataset genuinely needs more time."
+                ),
+            }
         if was_cancelled:
             return {"status": "cancelled", "messages": messages}
         # The process died without putting anything on the result queue and the
@@ -1733,10 +1796,16 @@ def train_status(session_id: str):
                 f" This dataset has {n_rows:,} rows, which increases memory pressure during training."
                 if n_rows and n_rows > automl.LARGE_DATASET_THRESHOLD else ""
             )
+            fast_hint = (
+                f" Try again with 'Use PCA for training' enabled, or remove very high-cardinality "
+                f"categorical/text/ID columns to speed up training."
+                if n_rows and n_rows > automl.FAST_MODELS_THRESHOLD else ""
+            )
             if exitcode == -9:
                 error = (
                     "Training was stopped by the system, most likely because it ran out of memory."
                     + large_hint
+                    + fast_hint
                     + " Try again, or if this keeps happening, remove very high-cardinality text columns "
                       "(e.g. free-text titles or addresses) before training."
                 )
@@ -1751,7 +1820,7 @@ def train_status(session_id: str):
                 )
             else:
                 error = (
-                    f"Training crashed unexpectedly (signal {-exitcode})." + large_hint
+                    f"Training crashed unexpectedly (signal {-exitcode})." + large_hint + fast_hint
                     + " Try again; if it keeps happening, please report this."
                 )
         else:

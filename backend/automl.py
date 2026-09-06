@@ -36,7 +36,12 @@ from sklearn.metrics import (
     root_mean_squared_error,
 )
 from sklearn.base import clone
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import (
+    KFold,
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, LabelEncoder, OneHotEncoder, StandardScaler
@@ -53,6 +58,24 @@ except Exception:  # XGBoost is optional; scikit-learn models remain the default
 
 LARGE_DATASET_THRESHOLD = 100_000
 LARGE_DATASET_MIN_SAMPLE = 30_000
+
+# Decouples *which* model panel to use from *whether to sample*.  Below this
+# row count the full candidate panel (all models, cross-validated ranking) is
+# used; above it the "fast" panel — fewer models, all with built-in early
+# stopping — kicks in so that medium-large datasets like 45k rows don't spend
+# minutes on GradientBoosting / HistGradientBoosting.  This is intentionally
+# lower than LARGE_DATASET_THRESHOLD (which controls *downsampling*) so a 45k
+# dataset gets fast models *without* being downsampled.
+FAST_MODELS_THRESHOLD = 30_000
+
+# Model *selection* based on a single train/test split can crown a model that
+# just got a lucky split rather than the one that actually generalizes best.
+# For datasets small enough that it stays cheap, we additionally score every
+# candidate with k-fold cross-validation and use that (much more stable)
+# average score to pick the winner instead of the single-split score. This is
+# skipped above this row count and for the already-time-boxed "large dataset"
+# path so it can never be the thing that makes a run take too long.
+CV_SELECTION_MAX_ROWS = 20_000
 LARGE_DATASET_MAX_SAMPLE = 150_000
 LARGE_DATASET_SAMPLE_FRACTION = 0.08
 
@@ -186,6 +209,43 @@ def _compute_sample_weights(y_train):
     return np.array([weight_map[c] for c in y_train])
 
 
+def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_neighbors, n_rows):
+    """Average k-fold cross-validation score for one candidate on the training
+    split only (the held-out test set stays untouched for final reporting).
+
+    Returns None (never raises) if CV isn't a good fit for this candidate or
+    this dataset size -- callers fall back to the single-split score, so this
+    is purely an enhancement, never a new failure mode."""
+    if n_rows > CV_SELECTION_MAX_ROWS:
+        return None
+    try:
+        candidate_model = clone(model)
+        if name == "K-Nearest Neighbors":
+            candidate_model.set_params(n_neighbors=n_neighbors)
+        pipe = Pipeline(steps=[("prep", clone(preprocessor)), ("model", candidate_model)])
+
+        if problem_type == "classification":
+            # Enough folds to be meaningful, few enough to stay fast; never
+            # more folds than the smallest class has members.
+            min_class_count = int(pd.Series(y_train).value_counts().min())
+            n_splits = max(2, min(5, min_class_count))
+            if n_splits < 2:
+                return None
+            splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            scoring = "f1_weighted"
+        else:
+            n_splits = 5 if len(y_train) >= 50 else 3
+            if len(y_train) < n_splits * 2:
+                return None
+            splitter = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+            scoring = "r2"
+
+        scores = cross_val_score(pipe, X_train, y_train, cv=splitter, scoring=scoring, n_jobs=1)
+        return round(float(np.mean(scores)), 4)
+    except Exception:
+        return None
+
+
 def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors, class_ratio=1.0):
     """Train a single model and return results."""
     try:
@@ -281,12 +341,20 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
 
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000, class_weight=cw),
-        "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1, class_weight=cw),
-        "Extra Trees": ExtraTreesClassifier(n_estimators=400, random_state=42, n_jobs=-1, class_weight=cw),
+        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, class_weight=cw),
+        "Extra Trees": ExtraTreesClassifier(n_estimators=300, random_state=42, n_jobs=-1, class_weight=cw),
         # GradientBoostingClassifier does not support class_weight natively;
         # imbalance is handled via sample_weight inside _train_single_model.
-        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-        "Histogram Gradient Boosting": _dense_model(HistGradientBoostingClassifier(random_state=42, class_weight=cw)),
+        # It is also single-threaded (no n_jobs) and has no built-in early
+        # stopping, so it is the slowest candidate on medium/large datasets.
+        # Fewer trees with a shallower depth keeps it competitive while cutting
+        # wall-clock time roughly in half.
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42, n_estimators=50, max_depth=3),
+        # early_stopping + n_iter_no_change bound the iteration count so the
+        # full default 100-tree budget can't run when more trees don't help.
+        "Histogram Gradient Boosting": _dense_model(HistGradientBoostingClassifier(
+            random_state=42, class_weight=cw, early_stopping=True, n_iter_no_change=10,
+        )),
         "K-Nearest Neighbors": KNeighborsClassifier(),
     }
     if XGBClassifier is not None:
@@ -294,9 +362,9 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
         # scale_pos_weight tells XGBoost how much to up-weight the minority class
         spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
         models["XGBoost"] = XGBClassifier(
-            n_estimators=350,
+            n_estimators=100,
             max_depth=4,
-            learning_rate=0.05,
+            learning_rate=0.1,
             subsample=0.9,
             colsample_bytree=0.9,
             objective=objective,
@@ -311,17 +379,25 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
 def _regression_models() -> dict:
     models = {
         "Ridge Regression": Ridge(),
-        "Random Forest": RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1),
-        "Extra Trees": ExtraTreesRegressor(n_estimators=400, random_state=42, n_jobs=-1),
-        "Gradient Boosting": GradientBoostingRegressor(random_state=42),
-        "Histogram Gradient Boosting": _dense_model(HistGradientBoostingRegressor(random_state=42)),
+        "Random Forest": RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1),
+        "Extra Trees": ExtraTreesRegressor(n_estimators=300, random_state=42, n_jobs=-1),
+        # GradientBoostingRegressor is single-threaded (no n_jobs) and has no
+        # built-in early stopping; the fewer-tree / shallower-depth settings
+        # below keep it competitive while cutting wall-clock time roughly in
+        # half.
+        "Gradient Boosting": GradientBoostingRegressor(random_state=42, n_estimators=50, max_depth=3),
+        # early_stopping + n_iter_no_change bound the iteration count so the
+        # full default 100-tree budget can't run when more trees don't help.
+        "Histogram Gradient Boosting": _dense_model(HistGradientBoostingRegressor(
+            random_state=42, early_stopping=True, n_iter_no_change=10,
+        )),
         "K-Nearest Neighbors": KNeighborsRegressor(),
     }
     if XGBRegressor is not None:
         models["XGBoost"] = XGBRegressor(
-            n_estimators=350,
+            n_estimators=100,
             max_depth=4,
-            learning_rate=0.05,
+            learning_rate=0.1,
             subsample=0.9,
             colsample_bytree=0.9,
             objective="reg:squarederror",
@@ -332,7 +408,7 @@ def _regression_models() -> dict:
 
 
 def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
-    """Fast models optimized for large datasets (>100k rows), with imbalance awareness."""
+    """Fast models optimized for datasets above FAST_MODELS_THRESHOLD (30k rows), with imbalance awareness."""
     imbalanced = class_ratio > 3.0
     cw = "balanced" if imbalanced else None
 
@@ -383,7 +459,7 @@ def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dic
 
 
 def _fast_regression_models() -> dict:
-    """Fast models optimized for large datasets (>100k rows)."""
+    """Fast models optimized for datasets above FAST_MODELS_THRESHOLD (30k rows)."""
     models = {
         "Ridge Regression": Ridge(alpha=1.0),
         # See note in _fast_classification_models: scales well to large N
@@ -469,6 +545,12 @@ def train_all(
     original_n_rows = len(y_raw)
     n_rows = original_n_rows
     is_large_dataset = original_n_rows > LARGE_DATASET_THRESHOLD
+    # Use the fast model panel (fewer candidates, all with built-in early
+    # stopping) once a dataset is large enough that the full panel — including
+    # single-threaded GradientBoosting — would take minutes.  This is a
+    # separate, lower threshold than LARGE_DATASET_THRESHOLD so 45k-row
+    # datasets get fast models WITHOUT being downsampled.
+    use_fast_models = original_n_rows > FAST_MODELS_THRESHOLD
     
     if is_large_dataset:
         sample_size = _large_dataset_sample_size(n_rows)
@@ -522,13 +604,32 @@ def train_all(
     preprocessor = build_preprocessor(
         X,
         use_pca=use_pca,
-        max_text_features=120 if is_large_dataset else 300,
-        one_hot_min_frequency=10 if is_large_dataset else None,
-        one_hot_max_categories=50 if is_large_dataset else None,
+        max_text_features=120 if use_fast_models else 300,
+        # These caps used to apply only when the *row count* crossed
+        # LARGE_DATASET_THRESHOLD, on the assumption that memory pressure
+        # only comes from having many rows. But a single high-cardinality
+        # categorical column (a raw ID, city, zip code, product code...) can
+        # one-hot-encode into hundreds or thousands of columns regardless of
+        # row count, and Histogram Gradient Boosting densifies that matrix
+        # before training -- so a 45k-row dataset with one bad column can be
+        # just as slow/memory-heavy as a true large dataset. Capping always,
+        # not just above the row threshold, fixes that regardless of size.
+        one_hot_min_frequency=10,
+        one_hot_max_categories=50,
     )
     
-    # OPTIMIZATION: Use faster models for large datasets
-    if is_large_dataset:
+    # OPTIMIZATION: Use faster models for large datasets -- fewer candidates,
+    # all with built-in early stopping, so even medium-large datasets (e.g. 45k
+    # rows) finish in seconds rather than minutes.
+    if use_fast_models:
+        if progress_callback:
+            try:
+                progress_callback(
+                    f"Dataset has {original_n_rows:,} rows -- switching to fast model "
+                    f"panel (early-stopping models, 3 candidates)..."
+                )
+            except Exception:
+                pass
         candidates = (
             _fast_classification_models(len(np.unique(y)), class_ratio=class_ratio)
             if problem_type == "classification"
@@ -576,6 +677,10 @@ def train_all(
             name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors,
             class_ratio=class_ratio,
         )
+        if "error" not in result and not use_fast_models:
+            result["cv_score"] = _cv_mean_score(
+                name, model, X_train, y_train, problem_type, preprocessor, n_neighbors, n_rows
+            )
         results.append(result)
 
     fitted = {}
@@ -586,18 +691,24 @@ def train_all(
             leaderboard.append({"model": result["model"], "error": result["error"]})
         else:
             fitted[result["model"]] = result["fitted"]
-            leaderboard.append({
+            row = {
                 "model": result["model"],
                 "metrics": result["metrics"],
-                "primary_score": result["primary_score"]
-            })
+                "primary_score": result["primary_score"],
+            }
+            if result.get("cv_score") is not None:
+                row["cv_score"] = result["cv_score"]
+            leaderboard.append(row)
 
-    # rank: higher is better for all our primary scores (f1, r2)
-    ranked = sorted(
-        [row for row in leaderboard if "metrics" in row],
-        key=lambda r: r["primary_score"],
-        reverse=True,
-    )
+    # Rank by cross-validated score when we have it for every surviving
+    # candidate (much more stable than a single train/test split -- see
+    # _cv_mean_score). Otherwise fall back to the single-split primary_score,
+    # e.g. on large datasets where CV is skipped to keep runtime bounded.
+    scored_rows = [row for row in leaderboard if "metrics" in row]
+    use_cv_rank = len(scored_rows) > 0 and all("cv_score" in row for row in scored_rows)
+    rank_key = (lambda r: r["cv_score"]) if use_cv_rank else (lambda r: r["primary_score"])
+
+    ranked = sorted(scored_rows, key=rank_key, reverse=True)
     failed = [row for row in leaderboard if "metrics" not in row]
     leaderboard = ranked + failed
 

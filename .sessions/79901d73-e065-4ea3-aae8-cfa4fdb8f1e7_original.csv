@@ -1,8 +1,0 @@
-Location_ID,Location_Name,Latitude,Longitude,Avg_Daily_Foot_Traffic,Avg_Daily_Revenue_KES,Permit_Cost_KES,Primary_Customer_Demographic,Peak_Hours
-L001,CBD - Square Plaza,-1.2833,36.8219,8500,45000,1200,Office Workers,12:00-14:00
-L002,Westlands Mall Area,-1.2618,36.8044,6200,38000,1500,Young Professionals,18:00-21:00
-L003,Kasarani Sports Hub,-1.2227,36.8961,4100,18000,800,Students & Sports Fans,14:00-17:00
-L004,Kilimani Ring Road,-1.2921,36.7878,5500,32000,1400,Expatriates & Families,12:00-15:00
-L005,Industrial Area Gate 4,-1.3102,36.8445,7000,22000,600,Factory Workers,06:30-08:30
-L006,Karen Shopping Center,-1.3197,36.7031,3000,28000,1600,High-Income Residents,11:00-14:00
-L007,Thika Road Mall Axis,-1.2212,36.8814,6800,29000,1000,Shoppers & Commuters,16:00-19:00

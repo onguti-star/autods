@@ -837,7 +837,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <div class="subhead" style="margin:0;">Training setup</div>
         <p class="hint" style="margin:4px 0 0;">Last trained target: <strong id="trainSetupCollapsedTarget" style="color:var(--accent);"></strong></p>
       </div>
-      <button class="sec" id="trainSetupExpandBtn">＋ Train another target</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button id="cancelTrainBtnCollapsed" class="sec" style="display:none;">Cancel</button>
+        <button class="sec" id="trainSetupExpandBtn">＋ Train another target</button>
+      </div>
     </div>
 
     <div id="trainSetupSection">
@@ -890,6 +893,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     </div>
     </div><!-- /trainSetupSection -->
     <div id="trainStatus"></div>
+
     <div class="narrative hidden" id="trainNarrative"></div>
     <div id="leaderboardWrap" class="hidden">
       <div class="subhead">Model leaderboard</div>
@@ -4012,6 +4016,11 @@ function stopTrainPolling(){
 function setTrainingInProgress(inProgress){
   $("trainBtn").disabled = inProgress;
   $("cancelTrainBtn").style.display = inProgress ? "inline-block" : "none";
+  // The setup form (and the plain cancelTrainBtn inside it) gets hidden by
+  // collapseTrainSetup() the moment training starts, so this second button
+  // living in the always-visible collapsed bar is what the user actually
+  // sees and can click while a run is in progress.
+  $("cancelTrainBtnCollapsed").style.display = inProgress ? "inline-block" : "none";
 }
 
 // Collapsing the setup form (Learning Type / Supervised AutoML / PCA /
@@ -4182,7 +4191,7 @@ $("trainBtn").addEventListener("click", async () => {
   }, 700);
 });
 
-$("cancelTrainBtn").addEventListener("click", async () => {
+async function _cancelTraining(){
   const sid = getSid();
   if(!sid) return;
   stopTrainPolling();
@@ -4194,7 +4203,9 @@ $("cancelTrainBtn").addEventListener("click", async () => {
   }catch(e){
     $("trainStatus").innerHTML = `<div class="error-box">Could not cancel (the server may still be finishing up the current step).</div>`;
   }
-});
+}
+$("cancelTrainBtn").addEventListener("click", _cancelTraining);
+$("cancelTrainBtnCollapsed").addEventListener("click", _cancelTraining);
 
 async function refreshSavedRuns(datasetId = activeDs, sid = getState().sessionId){
   if(!sid) return;
