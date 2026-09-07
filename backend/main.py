@@ -1648,7 +1648,7 @@ def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
         _report("Worker started.")
 
     try:
-        problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+        problem_type, leaderboard, fitted, best_name, label_encoder, best_importance = automl.train_all(
             df, target, use_pca=use_pca, progress_callback=_report
         )
 
@@ -1662,6 +1662,7 @@ def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
             "fitted": fitted,
             "best_name": best_name,
             "label_encoder": label_encoder,
+            "feature_importance": best_importance,
         })
     except Exception as e:
         elapsed_total = time.time() - worker_start
@@ -1718,7 +1719,12 @@ def train(session_id: str, req: TrainRequest):
             "best_model_name": session.best_model_name,
             "label_encoder": session.label_encoder,
             "feature_columns": session.feature_columns,
-            "feature_importance": _best_model_feature_importance(session.models, session.best_model_name),
+            # Reuse the importance already cached for the CURRENT (about-to-be-
+            # replaced) target rather than recomputing from the bare fitted
+            # pipeline with no data -- session.feature_importance was filled in
+            # when this model finished training and is exactly what belongs to
+            # session.models/session.best_model_name at this point.
+            "feature_importance": session.feature_importance,
         }
 
     # Starting a new run always replaces any previous one for this session.
@@ -1911,7 +1917,12 @@ def train_status(session_id: str):
     session.label_encoder = label_encoder
     session.feature_columns = [c for c in session.df.columns if c != target]
 
-    importance = _best_model_feature_importance(fitted, best_name)
+    # Computed inside the worker (train_all), where the held-out X_test/y_test
+    # split was still available for the permutation-importance fallback --
+    # recomputing it out here from just the fitted pipeline would lose that
+    # data and always come back empty for models like HistGradientBoosting
+    # that have no feature_importances_/coef_ of their own.
+    importance = result.get("feature_importance") or []
     session.feature_importance = importance  # cache so report + auto-save carry it
 
     training_narrative = narrate.narrate_training(
@@ -1991,7 +2002,11 @@ def save_train_run(session_id: str, req: SaveRunRequest):
         "best_model_name": session.best_model_name,
         "label_encoder": session.label_encoder,
         "feature_columns": session.feature_columns,
-        "feature_importance": _best_model_feature_importance(session.models, session.best_model_name),
+        # Same reasoning as the auto-save above: session.feature_importance is
+        # already the correct importance for session.models/best_model_name
+        # (computed with real held-out data back when training finished), so
+        # reuse it instead of recomputing from the bare pipeline with none.
+        "feature_importance": session.feature_importance,
     }
     return {
         "saved": _run_summary(run_id, session.saved_runs[run_id]),

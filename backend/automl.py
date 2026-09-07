@@ -528,9 +528,10 @@ def train_all(
     target: str,
     use_pca: bool = False,
     progress_callback=None,
-) -> Tuple[str, list, dict, str, object]:
+) -> Tuple[str, list, dict, str, object, list]:
     """
-    Returns: (problem_type, leaderboard, fitted_pipelines_by_name, best_name, label_encoder_or_None)
+    Returns: (problem_type, leaderboard, fitted_pipelines_by_name, best_name,
+              label_encoder_or_None, best_model_feature_importance)
     
     If use_pca=True, applies PCA to numeric features before training to reduce dimensionality.
     Automatically optimizes for large datasets (>100k rows) by sampling and using faster models.
@@ -750,16 +751,34 @@ def train_all(
 
     best_name = ranked[0]["model"] if ranked else None
 
-    return problem_type, leaderboard, fitted, best_name, label_encoder
+    # Compute feature importance for the winning model right here, while
+    # X_test/y_test (the raw, un-preprocessed held-out split) are still in
+    # scope -- this is what lets the permutation-importance fallback above
+    # kick in for models like HistGradientBoosting that don't expose
+    # feature_importances_/coef_. Callers used to recompute this later from
+    # just the fitted pipeline with no data at all, which meant the fallback
+    # never had anything to permute and silently returned "not available".
+    best_importance = (
+        feature_importance(fitted[best_name], X_test, y_test) if best_name else []
+    )
+
+    return problem_type, leaderboard, fitted, best_name, label_encoder, best_importance
 
 
-def feature_importance(pipe: Pipeline, X: pd.DataFrame = None) -> list:
+def feature_importance(pipe: Pipeline, X: pd.DataFrame = None, y=None) -> list:
     """Best-effort feature importance extraction for tree models / linear coefs.
 
-    X is accepted for backward compatibility but is not used -- feature names
-    come from the already-fitted preprocessor and importances from the already
-    -fitted estimator, so callers no longer need to hand over a (possibly huge)
-    copy of the training frame just to call this."""
+    X/y are optional. When the fitted estimator exposes neither
+    `feature_importances_` (tree ensembles like RandomForest/ExtraTrees) nor
+    `coef_` (linear models) -- which is the case for HistGradientBoosting,
+    scikit-learn's own fast-model default -- there is no importance baked
+    into the fitted object at all. In that case, if labelled data (X, y) is
+    supplied, we fall back to permutation importance computed directly on
+    the full pipeline: shuffle each raw input column in turn and measure how
+    much the held-out score drops. This is model-agnostic, so it works for
+    HistGradientBoosting (and anything else) the same way, and it's computed
+    on the ORIGINAL columns (not the expanded one-hot/TF-IDF ones), which is
+    also more readable for the chart."""
     try:
         prep = pipe.named_steps["prep"]
         model = pipe.named_steps["model"]
@@ -771,10 +790,36 @@ def feature_importance(pipe: Pipeline, X: pd.DataFrame = None) -> list:
         elif hasattr(estimator, "coef_"):
             coef = estimator.coef_
             importances = np.abs(coef[0]) if coef.ndim > 1 else np.abs(coef)
+        elif X is not None and y is not None and len(X) > 0:
+            from sklearn.inspection import permutation_importance
+
+            sample_X, sample_y = X, y
+            # Cap the sample so this stays fast on large held-out splits --
+            # permutation importance refits nothing but re-predicts the full
+            # pipeline once per column per repeat, which adds up.
+            if len(sample_X) > 2000:
+                idx = np.random.RandomState(42).choice(len(sample_X), 2000, replace=False)
+                sample_X = sample_X.iloc[idx] if hasattr(sample_X, "iloc") else sample_X[idx]
+                sample_y = sample_y[idx] if not hasattr(sample_y, "iloc") else sample_y.iloc[idx]
+            result = permutation_importance(
+                pipe, sample_X, sample_y, n_repeats=5, random_state=42, n_jobs=1
+            )
+            importances = result.importances_mean
+            # Permutation importance is measured against the raw input
+            # columns (it shuffles them before they hit the preprocessor),
+            # not the post-encoding feature names used in the branches above.
+            feature_names = list(sample_X.columns)
         else:
             return []
 
         pairs = sorted(zip(feature_names, importances), key=lambda x: -abs(x[1]))[:15]
+        # Permutation importance can come out slightly negative for pure-noise
+        # columns (shuffling them occasionally helps by chance). Drop those so
+        # the chart doesn't show a feature that provably doesn't matter --
+        # but if every single one is <=0 (degenerate/near-constant model),
+        # keep the top few anyway rather than showing nothing.
+        positive = [(f, v) for f, v in pairs if v > 0]
+        pairs = positive if positive else pairs[:5]
         return [{"feature": str(f), "importance": round(float(v), 4)} for f, v in pairs]
     except Exception:
         return []

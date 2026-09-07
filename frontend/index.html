@@ -322,6 +322,12 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
    generic .chart-box (70vh) since many of these can be stacked in one page. */
 .model-card-chart-box{position:relative;width:100%;height:220px;margin-top:4px;}
 .model-card-chart-box canvas{width:100%!important;height:100%!important;}
+/* When a model has no importance to show (see renderImportanceInto), the
+   chart box collapses instead of reserving its full height for an empty
+   canvas -- previously this left a large blank gap above the "Not available
+   for this model type." hint. */
+.model-card-chart-box.is-empty,
+.chart-box.is-empty{height:0;min-height:0;margin-top:0;margin-bottom:0;overflow:hidden;}
 </style>
 </head>
 <body>
@@ -4358,11 +4364,18 @@ function renderLeaderboard(rows, ptype){
 function renderImportanceInto(canvasId, hintId, items){
   const canvasEl = $(canvasId);
   if(!canvasEl) return; // panel/card not in the DOM (e.g. re-rendered away) -- nothing to draw
+  // The chart box (.chart-box / .model-card-chart-box) is the canvas's direct
+  // parent -- collapse it to 0 height when there's nothing to draw so an
+  // empty chart doesn't leave a big blank gap above the "not available" hint,
+  // and restore it before drawing whenever we do have data.
+  const boxEl = canvasEl.parentElement;
   if(!items?.length){
     destroyChart(canvasId);
+    if(boxEl) boxEl.classList.add("is-empty");
     if($(hintId)){ $(hintId).textContent = "Not available for this model type."; show(hintId); }
     return;
   }
+  if(boxEl) boxEl.classList.remove("is-empty");
   // Safety net: if this canvas still has zero size (e.g. a collapsed/hidden
   // ancestor at draw time), Chart.js would silently commit to a 0x0 draw
   // that never fixes itself. Watch for it to actually get a size and redraw

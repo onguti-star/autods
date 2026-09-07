@@ -26,7 +26,7 @@ def _make_session():
 
 
 def _train_into_session(session, target="target"):
-    problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+    problem_type, leaderboard, fitted, best_name, label_encoder, importance = automl.train_all(
         session.df, target, progress_callback=lambda _: None
     )
     session.target = target
@@ -36,6 +36,11 @@ def _train_into_session(session, target="target"):
     session.best_model_name = best_name
     session.label_encoder = label_encoder
     session.feature_columns = [c for c in session.df.columns if c != target]
+    # Mirrors what the real /api/train/{id}/status poll handler does: cache
+    # the importance train_all already computed (with its held-out X_test/
+    # y_test) onto the session, rather than leaving it to be silently
+    # recomputed later with no data at all.
+    session.feature_importance = importance
 
 
 def test_manual_save_run_includes_feature_importance():

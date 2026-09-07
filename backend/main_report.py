@@ -148,7 +148,14 @@ def _report_feature_importance(session) -> list:
     try:
         if session.best_model_name and session.best_model_name in session.models and session.target in session.df.columns:
             X = session.df.drop(columns=[session.target])
-            importance = automl.feature_importance(session.models[session.best_model_name], X)
+            y = session.df[session.target]
+            # Pass y too, not just X -- models with neither feature_importances_
+            # nor coef_ (e.g. HistGradientBoosting) need labelled data for the
+            # permutation-importance fallback in automl.feature_importance to
+            # have anything to score against. X alone used to be silently
+            # ignored by that function, which is exactly why this path could
+            # come back empty for those model types.
+            importance = automl.feature_importance(session.models[session.best_model_name], X, y)
             session.feature_importance = importance
             return importance
     except Exception:
@@ -730,7 +737,8 @@ def _build_html_report(session, extra_charts=None) -> str:
             <h3>📋 Table of Contents</h3>
             <ul>
                 <li><a href="#dataset">Dataset Overview</a></li>
-                <li><a href="#original-preview">Original Data (First 15 Rows)</a></li>""")
+                <li><a href="#original-preview">Original Data (First 15 Rows)</a></li>
+                <li><a href="#updated-preview">Updated Data (First 15 Rows)</a></li>""")
     if getattr(session, "notes", "").strip():
         html_parts.append('                <li><a href="#notes">Notes</a></li>')
     html_parts.append("""                <li><a href="#summary">EDA Summary</a></li>
@@ -745,7 +753,6 @@ def _build_html_report(session, extra_charts=None) -> str:
     
     if _has_cleaning_history(session):
         html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
-    html_parts.append('                <li><a href="#updated-preview">Updated Data (First 15 Rows)</a></li>')
     if session.leaderboard or session.saved_runs:
         html_parts.append('                <li><a href="#training">Model Training Results</a></li>')
     if session.saved_predictions:
@@ -801,6 +808,15 @@ def _build_html_report(session, extra_charts=None) -> str:
     # generation degrades gracefully instead of crashing.
     html_parts.append(_render_data_preview_table_html(
         getattr(session, "original_df", session.df), "Original Data (First 15 Rows)", "original-preview", icon="🔒"
+    ))
+
+    # Updated Data Section — the current state of the data (after any
+    # cleaning), placed immediately below the Original Data table above so
+    # the "before vs. after" comparison is a direct, side-by-side scroll
+    # instead of being separated by the EDA/quality/correlation/cleaning-log
+    # sections that used to sit between them.
+    html_parts.append(_render_data_preview_table_html(
+        session.df, "Updated Data (First 15 Rows)", "updated-preview", icon="✅"
     ))
 
     # Notes Section — free-form notes the user wrote about this dataset
@@ -1036,12 +1052,6 @@ def _build_html_report(session, extra_charts=None) -> str:
             ✓ <strong>{command}</strong><br>
             <span>{message}</span>
         </div>""")
-
-    # Updated Data Section — reflects the current state of the data, right
-    # after the cleaning log so it's easy to see the "before vs. after" together.
-    html_parts.append(_render_data_preview_table_html(
-        session.df, "Updated Data (First 15 Rows)", "updated-preview", icon="✅"
-    ))
 
     # Model Training Section — covers every trained model, not just the current one
     all_runs = []

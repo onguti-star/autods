@@ -43,7 +43,7 @@ def test_medium_dataset_uses_fast_models_and_completes_quickly():
 
     import time
     start = time.time()
-    problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+    problem_type, leaderboard, fitted, best_name, label_encoder, _importance = automl.train_all(
         df,
         "target",
         progress_callback=lambda _: None,
@@ -76,7 +76,7 @@ def test_train_all_handles_large_dataset_without_crashing():
         }
     )
 
-    problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+    problem_type, leaderboard, fitted, best_name, label_encoder, _importance = automl.train_all(
         df,
         "target",
         progress_callback=lambda _: None,
@@ -108,7 +108,7 @@ def test_large_dataset_caps_one_hot_width_for_high_cardinality_column():
         }
     )
 
-    problem_type, leaderboard, fitted, best_name, label_encoder = automl.train_all(
+    problem_type, leaderboard, fitted, best_name, label_encoder, _importance = automl.train_all(
         df,
         "target",
         progress_callback=lambda _: None,
@@ -132,7 +132,7 @@ def test_feature_importance_does_not_require_x():
             "num2": rng.normal(size=n_rows),
         }
     )
-    _, _, fitted, best_name, _ = automl.train_all(df, "target", progress_callback=lambda _: None)
+    _, _, fitted, best_name, _, _ = automl.train_all(df, "target", progress_callback=lambda _: None)
     # No X argument passed -- feature names/importances come entirely from the
     # already-fitted pipeline, so callers should not need to hand over the
     # (potentially huge) training frame just to read this off.
