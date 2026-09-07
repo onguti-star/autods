@@ -21,9 +21,9 @@ from typing import Literal
 
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -1367,7 +1367,7 @@ def download_data(session_id: str, fmt: str = "csv"):
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename={name}_autods.xlsx"},
+            headers={"Content-Disposition": f"attachment; filename={name}_autods.xlsx", "Cache-Control": "no-store"},
         )
 
     # CSV: write in row-chunks and stream each chunk out as it's produced,
@@ -1387,7 +1387,7 @@ def download_data(session_id: str, fmt: str = "csv"):
     return StreamingResponse(
         _csv_chunks(),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={name}_autods.csv"},
+        headers={"Content-Disposition": f"attachment; filename={name}_autods.csv", "Cache-Control": "no-store"},
     )
 
 
@@ -1400,7 +1400,7 @@ def download_work(session_id: str):
     return StreamingResponse(
         buf,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={name}_autods_work_report.md"},
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_work_report.md", "Cache-Control": "no-store"},
     )
 
 
@@ -1438,7 +1438,7 @@ def download_html(session_id: str):
     return StreamingResponse(
         buf,
         media_type="text/html; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html"},
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html", "Cache-Control": "no-store"},
     )
 
 
@@ -1451,7 +1451,72 @@ def download_html_with_custom_charts(session_id: str, req: ReportChartsRequest):
     return StreamingResponse(
         buf,
         media_type="text/html; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html"},
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html", "Cache-Control": "no-store"},
+    )
+
+
+def _parse_form_charts(charts_json: str) -> list:
+    try:
+        parsed = json.loads(charts_json) if charts_json else []
+        return parsed if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+@app.post("/api/download_html_form/{session_id}")
+def download_html_form(session_id: str, charts_json: str = Form("[]")):
+    """
+    Same report as download_html_with_custom_charts, but bound to a real
+    HTML <form> submission (application/x-www-form-urlencoded) instead of a
+    JSON body.
+
+    The frontend used to open a blank tab, POST the chart history to
+    /api/stage_charts as JSON, then redirect that tab to the plain GET
+    download once the request resolved. That works most of the time, but it
+    depends on the browser's "user activation" window from the original
+    click still being valid when the async fetch resolves — if that fetch
+    is slow, or the browser is strict about it (mobile Safari especially),
+    the activation expires and the browser silently refuses the later
+    redirect, leaving the tab stuck on about:blank forever with no error at
+    all. A real <form method="post" target="_blank"> submit is a genuine
+    top-level navigation triggered synchronously by the click itself — the
+    same reliable mechanism the working CSV/Excel/.md downloads already
+    use — so there's no async gap for a browser to get suspicious about,
+    and no separate staging round-trip needed either.
+    """
+    session = _get_session_or_404(session_id)
+    report = _build_html_report(session, extra_charts=_parse_form_charts(charts_json)).encode("utf-8")
+    buf = io.BytesIO(report)
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html", "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/download_html_form/{session_id}")
+def download_html_form_get(session_id: str, charts_json: str = "[]"):
+    """
+    GET counterpart to download_html_form, at the exact same URL. The app
+    itself always POSTs here via the real form (see the docstring above),
+    but this same URL can also end up being opened directly — e.g. someone
+    reloads that tab, retypes/pastes the URL, or reopens it from browser
+    history — and a browser always issues a plain GET in those cases no
+    matter how the page first got there. Without this, that would 405 with
+    a bare "Method Not Allowed" and no way to recover except going back to
+    the app and clicking the button again. Answering GET too means the
+    report always comes back (just without any custom charts staged on this
+    particular request, since those only travel with the original POST).
+    """
+    session = _get_session_or_404(session_id)
+    report = _build_html_report(session, extra_charts=_parse_form_charts(charts_json)).encode("utf-8")
+    buf = io.BytesIO(report)
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={name}_autods_report.html", "Cache-Control": "no-store"},
     )
 
 
@@ -2193,6 +2258,7 @@ def download_notebook(session_id: str):
         media_type="application/x-ipynb+json",
         headers={
             "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Cache-Control": "no-store",
         },
     )
 
@@ -2211,6 +2277,44 @@ def download_notebook_with_charts(session_id: str, req: ReportChartsRequest):
         media_type="application/x-ipynb+json",
         headers={
             "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/download_notebook_form/{session_id}")
+def download_notebook_form(session_id: str, charts_json: str = Form("[]")):
+    """Form-submission counterpart to download_notebook_with_charts — see
+    download_html_form's docstring for why this exists instead of the old
+    stage-then-redirect-a-blank-tab approach."""
+    session = _get_session_or_404(session_id)
+    notebook_json = nb_module.build_notebook(session, charts=_parse_form_charts(charts_json))
+    buf = io.BytesIO(notebook_json.encode("utf-8"))
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/download_notebook_form/{session_id}")
+def download_notebook_form_get(session_id: str, charts_json: str = "[]"):
+    """GET counterpart at the same URL, for the same reason as
+    download_html_form_get — see its docstring."""
+    session = _get_session_or_404(session_id)
+    notebook_json = nb_module.build_notebook(session, charts=_parse_form_charts(charts_json))
+    buf = io.BytesIO(notebook_json.encode("utf-8"))
+    name = session.filename.rsplit(".", 1)[0]
+    return StreamingResponse(
+        buf,
+        media_type="application/x-ipynb+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Cache-Control": "no-store",
         },
     )
 
@@ -2250,7 +2354,7 @@ def download_model(session_id: str, model_name: str | None = None, run_id: str |
     return StreamingResponse(
         buf,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename={safe_name}_model.pkl"},
+        headers={"Content-Disposition": f"attachment; filename={safe_name}_model.pkl", "Cache-Control": "no-store"},
     )
 
 
@@ -2374,4 +2478,20 @@ def filter_preview(session_id: str, req: FilterRequest):
 # ---------- Serve frontend ----------
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.isdir(frontend_dir):
+    _index_path = os.path.join(frontend_dir, "index.html")
+
+    # Serve index.html explicitly (instead of leaving it to StaticFiles) so we
+    # can force browsers to always revalidate it. This is a single-page app —
+    # every fix ships by editing this one file in place, so a browser that
+    # cached an old copy will keep running old (possibly buggy) JS
+    # indefinitely with no visible sign anything is wrong, since the app
+    # still "works", just with stale code. no-store forces a fresh fetch on
+    # every load instead of relying on cache-validation round trips.
+    @app.get("/", include_in_schema=False)
+    def _serve_index():
+        return FileResponse(_index_path, media_type="text/html", headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        })
+
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")

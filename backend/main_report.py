@@ -1045,7 +1045,12 @@ def _build_html_report(session, extra_charts=None) -> str:
 
     # Model Training Section — covers every trained model, not just the current one
     all_runs = []
-    # Saved runs first (auto-saved or manually saved)
+    # Saved runs first (auto-saved or manually saved). Each saved run already
+    # has its own precomputed feature_importance stored right alongside its
+    # leaderboard (see the auto-save-on-retrain and /api/train_runs code in
+    # main.py) — carry it over here too instead of dropping it, so every
+    # trained model gets its own importance table below, not just whichever
+    # one happens to be "current" when the report is downloaded.
     for run_id, run in (session.saved_runs or {}).items():
         all_runs.append({
             "label": run.get("name", f"Saved: {run.get('target', '?')}"),
@@ -1054,6 +1059,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             "best_model_name": run.get("best_model_name", "?"),
             "leaderboard": run.get("leaderboard", []),
             "feature_columns": run.get("feature_columns", []),
+            "feature_importance": run.get("feature_importance", []),
             "is_current": False,
         })
     # Current (most recently trained) model
@@ -1065,6 +1071,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             "best_model_name": session.best_model_name or "?",
             "leaderboard": session.leaderboard,
             "feature_columns": session.feature_columns or [],
+            "feature_importance": _report_feature_importance(session),
             "is_current": True,
         })
 
@@ -1102,25 +1109,28 @@ def _build_html_report(session, extra_charts=None) -> str:
                     feats += f", … (+{len(run['feature_columns'])-20} more)"
                 html_parts.append(f'        <p style="font-size:0.82em;color:#6c757d;margin:0;"><strong>Features used:</strong> {feats}</p>')
 
-            # Feature importance only for current model (saved runs don't store fitted models in report)
-            if run["is_current"]:
-                importance = _report_feature_importance(session)
-                if importance:
-                    max_importance = max(abs(float(item.get("importance", 0) or 0)) for item in importance) or 1.0
-                    html_parts.append("""        <h4 style="margin:14px 0 8px;font-size:0.95em;">Feature Importance (Best Model)</h4>
+            # Every run's own feature importance — previously this only ever
+            # rendered for the current model (saved runs' importance data
+            # was dropped when all_runs was built above, even though it was
+            # already sitting right there in session.saved_runs). Now each
+            # run renders its own.
+            importance = run["feature_importance"]
+            if importance:
+                max_importance = max(abs(float(item.get("importance", 0) or 0)) for item in importance) or 1.0
+                html_parts.append("""        <h4 style="margin:14px 0 8px;font-size:0.95em;">Feature Importance (Best Model)</h4>
         <table class="table" style="font-size:0.88em;">
             <thead><tr><th>Feature</th><th>Importance</th><th>Relative strength</th></tr></thead>
             <tbody>""")
-                    for item in importance[:15]:
-                        feature = html.escape(str(item.get("feature", "")).split("__")[-1])
-                        value = float(item.get("importance", 0) or 0)
-                        width = min(abs(value) / max_importance * 100, 100)
-                        html_parts.append(f"""                <tr>
+                for item in importance[:15]:
+                    feature = html.escape(str(item.get("feature", "")).split("__")[-1])
+                    value = float(item.get("importance", 0) or 0)
+                    width = min(abs(value) / max_importance * 100, 100)
+                    html_parts.append(f"""                <tr>
                     <td><strong>{feature}</strong></td>
                     <td>{_fmt_report_value(value)}</td>
                     <td><div class="importance-bar"><div class="importance-fill" style="width:{width:.1f}%"></div></div></td>
                 </tr>""")
-                    html_parts.append("            </tbody></table>")
+                html_parts.append("            </tbody></table>")
 
             html_parts.append("        </div>")  # end run card
 

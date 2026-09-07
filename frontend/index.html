@@ -65,6 +65,39 @@ tr.best td{color:var(--good);}tr.best td:first-child::before{content:"★ ";}
 td.mono{font-family:'IBM Plex Mono',monospace;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
 @media(max-width:860px){.grid2{grid-template-columns:1fr;}}
+
+/* ── Small-screen hardening ──────────────────────────────────────────────
+   header/main/.panel all use fixed side padding (34px/34px/22px) sized for
+   desktop. On a ~360-400px phone that alone leaves very little room, and
+   several rows below combine a flex-1 input (min-width:180px) with two or
+   three buttons on one un-wrapped flex line ("Need to fix the data?" boxes,
+   chat input rows, filter-value actions, modal actions, source tabs...).
+   The input+buttons together are wider than the available space, so they
+   spill past the panel's right border instead of staying inside it. This
+   tightens the outer padding and makes every such row wrap onto its own
+   line on narrow screens, so content always stays within its bordered box
+   instead of overflowing it. */
+@media(max-width:600px){
+  header{padding:14px 14px 12px;}
+  main{padding:16px 12px 90px;}
+  .panel{padding:14px;}
+  .late-clean{padding:10px;}
+  .late-clean-row,
+  .clean-chat-input-row,
+  .chat-input-row,
+  .filter-value-actions,
+  .modal-actions,
+  .src-tabs{flex-wrap:wrap;}
+  .late-clean-row input,
+  .clean-chat-input-row input,
+  .chat-input-row input{flex-basis:100%;min-width:0;}
+  .late-clean-row button,
+  .clean-chat-input-row button,
+  .chat-input-row button{flex:1 1 auto;}
+}
+/* Prevent any remaining un-wrapped element from creating page-wide
+   horizontal scroll that hides content past the viewport edge. */
+html,body{overflow-x:hidden;}
 .stat-row{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;}
 .stat{font-family:'IBM Plex Mono',monospace;}
 .stat .v{font-size:23px;color:var(--accent);}
@@ -1672,33 +1705,34 @@ function dlData(fmt){
   window.open(`${API}/download_data/${sid}?fmt=${fmt}`, "_blank");
 }
 
-async function dlPresentation(){
+// Build and submit a real, invisible HTML form as a genuine top-level
+// navigation. This is the mechanism dlPresentation()/dlNotebook() below use
+// instead of the old "open a blank tab, POST elsewhere, then redirect the
+// tab" trick: a form submit triggered synchronously inside the click
+// handler carries no async gap, so there's no window where a browser's user
+// -activation timeout can silently swallow the navigation and leave a blank
+// tab behind. It also carries the full chart-history JSON as the POST body
+// directly, so no separate /api/stage_charts round-trip is needed either.
+function _submitDownloadForm(action, chartsJson){
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = action;
+  form.target = "_blank";
+  form.style.display = "none";
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "charts_json";
+  input.value = chartsJson;
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+}
+
+function dlPresentation(){
   const sid = getState().sessionId;
   if(!sid) return;
-  // Open the tab synchronously, in direct response to the click, so it
-  // isn't blocked as a popup. Then stage the chart history server-side and
-  // navigate this tab to the plain GET download — a real top-level
-  // navigation with a real Content-Disposition header, the same reliable
-  // mechanism the working CSV/Excel/.md downloads use. (A blob: URL opened
-  // in a new tab doesn't reliably trigger a download on several mobile
-  // browsers — the tab just opens blank, which is what "opens a blank tab,
-  // nothing happens" looks like.)
-  const w = window.open("", "_blank");
-  try{
-    await fetch(`${API}/stage_charts/${sid}`, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({charts: customChartSpecs})
-    });
-  }catch(err){
-    // Non-fatal — worst case the report falls back to no custom charts.
-  }
-  const url = `${API}/download_html/${sid}`;
-  if(w && !w.closed){
-    w.location.href = url;
-  }else{
-    window.open(url, "_blank");
-  }
+  _submitDownloadForm(`${API}/download_html_form/${sid}`, JSON.stringify(customChartSpecs));
 }
 
 function dlWork(){
@@ -1711,31 +1745,12 @@ function dlWork(){
   window.open(`${API}/download_work/${sid}`, "_blank");
 }
 
-async function dlNotebook(){
+function dlNotebook(){
   const sid = getState().sessionId;
   if(!sid) return;
-  // Same fix as dlPresentation() above: stage the chart history, then do a
-  // plain top-level navigation to the GET download instead of fetching a
-  // blob into a new tab.
-  const w = window.open("", "_blank");
-  try{
-    // POST with the full chart history (same list the HTML report uses) so
-    // every visualization built for this dataset gets its own cell, not just
-    // the most recent one.
-    await fetch(`${API}/stage_charts/${sid}`, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({charts: customChartSpecs})
-    });
-  }catch(err){
-    // Non-fatal — worst case the notebook falls back to the most recent chart.
-  }
-  const url = `${API}/download_notebook/${sid}`;
-  if(w && !w.closed){
-    w.location.href = url;
-  }else{
-    window.open(url, "_blank");
-  }
+  // Same fix as dlPresentation() above: a real form submission instead of
+  // fetching a blob into a new tab.
+  _submitDownloadForm(`${API}/download_notebook_form/${sid}`, JSON.stringify(customChartSpecs));
 }
 
 // ---------- UPLOAD HELPERS ----------
@@ -4081,7 +4096,19 @@ $("trainBtn").addEventListener("click", async () => {
     // training starts (not finishes). Fetch saved runs now so any displaced card
     // gets its real runId immediately — before the new model is done training.
     // This means "Predict" on the old card will work correctly right away.
-    refreshSavedRuns(datasetId, sid);
+    // skipRender: true -- this only needs to update state (the runId on the
+    // displaced card), not repaint the panel. Without skipRender, this fires
+    // a full renderModelCards() mid-training: it visibly destroys and redraws
+    // every existing card's chart (a jarring flicker while the new model is
+    // still training), and — worse — races with the *next* renderModelCards()
+    // call that happens seconds later once training finishes and the new
+    // card is added. Both calls share the same Chart.js canvas ids
+    // ("modelCardImportance-0", "-1", ...), so an in-flight draw from this
+    // stray call can still be resolving while the final call rebuilds the
+    // list and reassigns those same ids to different cards, leaving the
+    // newly-added card's chart never drawn. The panel already gets a correct,
+    // final repaint once training completes -- this call just needs the data.
+    refreshSavedRuns(datasetId, sid, {skipRender: true});
   }catch(err){
     setTrainingInProgress(false);
     if(activeDs === datasetId) $("trainStatus").innerHTML = `<div class="error-box">${err.message}</div>`;
@@ -4342,6 +4369,22 @@ function renderImportanceInto(canvasId, hintId, items){
   if(!items?.length){
     destroyChart(canvasId);
     if($(hintId)){ $(hintId).textContent = "Not available for this model type."; show(hintId); }
+    return;
+  }
+  // Safety net: if this canvas still has zero size (e.g. a collapsed/hidden
+  // ancestor at draw time), Chart.js would silently commit to a 0x0 draw
+  // that never fixes itself. Watch for it to actually get a size and redraw
+  // once when it does, instead of leaving the card permanently blank.
+  if(canvasEl.offsetWidth === 0 || canvasEl.offsetHeight === 0){
+    if(typeof ResizeObserver !== "undefined"){
+      const ro = new ResizeObserver((entries, observer) => {
+        if(canvasEl.offsetWidth > 0 && canvasEl.offsetHeight > 0){
+          observer.disconnect();
+          renderImportanceInto(canvasId, hintId, items);
+        }
+      });
+      ro.observe(canvasEl);
+    }
     return;
   }
   if($(hintId)) hide(hintId);
@@ -5035,53 +5078,30 @@ function renderModelCards(){
     </div>`;
   }).join("");
 
-  // Draw each card's importance chart only once its canvas has non-zero
-  // dimensions. A fixed setTimeout(80ms) works for the *first* card (which
-  // is in the viewport when the panel appears) but fails for cards further
-  // down: they are off-screen when the timer fires, their canvas still has
-  // offsetWidth=0, and Chart.js commits to a 0-width draw that stays blank
-  // even after the user scrolls down to them.
+  // Draw every card's importance chart the same way, regardless of whether
+  // it's currently scrolled into view. Previously this split into two paths
+  // (draw immediately if canvas.offsetWidth > 0, otherwise wait for an
+  // IntersectionObserver to fire once the card scrolled into view) -- but
+  // that observer path has no fallback: if the browser never (re)fires an
+  // intersection event for that specific canvas (which can happen depending
+  // on exactly when/how the panel became visible relative to when the
+  // observer was attached), the card is left with no chart AND no "not
+  // available" hint -- just permanently blank, with the *previous* card(s)
+  // rendering fine because they happened to take the other path.
   //
-  // Instead we use an IntersectionObserver: it fires for each canvas the
-  // moment it enters the viewport (even partially), at which point the
-  // browser has already laid it out and given it real dimensions. We fall
-  // back to the old 80ms path if IntersectionObserver isn't available.
-  if(typeof IntersectionObserver === "undefined"){
-    setTimeout(() => {
-      if(modelCardsRenderToken !== myRenderToken) return;
+  // A double requestAnimationFrame is a simpler and more reliable way to get
+  // the same guarantee (layout has been fully computed and painted at least
+  // once) for every card, without depending on intersection/visibility at
+  // all -- our panels are never clipped by a scrolling ancestor, so a card
+  // being "below the fold" doesn't affect its actual computed dimensions.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if(modelCardsRenderToken !== myRenderToken) return; // superseded by a newer render
       all.forEach((m, idx) => {
         renderImportanceInto(`modelCardImportance-${idx}`, `modelCardImportanceHint-${idx}`, m.featureImportance);
       });
-    }, 80);
-  } else {
-    all.forEach((m, idx) => {
-      const canvasId = `modelCardImportance-${idx}`;
-      const hintId   = `modelCardImportanceHint-${idx}`;
-      const canvas   = $(canvasId);
-      if(!canvas) return;
-
-      // If it's already visible (e.g. only one card, panel just shown),
-      // render immediately on the next tick so the panel layout is settled.
-      if(canvas.offsetWidth > 0){
-        setTimeout(() => {
-          if(modelCardsRenderToken !== myRenderToken) return;
-          renderImportanceInto(canvasId, hintId, m.featureImportance);
-        }, 0);
-        return;
-      }
-
-      // Otherwise watch for it to scroll into view.
-      const obs = new IntersectionObserver((entries, observer) => {
-        entries.forEach(entry => {
-          if(!entry.isIntersecting) return;
-          observer.disconnect();
-          if(modelCardsRenderToken !== myRenderToken) return; // stale render — skip
-          renderImportanceInto(canvasId, hintId, m.featureImportance);
-        });
-      }, { threshold: 0.05 }); // 5% visible is enough — canvas has real dimensions by then
-      obs.observe(canvas);
     });
-  }
+  });
 
   // Wire collapse toggles
   list.querySelectorAll(".model-card-collapse-btn").forEach(btn => {
