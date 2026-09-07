@@ -7,6 +7,7 @@ import math
 import multiprocessing as mp
 import os
 import pickle
+import re
 import socket
 import sqlite3
 import tempfile
@@ -2021,6 +2022,41 @@ class PredictRequest(BaseModel):
     run_id: str | None = None      # predict using a saved run instead of the current active training
 
 
+def _resolve_trained_model(session, run_id: str | None, model_name: str | None):
+    """Look up which trained model to predict with — either the session's
+    current live training or one of its saved runs — shared by the single-row
+    and batch predict endpoints so they can never disagree on how a run_id
+    or model_name resolves.
+
+    Returns (pipe, model_name, problem_type, target, label_encoder,
+    feature_columns, source_name).
+    """
+    if run_id:
+        if run_id not in session.saved_runs:
+            raise HTTPException(404, "Saved run not found.")
+        run = session.saved_runs[run_id]
+        models, problem_type, target = run["models"], run["problem_type"], run["target"]
+        label_encoder, feature_columns = run["label_encoder"], run["feature_columns"]
+        default_model_name = run["best_model_name"]
+        source_name = run["name"]
+    else:
+        if not session.models:
+            raise HTTPException(400, "No trained models for this session yet.")
+        models, problem_type, target = session.models, session.problem_type, session.target
+        label_encoder, feature_columns = session.label_encoder, session.feature_columns
+        default_model_name = session.best_model_name
+        source_name = "Current training"
+
+    resolved_name = model_name or default_model_name
+    if resolved_name not in models:
+        raise HTTPException(400, f"Model '{resolved_name}' not found.")
+
+    return (
+        models[resolved_name], resolved_name, problem_type, target,
+        label_encoder, feature_columns, source_name,
+    )
+
+
 def _jsonable_value(value):
     if hasattr(value, "item"):
         return value.item()
@@ -2047,28 +2083,10 @@ def _prediction_summary(prediction_id: str, prediction: dict) -> dict:
 @app.post("/api/predict/{session_id}")
 def predict(session_id: str, req: PredictRequest):
     session = _get_session_or_404(session_id)
+    pipe, model_name, problem_type, target, label_encoder, feature_columns, source_name = (
+        _resolve_trained_model(session, req.run_id, req.model_name)
+    )
 
-    if req.run_id:
-        if req.run_id not in session.saved_runs:
-            raise HTTPException(404, "Saved run not found.")
-        run = session.saved_runs[req.run_id]
-        models, problem_type, target = run["models"], run["problem_type"], run["target"]
-        label_encoder, feature_columns = run["label_encoder"], run["feature_columns"]
-        default_model_name = run["best_model_name"]
-        source_name = run["name"]
-    else:
-        if not session.models:
-            raise HTTPException(400, "No trained models for this session yet.")
-        models, problem_type, target = session.models, session.problem_type, session.target
-        label_encoder, feature_columns = session.label_encoder, session.feature_columns
-        default_model_name = session.best_model_name
-        source_name = "Current training"
-
-    model_name = req.model_name or default_model_name
-    if model_name not in models:
-        raise HTTPException(400, f"Model '{model_name}' not found.")
-
-    pipe = models[model_name]
     input_df = pd.DataFrame(req.rows)
 
     missing_cols = [c for c in feature_columns if c not in input_df.columns]
@@ -2106,6 +2124,89 @@ def predict(session_id: str, req: PredictRequest):
         "saved_predictions": [
             _prediction_summary(pid, p) for pid, p in session.saved_predictions.items()
         ],
+    }
+
+
+# Column-name patterns that almost always mean "row identifier" rather than a
+# feature — used to auto-pick the id column for the Kaggle-style two-column
+# submission CSV in batch predict, without making the user hunt for it.
+_ID_COLUMN_RE = re.compile(r"(?:^id$|_id$|^id_|id$)", re.IGNORECASE)
+
+
+def _guess_id_column(columns: list[str]) -> str | None:
+    for col in columns:
+        if _ID_COLUMN_RE.search(col):
+            return col
+    return None
+
+
+class BatchPredictRequest(BaseModel):
+    target_session_id: str   # the dataset to score (e.g. test.csv's session)
+    run_id: str | None = None
+    model_name: str | None = None
+
+
+@app.post("/api/predict_batch/{model_session_id}")
+def predict_batch(model_session_id: str, req: BatchPredictRequest):
+    """Score every row of a *different* dataset (req.target_session_id) with
+    a model trained on model_session_id, and return the results as CSV —
+    the batch counterpart to /api/predict, which only ever takes up to 100
+    hand-typed rows against the model's own session. This is what makes a
+    train.csv / test.csv Kaggle-style split actually usable: train on one
+    dataset tab, then score another tab's rows with that model without
+    retyping anything.
+    """
+    model_session = _get_session_or_404(model_session_id)
+    target_session = _get_session_or_404(req.target_session_id)
+
+    pipe, model_name, problem_type, target, label_encoder, feature_columns, source_name = (
+        _resolve_trained_model(model_session, req.run_id, req.model_name)
+    )
+
+    input_df = target_session.df.copy()
+    if input_df.empty:
+        raise HTTPException(400, "The dataset to score has no rows.")
+
+    missing_cols = [c for c in feature_columns if c not in input_df.columns]
+    scoring_df = input_df.copy()
+    for c in missing_cols:
+        scoring_df[c] = None
+    scoring_df = scoring_df[feature_columns]
+
+    preds = pipe.predict(scoring_df)
+    if problem_type == "classification" and label_encoder is not None:
+        preds = label_encoder.inverse_transform(preds.astype(int))
+
+    # "Full" output: every original column from the target dataset plus the
+    # prediction, in case the user wants the extra context (e.g. to sanity-
+    # check predictions against Age/Sex/Fare visually).
+    full_df = input_df.copy()
+    full_df[target] = preds
+
+    id_column = _guess_id_column(list(input_df.columns))
+    submission_csv = None
+    if id_column:
+        submission_df = full_df[[id_column, target]]
+        submission_csv = submission_df.to_csv(index=False)
+
+    preview_df = full_df.head(10)
+    preview = [
+        {k: _jsonable_value(v) for k, v in row.items()}
+        for row in preview_df.to_dict(orient="records")
+    ]
+
+    return {
+        "ok": True,
+        "target": target,
+        "problem_type": problem_type,
+        "model_name": model_name,
+        "source_name": source_name,
+        "rows_predicted": int(len(full_df)),
+        "missing_feature_columns": missing_cols,
+        "id_column": id_column,
+        "full_csv": full_df.to_csv(index=False),
+        "submission_csv": submission_csv,
+        "preview": preview,
     }
 
 

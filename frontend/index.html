@@ -862,6 +862,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <p class="hint" style="margin:4px 0 0;">Last trained target: <strong id="trainSetupCollapsedTarget" style="color:var(--accent);"></strong></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
+        <button id="trainAnotherBtnCollapsed" class="sec">＋ Train another target</button>
         <button id="cancelTrainBtnCollapsed" class="sec" style="display:none;">Cancel</button>
       </div>
     </div>
@@ -1577,14 +1578,21 @@ function restoreDataset(state){
     if(cleanPanelNeeded) show("dlBarClean");
   }
 
+  // Always wipe any previously-rendered training results first — leaderboard
+  // table, importance chart, narrative, predict fields — before deciding what
+  // (if anything) to show for this dataset. Previously this only happened in
+  // the "neither training nor panelTrainVisible" branch below, so switching
+  // to a dataset that HAD already finished training (training gets folded
+  // into modelCards and cleared once done, but panelTrainVisible stays true)
+  // left the *previous* dataset's leaderboard/chart/narrative on screen,
+  // mislabelled as belonging to the dataset you just switched to.
+  clearTrainingUI();
   if(state.training){
     show("panelTrain");
     // Delay render so panel is visible and importanceCanvas has dimensions
     setTimeout(() => renderTrainingState(state.training), 80);
   } else if(state.panelTrainVisible){
     show("panelTrain");
-  } else {
-    clearTrainingUI();
   }
   syncTrainSetupCollapse();
 
@@ -1997,6 +2005,22 @@ function renderDescribe(describe){
   });
   html += `</tbody></table>`;
   wrap.innerHTML = html;
+}
+
+// Client-side download of a text blob (used by batch predict's CSV downloads) —
+// everything else in the app downloads via a server endpoint, but this CSV is
+// already sitting in memory from the predict_batch response, so there's no
+// reason to round-trip it back to the server just to send it back down again.
+function downloadTextFile(text, filename, mimeType){
+  const blob = new Blob([text], {type: mimeType});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function renderPreview(columns, rows, targetId = "previewWrap"){
@@ -3991,6 +4015,10 @@ function setTrainingInProgress(inProgress){
   // living in the always-visible collapsed bar is what the user actually
   // sees and can click while a run is in progress.
   $("cancelTrainBtnCollapsed").style.display = inProgress ? "inline-block" : "none";
+  // Don't let "＋ Train another target" kick off a second run on top of one
+  // that's already in flight — it's still fine to click once the button
+  // above cancels or the current run finishes.
+  $("trainAnotherBtnCollapsed").disabled = inProgress;
 }
 
 // Collapsing the setup form (Learning Type / Supervised AutoML / PCA /
@@ -4386,6 +4414,7 @@ function _goTrainAnother(){
   }
 }
 $("trainAnotherBtn").addEventListener("click", _goTrainAnother);
+$("trainAnotherBtnCollapsed").addEventListener("click", _goTrainAnother);
 
 // ---------- PREDICT ----------
 $("goPredictBtn").addEventListener("click", () => { openModelCards(); });
@@ -5038,6 +5067,14 @@ function renderModelCards(){
         <div class="model-card-predict-row">${fields}</div>
         <button class="sec model-card-predict-btn" data-idx="${idx}" style="margin-top:4px;">▶ Predict</button>
         <div class="model-card-result" id="model-card-result-${idx}"></div>
+
+        <div class="subhead" style="margin-top:18px;margin-bottom:8px;">Batch predict on another dataset</div>
+        <p class="hint" style="margin:0 0 8px;">Score every row of a different open dataset (e.g. a test.csv split) with this model, and download the results as CSV.</p>
+        <div class="model-card-predict-row">
+          <select class="model-card-batch-target" data-idx="${idx}" style="min-width:180px;"></select>
+          <button class="sec model-card-batch-predict-btn" data-idx="${idx}">▶ Batch predict</button>
+        </div>
+        <div class="model-card-batch-result" id="model-card-batch-result-${idx}"></div>
       </div>
     </div>`;
   }).join("");
@@ -5076,6 +5113,20 @@ function renderModelCards(){
       const collapsed = body.classList.toggle("collapsed");
       btn.textContent = collapsed ? "▼ expand" : "▲ collapse";
     });
+  });
+
+  // Populate each card's "batch predict" dataset dropdown with every other
+  // open dataset tab (skip the model's own dataset — scoring the training
+  // data itself isn't the point of this feature).
+  list.querySelectorAll(".model-card-batch-target").forEach(sel => {
+    const others = datasets.filter(d => d.id !== activeDs);
+    if(!others.length){
+      sel.innerHTML = `<option value="">Open another dataset tab first</option>`;
+      sel.disabled = true;
+    }else{
+      sel.disabled = false;
+      sel.innerHTML = others.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join("");
+    }
   });
 
   // Wire predict buttons
@@ -5117,6 +5168,71 @@ function renderModelCards(){
           (data.narrative ? `<div class="narrative" style="margin-top:8px;"><div class="nlabel">What this means</div><p>${escapeHtml(data.narrative)}</p></div>` : "");
         setState({savedPredictions: data.saved_predictions || []});
         renderSavedPredictionsList();
+      }catch(err){
+        result.innerHTML = `<div class="error-box">${err.message}</div>`;
+      }
+      btn.disabled = false;
+    });
+  });
+
+  // Wire batch predict buttons
+  list.querySelectorAll(".model-card-batch-predict-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const idx     = parseInt(btn.dataset.idx, 10);
+      const model   = all[idx];
+      const sel     = $(`model-card-${idx}`).querySelector(".model-card-batch-target");
+      const result  = $(`model-card-batch-result-${idx}`);
+      if(!model || !sel || !result) return;
+
+      const targetDsId = sel.value;
+      const targetSessionId = dsState[targetDsId]?.sessionId;
+      if(!targetSessionId){
+        result.innerHTML = `<div class="error-box">Pick a dataset to score.</div>`;
+        return;
+      }
+
+      const body = {target_session_id: targetSessionId};
+      if(model.runId) body.run_id = model.runId;
+
+      result.innerHTML = `<p class="loading">Scoring every row</p>`;
+      btn.disabled = true;
+      try{
+        const res  = await fetch(`${API}/predict_batch/${getSid()}`, {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.detail || "Batch prediction failed");
+
+        const missingNote = data.missing_feature_columns.length
+          ? `<p class="hint" style="color:var(--bad);margin:6px 0;">This dataset is missing ${data.missing_feature_columns.map(escapeHtml).join(", ")} — those rows were filled blank before scoring, so results may be less reliable.</p>`
+          : "";
+
+        const previewCols = data.preview.length ? Object.keys(data.preview[0]) : [];
+        const previewHtml = previewCols.length ? `<table class="preview-table"><thead><tr>` +
+          previewCols.map(c => `<th><span class="col-name">${escapeHtml(c)}</span></th>`).join("") +
+          `</tr></thead><tbody>` +
+          data.preview.map(row => `<tr>${previewCols.map(c => {
+            const v = row[c];
+            return v === null || v === undefined ? `<td class="null-val">null</td>` : `<td>${escapeHtml(String(v))}</td>`;
+          }).join("")}</tr>`).join("") +
+          `</tbody></table>` : "";
+
+        result.innerHTML =
+          `<p class="hint" style="margin:8px 0 6px;">Scored ${data.rows_predicted} row(s) with ${escapeHtml(model.bestModel || "the best model")}. Preview of the first ${data.preview.length}:</p>` +
+          missingNote + previewHtml +
+          `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="sec model-card-batch-download-full" data-idx="${idx}">⬇ Download full CSV</button>
+            ${data.submission_csv ? `<button class="sec model-card-batch-download-submission" data-idx="${idx}">⬇ Download submission CSV (${escapeHtml(data.id_column)}, ${escapeHtml(data.target)})</button>` : ""}
+           </div>`;
+
+        result.querySelector(".model-card-batch-download-full")?.addEventListener("click", () => {
+          downloadTextFile(data.full_csv, `${model.target}_predictions_full.csv`, "text/csv");
+        });
+        result.querySelector(".model-card-batch-download-submission")?.addEventListener("click", () => {
+          downloadTextFile(data.submission_csv, `${model.target}_submission.csv`, "text/csv");
+        });
       }catch(err){
         result.innerHTML = `<div class="error-box">${err.message}</div>`;
       }
