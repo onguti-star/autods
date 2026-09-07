@@ -56,6 +56,7 @@ CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
     "product", "send", "separate", "separator", "decimal", "comma", "dot", "period",
     "round", "rounding", "decimals", "decimal", "titled",
     "split", "stopwords", "strip", "tab", "text", "trim",
+    "pattern", "regex", "letter", "deck", "title",
     "uppercase", "urls", "whitespace",
 }
 
@@ -75,7 +76,7 @@ def _keyword_typo_threshold(word: str, keyword: str) -> int:
 # against the keyword list, even if they happen to be a close edit-distance
 # match to one.
 _NAME_OR_VALUE_MARKERS = {
-    "into", "as", "called", "named", "is", "was", "equals", "equal", "to", "where",
+    "into", "as", "called", "named", "is", "was", "equals", "equal", "to", "where", "from",
 }
 
 

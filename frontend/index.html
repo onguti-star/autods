@@ -274,13 +274,6 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .modal-actions button.danger:hover{filter:brightness(1.1);}
 
 /* dataset selector strip (appears in Profile, Filter, Training) */
-.ds-selector{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:18px;padding:10px 14px;background:var(--bg);border:1px solid var(--panel-border);position:relative;}
-.ds-selector::before{content:"Working on:";font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-dim);margin-right:4px;}
-.ds-selector label{display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;padding:4px 10px;border:1px solid var(--panel-border);background:var(--panel);transition:border-color .12s,background .12s;}
-.ds-selector label:hover{border-color:var(--accent);}
-.ds-selector input[type=radio]{accent-color:var(--accent);cursor:pointer;}
-.ds-selector input[type=radio]:checked + span{color:var(--accent);font-weight:600;}
-.ds-selector label:has(input:checked){border-color:var(--accent);background:rgba(80,160,255,0.07);}
 
 /* dataset selector strip (appears in Profile, Filter, Training) */
 .filter-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
@@ -436,7 +429,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <!-- 02 PROFILE -->
   <section class="panel hidden" id="panelEDA">
     <h2><span class="idx">02 /</span> Automated Profile</h2>
-    <div class="ds-selector" id="edaDsSelector"></div>
     <div class="dl-bar hidden" id="dlBarEDA">
       <span>Download the current data as-is</span>
       <button class="dl" onclick="dlData('csv')">⬇ CSV</button>
@@ -851,7 +843,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <!-- 05 TRAIN -->
   <section class="panel hidden" id="panelTrain">
     <h2><span class="idx">05 /</span> Training</h2>
-    <div class="ds-selector" id="trainDsSelector"></div>
     <p class="hint">Choose supervised learning when you have a target column to predict, or unsupervised learning when you want to discover clusters, patterns, or unusual rows.</p>
 
     <div class="late-clean">
@@ -1235,6 +1226,11 @@ function clearAndReload(){
     }
   });
 
+  // Also sweep any orphaned session files left behind by earlier tabs/tests
+  // that never got closed properly (crashed page, closed browser, old bug),
+  // instead of waiting for the server's own 7-day cleanup window.
+  fetch(`${API}/session/purge`, { method: "POST", keepalive: true }).catch(() => {});
+
   try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
   location.reload();
 }
@@ -1413,6 +1409,12 @@ function switchDataset(id){
   // Immediately sync allColumns to the incoming dataset so any DOM reads
   // (targetSelect, typeCol etc.) are correct before restoreDataset populates them.
   allColumns = dsState[id]?.allColumns || [];
+  // Rebuild the column dropdowns (targetSelect included) right now, synchronously,
+  // instead of waiting for the async EDA/profile fetch inside restoreDataset. Without
+  // this there was a window, right after switching tabs, where targetSelect still held
+  // the previous dataset's <option> list and selected value — training during that
+  // window silently sent a target column that doesn't exist in the new dataset.
+  populateSelects();
   const state = dsState[id] || {};
   if(state.sessionId){
     restoreDataset(state);
@@ -1451,57 +1453,9 @@ function renderDsTabs(){
     t.onclick = () => switchDataset(ds.id);
     tabsEl.insertBefore(t, addBtn);
   });
-  renderDsSelectors();  // keep the in-panel selectors in sync
   // Update debug session indicator
   const dbg = $("cleanSessionDebug");
   if(dbg){ const sid = getState().sessionId; dbg.textContent = sid ? "session: " + sid : "no session"; }
-}
-
-// Build or refresh the radio-button dataset selector strips inside panels.
-// Each strip lists all loaded datasets as radio buttons.
-// Selecting one switches the active dataset so the panel immediately reflects it.
-function renderDsSelectors(){
-  const configs = [
-    { id: "edaDsSelector",    action: "eda"    },
-    { id: "simDsSelector",    action: "sim"    },
-    { id: "trainDsSelector",  action: "train"  },
-  ];
-
-  const visible = datasets.length > 1;
-
-  configs.forEach(({ id, action }) => {
-    const el = $(id);
-    if(!el) return;
-    el.style.display = visible ? "" : "none";
-    if(!visible){ el.innerHTML = ""; return; }
-
-    el.innerHTML = datasets.map(ds => `
-      <label>
-        <input type="radio" name="${id}" value="${ds.id}"
-          data-action="${action}"
-          ${ds.id === activeDs ? "checked" : ""}
-          onchange="_onDsSelectorChange(this)">
-        <span>${ds.name}</span>
-      </label>
-    `).join("");
-  });
-}
-
-function _onDsSelectorChange(radio){
-  const id = radio.value;
-  const action = radio.dataset.action;
-  switchDataset(id);
-  // Sync the other selectors to the same selection
-  document.querySelectorAll(".ds-selector input[type=radio]").forEach(r => {
-    if(r.value === id) r.checked = true;
-  });
-  if(action === "eda")    scrollPanel("panelEDA");
-  if(action === "sim"){
-    show("panelViz");
-    if($("simDropdown")) $("simDropdown").open = true;
-    scrollPanel("panelViz");
-  }
-  if(action === "train")  scrollPanel("panelTrain");
 }
 
 function clearAnalysisUI(){
@@ -4070,6 +4024,16 @@ $("trainBtn").addEventListener("click", async () => {
   const target = $("targetSelect").value;
   const usePca = $("usePcaForTraining").checked;
   if(!sid || !target) return;
+
+  // Belt-and-braces: never send a target that isn't actually a column on the
+  // dataset we're about to train. If the dropdown is somehow out of sync
+  // (e.g. it hadn't been rebuilt yet for the active dataset), refresh it and
+  // stop instead of round-tripping to the server for a guaranteed "not found".
+  if(!allColumns.includes(target)){
+    populateSelects();
+    $("trainStatus").innerHTML = `<div class="error-box">"${target}" isn't a column on this dataset — refreshed the target list, pick again.</div>`;
+    return;
+  }
 
   // Free up the space the setup form was taking as soon as the user commits
   // to a training run — "＋ Train another target" brings it back later.

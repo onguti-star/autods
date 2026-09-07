@@ -145,6 +145,50 @@ def _split_first_word_columns(
     return out
 
 
+# Named shortcuts for the "extract <shortcut> from <col> into <newcol>" command
+# below, covering the two feature-engineering asks that come up constantly on
+# people-datasets: a title buried in a "Last, Title. First" name, and a deck
+# letter buried at the front of a cabin code. Add more here as they come up —
+# each key just needs a regex whose first capture group is the value to pull out.
+_EXTRACT_SHORTCUTS = {
+    "title": r",\s*([A-Za-z ]+?)\.",   # "Braund, Mr. Owen Harris" -> "Mr"
+    "deck": r"^\s*([A-Za-z])",         # "C85" / "B96 B98" -> "C" / "B"
+}
+
+# Patterns for the general "extract a text pattern into a new column" command.
+# Tried in order; the first that matches wins. "regex"/"first_letter" are the
+# general-purpose forms, "shortcut" is the title/deck convenience form above.
+_EXTRACT_COMMAND_PATTERNS = [
+    (r"\bextract\s+(?:pattern|regex)\s+(.+?)\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "regex"),
+    (r"\bextract\s+(?:the\s+)?first\s+letter\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "first_letter"),
+    (r"\b(?:extract|get|pull)\s+(?:the\s+)?(title|deck)\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "shortcut"),
+]
+
+
+def _extract_pattern_columns(
+    df: pd.DataFrame,
+    source_col: str,
+    new_col: str,
+    pattern: str,
+) -> tuple[pd.DataFrame, int]:
+    """Pull a substring out of source_col into new_col using a regex pattern —
+    the general text-pattern-extraction tool that _split_first_word_columns
+    above can't do, since that one only ever cuts a value at its first space.
+    Uses the pattern's first capture group if it has one, otherwise wraps the
+    whole pattern in a group and uses that. Values that don't match (or are
+    missing) become NA rather than raising, since a derived feature column is
+    expected to have gaps — e.g. rows with no Cabin get no Deck.
+    Returns (new_df, match_count) so the caller can report how many rows matched.
+    """
+    out = df.copy()
+    series = out[source_col].astype("string")
+    has_group = re.compile(pattern).groups >= 1
+    extract_pattern = pattern if has_group else f"({pattern})"
+    extracted = series.str.extract(extract_pattern, expand=True)[0].str.strip()
+    out[new_col] = extracted
+    return out, int(extracted.notna().sum())
+
+
 # Safe mathematical expression evaluator
 _SAFE_OPERATORS = {
     ast.Add: operator.add,
@@ -401,6 +445,10 @@ HELP_TEXT = (
     "• new column profit = revenue - cost\n"
     "• create column doubled as quantity * 2\n"
     "• split first word from full_name into title and name\n"
+    "• extract title from Name into Title  (pulls the title out of 'Last, Title. First' names)\n"
+    "• extract deck from Cabin into Deck  (first letter of a cabin code like 'C85')\n"
+    "• extract first letter from Cabin into Deck\n"
+    "• extract pattern ([A-Za-z]) from Cabin into Deck  (your own regex — first capture group is used)\n"
     "• replace 2 with 0 in profit  (replaces exact values in a column)\n"
     "• replace yes with 1 in discount_applied\n"
     "• fill missing values in income with median  (mean / mode / zero / a specific value)\n"
@@ -629,6 +677,53 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
 
         new_df = _split_first_word_columns(df, source_col, first_col, rest_col)
         return new_df, f"Split first word from '{source_col}' into '{first_col}' and '{rest_col}'."
+
+    # ---- extract a text pattern into a new column ----
+    # Covers feature engineering that "split first word" can't: pulling a
+    # substring out from the middle/anywhere in a value, e.g. the title out of
+    # a Kaggle-style "Last, Title. First" name, or the deck letter off the
+    # front of a cabin code like "C85". Two named shortcuts (title/deck) cover
+    # those common cases without the user having to write regex themselves;
+    # "extract pattern <regex> ..." is the general escape hatch for anything else.
+    for pattern, kind in _EXTRACT_COMMAND_PATTERNS:
+        m = re.search(pattern, q, re.IGNORECASE)
+        if not m:
+            continue
+
+        shortcut_key = None
+        if kind == "regex":
+            user_pattern, source_text, new_col = m.group(1), m.group(2), m.group(3)
+            user_pattern = user_pattern.strip(" '\"")
+        elif kind == "first_letter":
+            source_text, new_col = m.group(1), m.group(2)
+            user_pattern = r"^\s*(\S)"
+        else:  # shortcut: title / deck
+            shortcut_key, source_text, new_col = m.group(1).lower(), m.group(2), m.group(3)
+            user_pattern = _EXTRACT_SHORTCUTS[shortcut_key]
+
+        source_col = _match_col(source_text, columns)
+        if not source_col:
+            return df, (
+                f"I couldn't find the column to extract from. Available columns: {', '.join(columns)}. "
+                "Try: extract title from Name into Title."
+            )
+        if new_col in columns:
+            return df, f"'{new_col}' already exists. Choose a new column name."
+        if new_col == source_col:
+            return df, "Use a different name for the new column than the source column."
+
+        try:
+            re.compile(user_pattern)
+        except re.error as e:
+            return df, f"That isn't a valid pattern ({e}). Try: extract pattern ([A-Za-z]) from Cabin into Deck."
+
+        new_df, match_count = _extract_pattern_columns(df, source_col, new_col, user_pattern)
+        total = len(df)
+        label = shortcut_key if shortcut_key else "pattern"
+        msg = f"Extracted {label} from '{source_col}' into '{new_col}' ({match_count} of {total} row(s) matched)."
+        if match_count == 0:
+            msg += " Nothing matched — check the source column and pattern."
+        return new_df, msg
 
     # ---- create new column with math expression ----
     if any(term in ql for term in ("create", "add", "new column")):

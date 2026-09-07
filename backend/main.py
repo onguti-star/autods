@@ -2374,6 +2374,19 @@ def delete_session_endpoint(session_id: str):
     return {"ok": True}
 
 
+@app.post("/api/session/purge")
+def purge_sessions_endpoint():
+    """Immediately deletes every orphaned .sessions/ file — i.e. any file not
+    backing a session currently held in memory — regardless of age. The
+    periodic sweep (see _periodic_session_cleanup) only removes files older
+    than 7 days, which is fine for steady background hygiene but leaves
+    same-day leftovers sitting around. This gives the frontend's "fresh
+    reload" button a way to clear those out on demand, right when the user
+    asks for it, instead of waiting out the week-long grace period."""
+    removed = purge_stale_session_files(max_age_days=0)
+    return {"ok": True, "removed": removed}
+
+
 @app.get("/api/progress/{session_id}")
 def get_progress(session_id: str):
     session = _get_session_or_404(session_id)
