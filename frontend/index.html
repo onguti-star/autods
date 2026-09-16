@@ -913,6 +913,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <input type="checkbox" id="usePcaForTraining"> 
       <span>Use PCA for training (recommended when PCA shows "excellent" or "good" fit)</span>
     </label>
+    <label class="inline-option" style="margin-bottom:8px;">
+      <input type="checkbox" id="thoroughTraining">
+      <span>Thorough mode — tune hyperparameters and add a stacked ensemble (slower, more accurate; best for datasets under ~10k rows, e.g. Kaggle-style competitions)</span>
+    </label>
     
     <div class="pred-row" style="margin-top:14px;">
       <div class="pred-field"><label>Target column</label><select id="targetSelect"></select></div>
@@ -1109,7 +1113,14 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 </div>
 
 <script>
-const API = "/api";
+// Set this when the frontend and backend are hosted on DIFFERENT origins
+// (e.g. this file on Netlify, the API on your own VPS) -- e.g.
+//   const API_BASE = "https://api.yourdomain.com";
+// Leave it "" (the default) when the backend serves this same file itself,
+// which is how local dev and single-server deployments already work --
+// nothing else needs to change for those.
+const API_BASE = "";
+const API = API_BASE + "/api";
 
 // Multi-dataset state
 let datasets = [];      // [{id, name, sessionId}]
@@ -4057,6 +4068,7 @@ $("trainBtn").addEventListener("click", async () => {
   const sid = getSid();
   const target = $("targetSelect").value;
   const usePca = $("usePcaForTraining").checked;
+  const thorough = $("thoroughTraining").checked;
   if(!sid || !target) return;
 
   // Belt-and-braces: never send a target that isn't actually a column on the
@@ -4085,7 +4097,7 @@ $("trainBtn").addEventListener("click", async () => {
   setTrainingInProgress(true);
 
   try{
-    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, use_pca: usePca})});
+    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, use_pca: usePca, thorough})});
     if(!startRes.ok){
       const errData = await startRes.json().catch(()=>({}));
       throw new Error(errData.detail || "Could not start training");
