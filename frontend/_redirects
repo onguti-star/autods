@@ -1,1 +1,2 @@
-/api/*  http://YOUR_ORACLE_IP:8000/api/:splat  200
+   /api/*  https://autods-backend.onrender.com/api/:splat  200
+ .
