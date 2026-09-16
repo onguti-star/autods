@@ -61,23 +61,33 @@ LARGE_DATASET_MIN_SAMPLE = 30_000
 
 # Decouples *which* model panel to use from *whether to sample*.  Below this
 # row count the full candidate panel (all models, cross-validated ranking) is
-# used; above it the "fast" panel — fewer models, all with built-in early
-# stopping — kicks in so that medium-large datasets like 45k rows don't spend
-# minutes on GradientBoosting / HistGradientBoosting.  This is intentionally
-# lower than LARGE_DATASET_THRESHOLD (which controls *downsampling*) so a 45k
-# dataset gets fast models *without* being downsampled.
-FAST_MODELS_THRESHOLD = 30_000
+# used; above it the "fast" panel kicks in so that large datasets don't spend
+# minutes on single-threaded GradientBoosting.  Raised from 30k to 50k, and
+# the fast panel itself was made less lossy (see _fast_classification_models
+# / _fast_regression_models below) -- it now keeps a tree-ensemble candidate
+# alongside the linear/HGB ones instead of relying on a single fast estimator
+# per model family, so datasets in the 30k-50k range that used to lose real
+# accuracy to the fast switch now get a fuller panel instead.
+FAST_MODELS_THRESHOLD = 50_000
 
 # Model *selection* based on a single train/test split can crown a model that
 # just got a lucky split rather than the one that actually generalizes best.
 # For datasets small enough that it stays cheap, we additionally score every
 # candidate with k-fold cross-validation and use that (much more stable)
-# average score to pick the winner instead of the single-split score. This is
-# skipped above this row count and for the already-time-boxed "large dataset"
-# path so it can never be the thing that makes a run take too long.
-CV_SELECTION_MAX_ROWS = 20_000
-LARGE_DATASET_MAX_SAMPLE = 150_000
-LARGE_DATASET_SAMPLE_FRACTION = 0.08
+# average score to pick the winner instead of the single-split score. Raised
+# from 20k to 30k to match FAST_MODELS_THRESHOLD's old boundary, so CV-based
+# selection -- the biggest lever on "did we actually pick the best model" --
+# covers the same range the full panel now runs on. Still skipped above this
+# and for the already time-boxed "large dataset" path so it can't be the
+# thing that makes a run take too long.
+CV_SELECTION_MAX_ROWS = 30_000
+# Sample size/fraction used once a dataset is large enough to be downsampled
+# at all (> LARGE_DATASET_THRESHOLD). Raised the fraction and the cap so large
+# datasets keep materially more rows -- more training data is usually a
+# bigger accuracy lever than which fast model gets picked -- while the
+# early-stopping fast models keep the extra rows from blowing up runtime.
+LARGE_DATASET_MAX_SAMPLE = 250_000
+LARGE_DATASET_SAMPLE_FRACTION = 0.15
 
 
 def _large_dataset_sample_size(n_rows: int) -> int:
@@ -264,13 +274,95 @@ def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_
         return None
 
 
-def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors, class_ratio=1.0):  # noqa: E501
-    """Train a single model and return results.
+def _score_classification(pipe, X_test, y_test, y_train, class_ratio=1.0):
+    """Compute the classification metrics dict + primary (ranking) score for
+    an already-fitted pipeline. Factored out of _train_single_model so
+    _refine_winner (hyperparameter tuning) can score a re-fitted pipeline
+    with exactly the same logic instead of duplicating it.
 
     y_train is used alongside y_test to build the full label set for
     per_class_recall, so that rare classes absent from the test split still
     appear in the output (with recall=0.0) rather than being silently dropped.
     """
+    preds = pipe.predict(X_test)
+    n_classes_test = len(np.unique(y_test))
+    binary = n_classes_test == 2
+
+    # ROC-AUC: use predict_proba if available, else skip
+    roc_auc = None
+    try:
+        if hasattr(pipe, "predict_proba"):
+            proba = pipe.predict_proba(X_test)
+            if binary:
+                from sklearn.metrics import roc_auc_score
+                roc_auc = round(float(roc_auc_score(y_test, proba[:, 1])), 4)
+            else:
+                from sklearn.metrics import roc_auc_score
+                roc_auc = round(float(roc_auc_score(
+                    y_test, proba, multi_class="ovr", average="weighted"
+                )), 4)
+    except Exception:
+        roc_auc = None
+
+    # Per-class recall (how many of each class did we catch).
+    # np.unique(y_test) only contains classes that appear in the test
+    # split — extremely rare classes may be absent entirely, making the
+    # per_class_recall dict incomplete.  Using the full set of labels
+    # seen during training (all unique encoded values across y_train +
+    # y_test) ensures every class is represented, with 0.0 recall for
+    # any that were too rare to land in the test split.
+    from sklearn.metrics import classification_report
+    all_labels = np.unique(np.concatenate([y_train, y_test]))
+    report = classification_report(
+        y_test, preds,
+        labels=all_labels,
+        output_dict=True,
+        zero_division=0,
+    )
+    per_class_recall = {
+        str(cls): round(float(report[str(cls)]["recall"]), 4)
+        for cls in all_labels
+        if str(cls) in report
+    }
+
+    metrics = {
+        "accuracy":           round(float(accuracy_score(y_test, preds)), 4),
+        "f1_weighted":        round(float(f1_score(y_test, preds, average="weighted", zero_division=0)), 4),
+        "f1_macro":           round(float(f1_score(y_test, preds, average="macro",    zero_division=0)), 4),
+        "precision_weighted": round(float(precision_score(y_test, preds, average="weighted", zero_division=0)), 4),
+        "recall_weighted":    round(float(recall_score(y_test, preds, average="weighted",    zero_division=0)), 4),
+        "per_class_recall":   per_class_recall,
+    }
+    if roc_auc is not None:
+        metrics["roc_auc"] = roc_auc
+
+    # For imbalanced data roc_auc is the best ranking metric;
+    # fall back to f1_macro (better than f1_weighted for imbalance),
+    # then f1_weighted.
+    if roc_auc is not None and class_ratio > 3.0:
+        primary = roc_auc
+    elif class_ratio > 3.0:
+        primary = metrics["f1_macro"]
+    else:
+        primary = metrics["f1_weighted"]
+    return metrics, primary
+
+
+def _score_regression(pipe, X_test, y_test):
+    """Regression counterpart to _score_classification -- see that
+    docstring for why this is factored out."""
+    preds = pipe.predict(X_test)
+    rmse = float(root_mean_squared_error(y_test, preds))
+    metrics = {
+        "rmse": round(rmse, 4),
+        "mae": round(float(mean_absolute_error(y_test, preds)), 4),
+        "r2": round(float(r2_score(y_test, preds)), 4),
+    }
+    return metrics, metrics["r2"]
+
+
+def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_type, preprocessor, n_neighbors, class_ratio=1.0):  # noqa: E501
+    """Train a single model and return results."""
     try:
         candidate_model = clone(model)
         if name == "K-Nearest Neighbors":
@@ -287,81 +379,127 @@ def _train_single_model(name, model, X_train, X_test, y_train, y_test, problem_t
             fit_params["model__sample_weight"] = _compute_sample_weights(y_train)
 
         pipe.fit(X_train, y_train, **fit_params)
-        preds = pipe.predict(X_test)
 
         if problem_type == "classification":
-            n_classes_test = len(np.unique(y_test))
-            binary = n_classes_test == 2
-
-            # ROC-AUC: use predict_proba if available, else skip
-            roc_auc = None
-            try:
-                if hasattr(pipe, "predict_proba"):
-                    proba = pipe.predict_proba(X_test)
-                    if binary:
-                        from sklearn.metrics import roc_auc_score
-                        roc_auc = round(float(roc_auc_score(y_test, proba[:, 1])), 4)
-                    else:
-                        from sklearn.metrics import roc_auc_score
-                        roc_auc = round(float(roc_auc_score(
-                            y_test, proba, multi_class="ovr", average="weighted"
-                        )), 4)
-            except Exception:
-                roc_auc = None
-
-            # Per-class recall (how many of each class did we catch).
-            # np.unique(y_test) only contains classes that appear in the test
-            # split — extremely rare classes may be absent entirely, making the
-            # per_class_recall dict incomplete.  Using the full set of labels
-            # seen during training (all unique encoded values across y_train +
-            # y_test) ensures every class is represented, with 0.0 recall for
-            # any that were too rare to land in the test split.
-            from sklearn.metrics import classification_report
-            all_labels = np.unique(np.concatenate([y_train, y_test]))
-            report = classification_report(
-                y_test, preds,
-                labels=all_labels,
-                output_dict=True,
-                zero_division=0,
-            )
-            per_class_recall = {
-                str(cls): round(float(report[str(cls)]["recall"]), 4)
-                for cls in all_labels
-                if str(cls) in report
-            }
-
-            metrics = {
-                "accuracy":           round(float(accuracy_score(y_test, preds)), 4),
-                "f1_weighted":        round(float(f1_score(y_test, preds, average="weighted", zero_division=0)), 4),
-                "f1_macro":           round(float(f1_score(y_test, preds, average="macro",    zero_division=0)), 4),
-                "precision_weighted": round(float(precision_score(y_test, preds, average="weighted", zero_division=0)), 4),
-                "recall_weighted":    round(float(recall_score(y_test, preds, average="weighted",    zero_division=0)), 4),
-                "per_class_recall":   per_class_recall,
-            }
-            if roc_auc is not None:
-                metrics["roc_auc"] = roc_auc
-
-            # For imbalanced data roc_auc is the best ranking metric;
-            # fall back to f1_macro (better than f1_weighted for imbalance),
-            # then f1_weighted.
-            if roc_auc is not None and class_ratio > 3.0:
-                primary = roc_auc
-            elif class_ratio > 3.0:
-                primary = metrics["f1_macro"]
-            else:
-                primary = metrics["f1_weighted"]
+            metrics, primary = _score_classification(pipe, X_test, y_test, y_train, class_ratio)
         else:
-            rmse = float(root_mean_squared_error(y_test, preds))
-            metrics = {
-                "rmse": round(rmse, 4),
-                "mae": round(float(mean_absolute_error(y_test, preds)), 4),
-                "r2": round(float(r2_score(y_test, preds)), 4),
-            }
-            primary = metrics["r2"]
+            metrics, primary = _score_regression(pipe, X_test, y_test)
 
         return {"model": name, "metrics": metrics, "primary_score": primary, "fitted": pipe}
     except Exception as e:
         return {"model": name, "error": str(e)}
+
+
+# Light hyperparameter search grids for the winning model, keyed by the same
+# display names used in the candidate panels above. Only tree/boosting models
+# get a grid -- these are the models where a handful of extra trees, a bit
+# more depth, or a different learning rate reliably buys accuracy; linear
+# models and KNN have too little to tune to be worth the extra fit time.
+# Params are written without the "model__" (or "model__estimator__" for
+# models wrapped by _dense_model, i.e. HistGradientBoosting) prefix --
+# _refine_winner adds the right prefix based on the pipeline shape.
+_TUNE_PARAM_GRIDS = {
+    "Random Forest":       {"n_estimators": [200, 300, 400], "max_depth": [8, 14, 20, None], "min_samples_leaf": [1, 2, 4]},
+    "Extra Trees":         {"n_estimators": [200, 300, 400], "max_depth": [10, 16, None], "min_samples_leaf": [1, 2, 5]},
+    "Extra Trees (Fast)":  {"n_estimators": [100, 150, 200], "max_depth": [10, 14, 20], "min_samples_leaf": [2, 5, 10]},
+    "Gradient Boosting":   {"n_estimators": [80, 120, 160], "max_depth": [2, 3, 4, 5], "learning_rate": [0.03, 0.05, 0.1, 0.2]},
+    "XGBoost":             {"n_estimators": [80, 100, 150], "max_depth": [3, 4, 5, 6], "learning_rate": [0.03, 0.05, 0.1, 0.2], "subsample": [0.7, 0.8, 0.9, 1.0], "colsample_bytree": [0.7, 0.8, 0.9, 1.0]},
+    "XGBoost (Fast)":      {"n_estimators": [60, 80, 100], "max_depth": [3, 4, 5], "learning_rate": [0.05, 0.1, 0.2]},
+    "Histogram Gradient Boosting":        {"max_depth": [None, 6, 10], "learning_rate": [0.03, 0.05, 0.1, 0.2], "max_leaf_nodes": [15, 31, 63]},
+    "Histogram Gradient Boosting (Fast)": {"max_depth": [None, 6, 10], "learning_rate": [0.05, 0.1, 0.2], "max_leaf_nodes": [15, 31]},
+}
+
+
+def _refine_winner(
+    name, model_template, X_train, X_test, y_train, y_test, problem_type,
+    preprocessor, n_rows, class_ratio=1.0, progress_callback=None,
+):
+    """Randomized hyperparameter search around the winning model's defaults.
+
+    Model *selection* (which algorithm) and CV ranking only ever compare
+    fixed, hand-picked hyperparameters -- they can tell you Random Forest
+    beat Ridge, but never that a slightly deeper Random Forest would have
+    beaten both by more. This closes that gap for the single model that
+    actually gets used, without paying the search cost across every
+    candidate in the panel.
+
+    Guarded by CV_SELECTION_MAX_ROWS (same budget used for CV-based
+    selection) so it can't be the thing that makes a run take too long, and
+    by _TUNE_PARAM_GRIDS so it only runs for models where tuning reliably
+    pays off. Returns None (never raises) on any failure or when refinement
+    doesn't apply -- callers keep the original fitted model in that case.
+    """
+    grid = _TUNE_PARAM_GRIDS.get(name)
+    if grid is None or n_rows > CV_SELECTION_MAX_ROWS:
+        return None
+    try:
+        from sklearn.model_selection import RandomizedSearchCV
+
+        candidate_model = clone(model_template)
+        pipe = Pipeline(steps=[("prep", clone(preprocessor)), ("model", candidate_model)])
+        # _dense_model wraps the real estimator in a nested Pipeline (steps
+        # "dense", "estimator") so sparse one-hot/TF-IDF output can be
+        # densified before models like HistGradientBoosting that need dense
+        # input -- see _dense_model / _to_dense above. That nesting changes
+        # which prefix RandomizedSearchCV needs to reach the estimator's params.
+        is_wrapped = isinstance(candidate_model, Pipeline)
+        prefix = "model__estimator__" if is_wrapped else "model__"
+        param_distributions = {f"{prefix}{k}": v for k, v in grid.items()}
+
+        if problem_type == "classification":
+            min_class_count = int(pd.Series(y_train).value_counts().min())
+            if min_class_count < 2:
+                return None
+            n_splits = max(2, min(3, min_class_count))
+            splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            imbalanced = class_ratio > 3.0
+            n_classes_train = len(np.unique(y_train))
+            if imbalanced and n_classes_train == 2 and hasattr(candidate_model, "predict_proba"):
+                scoring = "roc_auc"
+            elif imbalanced:
+                scoring = "f1_macro"
+            else:
+                scoring = "f1_weighted"
+        else:
+            n_splits = 3
+            if len(y_train) < n_splits * 2:
+                return None
+            splitter = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+            scoring = "r2"
+
+        if progress_callback:
+            try:
+                progress_callback(f"Fine-tuning {name} hyperparameters...")
+            except Exception:
+                pass
+
+        search = RandomizedSearchCV(
+            pipe,
+            param_distributions,
+            n_iter=8,
+            cv=splitter,
+            scoring=scoring,
+            random_state=42,
+            n_jobs=-1,
+            error_score=np.nan,
+        )
+        # Mirror _train_single_model's imbalance handling for Gradient
+        # Boosting (no native class_weight support) so tuning doesn't
+        # regress imbalanced-data accuracy relative to the untuned candidate.
+        fit_params = {}
+        if problem_type == "classification" and class_ratio > 3.0 and name == "Gradient Boosting":
+            fit_params["model__sample_weight"] = _compute_sample_weights(y_train)
+        search.fit(X_train, y_train, **fit_params)
+        tuned_pipe = search.best_estimator_
+
+        if problem_type == "classification":
+            metrics, primary = _score_classification(tuned_pipe, X_test, y_test, y_train, class_ratio)
+        else:
+            metrics, primary = _score_regression(tuned_pipe, X_test, y_test)
+
+        return {"metrics": metrics, "primary_score": primary, "fitted": tuned_pipe}
+    except Exception:
+        return None
 
 
 def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
@@ -382,13 +520,17 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
         # imbalance is handled via sample_weight inside _train_single_model.
         # It is also single-threaded (no n_jobs) and has no built-in early
         # stopping, so it is the slowest candidate on medium/large datasets.
-        # Fewer trees with a shallower depth keeps it competitive while cutting
-        # wall-clock time roughly in half.
-        "Gradient Boosting": GradientBoostingClassifier(random_state=42, n_estimators=50, max_depth=3),
-        # early_stopping + n_iter_no_change bound the iteration count so the
-        # full default 100-tree budget can't run when more trees don't help.
+        # This panel now only runs below FAST_MODELS_THRESHOLD (50k rows), so
+        # there's headroom to give it a fuller tree budget than before (was
+        # 50/depth-3) without the runtime getting out of hand.
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42, n_estimators=120, max_depth=4),
+        # n_iter_no_change raised from 10 to 20: HistGB stops as soon as
+        # validation score hasn't improved for that many iterations, so a
+        # low value can cut training short on plateaus that would still
+        # improve with a bit more patience. Costs a bit more time per model,
+        # not per-tree cost, so it stays cheap.
         "Histogram Gradient Boosting": _dense_model(HistGradientBoostingClassifier(
-            random_state=42, class_weight=cw, early_stopping=True, n_iter_no_change=10,
+            random_state=42, class_weight=cw, early_stopping=True, n_iter_no_change=20,
         )),
         "K-Nearest Neighbors": KNeighborsClassifier(),
     }
@@ -417,14 +559,14 @@ def _regression_models() -> dict:
         "Random Forest": RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1),
         "Extra Trees": ExtraTreesRegressor(n_estimators=300, random_state=42, n_jobs=-1),
         # GradientBoostingRegressor is single-threaded (no n_jobs) and has no
-        # built-in early stopping; the fewer-tree / shallower-depth settings
-        # below keep it competitive while cutting wall-clock time roughly in
-        # half.
-        "Gradient Boosting": GradientBoostingRegressor(random_state=42, n_estimators=50, max_depth=3),
-        # early_stopping + n_iter_no_change bound the iteration count so the
-        # full default 100-tree budget can't run when more trees don't help.
+        # built-in early stopping. This panel only runs below
+        # FAST_MODELS_THRESHOLD (50k rows) now, so there's room for a fuller
+        # tree budget than before (was 50/depth-3).
+        "Gradient Boosting": GradientBoostingRegressor(random_state=42, n_estimators=120, max_depth=4),
+        # n_iter_no_change raised from 10 to 20 for the same reason as the
+        # classifier variant -- more patience before declaring a plateau.
         "Histogram Gradient Boosting": _dense_model(HistGradientBoostingRegressor(
-            random_state=42, early_stopping=True, n_iter_no_change=10,
+            random_state=42, early_stopping=True, n_iter_no_change=20,
         )),
         "K-Nearest Neighbors": KNeighborsRegressor(),
     }
@@ -461,24 +603,46 @@ def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dic
         # HistGradientBoosting is purpose-built for large N: it bins numeric
         # features once up front instead of scanning raw values per split,
         # so it stays fast at 100k+ rows while giving materially better
-        # accuracy than a linear model or a very shallow XGBoost. It has its
-        # own built-in early stopping, so runtime stays bounded even if the
-        # sample size grows.
+        # accuracy than a linear model or a very shallow XGBoost. max_iter and
+        # n_iter_no_change both raised (150->200, 10->15) for more headroom
+        # before early stopping kicks in -- it still has its own built-in
+        # early stopping, so runtime stays bounded even if the sample size
+        # grows.
         "Histogram Gradient Boosting (Fast)": _dense_model(HistGradientBoostingClassifier(
-            max_iter=200,
+            max_iter=250,
             early_stopping=True,
             validation_fraction=0.1,
-            n_iter_no_change=10,
+            n_iter_no_change=15,
             class_weight=cw,
             random_state=42,
         )),
+        # The previous fast panel had no bagged/randomized-split tree
+        # candidate at all -- just one linear model and one boosting model.
+        # ExtraTrees builds each split from a random threshold rather than
+        # searching for the best one, which makes it considerably cheaper
+        # than RandomForest per tree, so a capped depth/estimator count stays
+        # fast even at 100k+ rows (and parallelizes via n_jobs=-1) while
+        # adding real model diversity -- it often catches different signal
+        # than boosting, which is worth having in the leaderboard comparison.
+        "Extra Trees (Fast)": ExtraTreesClassifier(
+            n_estimators=150,
+            max_depth=14,
+            min_samples_leaf=5,
+            n_jobs=-1,
+            random_state=42,
+            class_weight=cw,
+        ),
     }
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
         spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
+        # n_estimators raised 50->80 and max_depth 3->4: XGBoost's histogram
+        # tree method (tree_method="hist") is what makes it fast on large N,
+        # not the shallow budget, so there's room to give it more capacity
+        # without materially hurting runtime.
         models["XGBoost (Fast)"] = XGBClassifier(
-            n_estimators=50,
-            max_depth=3,
+            n_estimators=80,
+            max_depth=4,
             learning_rate=0.1,
             subsample=0.8,
             colsample_bytree=0.8,
@@ -498,19 +662,29 @@ def _fast_regression_models() -> dict:
     models = {
         "Ridge Regression": Ridge(alpha=1.0),
         # See note in _fast_classification_models: scales well to large N
-        # with bounded runtime thanks to built-in early stopping.
+        # with bounded runtime thanks to built-in early stopping. Budget
+        # raised the same way (max_iter 200->250, n_iter_no_change 10->15).
         "Histogram Gradient Boosting (Fast)": _dense_model(HistGradientBoostingRegressor(
-            max_iter=200,
+            max_iter=250,
             early_stopping=True,
             validation_fraction=0.1,
-            n_iter_no_change=10,
+            n_iter_no_change=15,
             random_state=42,
         )),
+        # See note in _fast_classification_models: adds a bagged/randomized
+        # tree candidate the fast panel previously lacked entirely.
+        "Extra Trees (Fast)": ExtraTreesRegressor(
+            n_estimators=150,
+            max_depth=14,
+            min_samples_leaf=5,
+            n_jobs=-1,
+            random_state=42,
+        ),
     }
     if XGBRegressor is not None:
         models["XGBoost (Fast)"] = XGBRegressor(
-            n_estimators=50,
-            max_depth=3,
+            n_estimators=80,
+            max_depth=4,
             learning_rate=0.1,
             subsample=0.8,
             colsample_bytree=0.8,
@@ -750,6 +924,25 @@ def train_all(
     leaderboard = ranked + failed
 
     best_name = ranked[0]["model"] if ranked else None
+
+    # Hyperparameter refinement: fixed-hyperparameter candidates chose *which*
+    # model wins, but never tried varying that model's own settings. Search a
+    # small grid around the winner and keep the tuned version only if it
+    # actually scores better on the held-out test set -- this can never make
+    # the leaderboard worse, only better. See _refine_winner for the budget
+    # guard that keeps this from slowing down large-dataset runs.
+    if best_name is not None:
+        refined = _refine_winner(
+            best_name, candidates[best_name], X_train, X_test, y_train, y_test,
+            problem_type, preprocessor, n_rows, class_ratio=class_ratio,
+            progress_callback=progress_callback,
+        )
+        if refined is not None and refined["primary_score"] > ranked[0]["primary_score"]:
+            fitted[best_name] = refined["fitted"]
+            ranked[0]["metrics"] = refined["metrics"]
+            ranked[0]["primary_score"] = refined["primary_score"]
+            ranked[0]["tuned"] = True
+            leaderboard = ranked + failed
 
     # Compute feature importance for the winning model right here, while
     # X_test/y_test (the raw, un-preprocessed held-out split) are still in
