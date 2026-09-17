@@ -1119,9 +1119,8 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 // Leave it "" (the default) when the backend serves this same file itself,
 // which is how local dev and single-server deployments already work --
 // nothing else needs to change for those.
-const API_BASE = "";
+const API_BASE = "https://autods-yuqz.onrender.com";
 const API = API_BASE + "/api";
-
 // Multi-dataset state
 let datasets = [];      // [{id, name, sessionId}]
 let activeDs = null;    // currently selected dataset id
