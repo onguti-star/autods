@@ -5,8 +5,15 @@ WORKDIR /app
 # build-essential: in case any dependency needs to build from source on your
 # VPS's CPU architecture (most wheels below have prebuilt binaries for both
 # x86_64 and arm64/aarch64, so this is usually just a safety net).
+# libgomp1: XGBoost's compiled wheel links against OpenMP at runtime (not
+# just build time) -- on a minimal Debian image without it, importing
+# xgboost fails with "libgomp.so.1: cannot open shared object file", which
+# would make every training run fail regardless of dataset size. It's
+# usually pulled in transitively by build-essential, but pinning it
+# explicitly means training doesn't depend on that staying true.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./backend/requirements.txt
