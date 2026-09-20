@@ -6,8 +6,8 @@
 <title>AutoDS — Automated Data Science</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+<script src="vendor/chart.umd.min.js"></script>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
 <style>
   /* Flatter, cleaner Leaflet chrome for the choropleth map — matches the
      rest of the light legend/status cards instead of Leaflet's stock
@@ -20,7 +20,7 @@
   .choropleth-tooltip{background:#ffffff!important;border:none!important;box-shadow:0 4px 16px rgba(23,38,58,0.2)!important;border-radius:6px!important;padding:8px 11px!important;}
   .choropleth-tooltip::before{border-top-color:#ffffff!important;}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
 <style>
 :root{--bg:#0d1b2e;--bg-grid:#16273f;--panel:#112239;--panel-border:#24405f;--ink:#e9eef5;--ink-dim:#8fa3bc;--accent:#ffb627;--accent-dim:#c98f1c;--cyan:#5fd4d6;--good:#5fd98c;--bad:#ef6f6f;}
 *{box-sizing:border-box;}html,body{margin:0;padding:0;}
@@ -1119,7 +1119,16 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 // Leave it "" (the default) when the backend serves this same file itself,
 // which is how local dev and single-server deployments already work --
 // nothing else needs to change for those.
-const API_BASE = "https://autods-yuqz.onrender.com";
+// Same-origin ("") when running locally -- the FastAPI backend serves this page itself,
+// so it works with no internet. Falls back to the hosted backend only when this file
+// is served from the public website (Netlify etc.).
+const API_BASE = (function () {
+  const h = location.hostname;
+  if (location.protocol === "file:") return "http://localhost:8000"; // index.html opened directly
+  if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" ||
+      /^192\.168\./.test(h) || /^10\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)) return "";
+  return "https://autods-yuqz.onrender.com";
+})();
 const API = API_BASE + "/api";
 // Multi-dataset state
 let datasets = [];      // [{id, name, sessionId}]

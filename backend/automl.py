@@ -37,7 +37,7 @@ from sklearn.metrics import (
     recall_score,
     root_mean_squared_error,
 )
-from sklearn.base import clone
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.model_selection import (
     KFold,
     StratifiedKFold,
@@ -147,6 +147,49 @@ def _to_dense(X):
     return X
 
 
+class _DatetimeFeatures(BaseEstimator, TransformerMixin):
+    """Turns each datetime column into numeric parts (year, month, day, weekday,
+    hour). scikit-learn imputers/encoders reject datetime64 outright, which
+    used to make EVERY model fail on any dataset containing a date column.
+    Values are re-parsed with errors="coerce" so string dates arriving at
+    prediction time (e.g. from JSON) still work; unparseable values become
+    NaN and are imputed downstream.
+    Module-level class so the fitted pipeline can still be pickled."""
+
+    _PARTS = ("year", "month", "day", "dayofweek", "hour")
+
+    def fit(self, X, y=None):
+        self.columns_ = [str(c) for c in X.columns]
+        self.n_features_in_ = len(self.columns_)
+        return self
+
+    def transform(self, X):
+        out = []
+        for i in range(X.shape[1]):
+            dt = pd.to_datetime(X.iloc[:, i], errors="coerce")
+            for part in self._PARTS:
+                out.append(getattr(dt.dt, part).to_numpy(dtype="float64", na_value=np.nan))
+        return np.column_stack(out) if out else np.empty((len(X), 0))
+
+    def get_feature_names_out(self, input_features=None):
+        cols = self.columns_ if input_features is None else [str(c) for c in input_features]
+        return np.array([f"{c}_{part}" for c in cols for part in self._PARTS], dtype=object)
+
+
+def _target_encoder_type(y, problem_type):
+    """TargetEncoder needs to know what kind of target it is encoding against.
+    y arrives here already label-encoded to ints for classification, so
+    guessing from its dtype (the old behaviour) always said "continuous"."""
+    if problem_type == "regression":
+        return "continuous"
+    if problem_type == "classification":
+        return "binary" if y is not None and len(np.unique(y)) == 2 else "multiclass"
+    # Legacy fallback when the caller doesn't say which problem this is.
+    if y is not None and pd.api.types.is_numeric_dtype(y):
+        return "continuous"
+    return "binary"
+
+
 def build_preprocessor(
     X: pd.DataFrame,
     y: pd.Series = None,
@@ -155,9 +198,17 @@ def build_preprocessor(
     max_text_features: int = 300,
     one_hot_min_frequency: int | None = None,
     one_hot_max_categories: int | None = None,
+    problem_type: str | None = None,
 ) -> ColumnTransformer:
     numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    remaining_cols = [c for c in X.columns if c not in numeric_cols]
+    datetime_cols = [c for c in X.columns if pd.api.types.is_datetime64_any_dtype(X[c])]
+    # Timedeltas can't go through the imputers either; leave them out
+    # (remainder="drop") rather than letting them break every model.
+    timedelta_cols = [c for c in X.columns if pd.api.types.is_timedelta64_dtype(X[c])]
+    remaining_cols = [
+        c for c in X.columns
+        if c not in numeric_cols and c not in datetime_cols and c not in timedelta_cols
+    ]
     text_cols = [c for c in remaining_cols if nlp.is_text_column(X[c])]
     categorical_cols = [c for c in remaining_cols if c not in text_cols]
 
@@ -201,13 +252,20 @@ def build_preprocessor(
 
     high_card_pipe = Pipeline(steps=[
         ("impute", SimpleImputer(strategy="most_frequent")),
-        ("target_enc", TargetEncoder(target_type="continuous" if y is not None and pd.api.types.is_numeric_dtype(y) else "binary")),
+        ("target_enc", TargetEncoder(target_type=_target_encoder_type(y, problem_type))),
         ("scale", StandardScaler())
     ])
 
     transformers = [
         ("num", numeric_pipe, numeric_cols),
     ]
+    if datetime_cols:
+        datetime_pipe = Pipeline(steps=[
+            ("parts", _DatetimeFeatures()),
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+        ])
+        transformers.append(("datetime", datetime_pipe, datetime_cols))
     if low_card_cols:
         transformers.append(("cat_low", categorical_pipe, low_card_cols))
     if high_card_cols:
@@ -589,8 +647,12 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
         )
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
-        # scale_pos_weight tells XGBoost how much to up-weight the minority class
-        spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
+        xgb_kwargs = {}
+        # scale_pos_weight (up-weights the minority class) only exists for
+        # binary problems; passing it for multiclass makes XGBoost print an
+        # "unused parameter" warning on every fit.
+        if imbalanced and n_classes == 2:
+            xgb_kwargs["scale_pos_weight"] = round(class_ratio, 2)
         models["XGBoost"] = XGBClassifier(
             n_estimators=100,
             max_depth=4,
@@ -598,10 +660,10 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
             subsample=0.9,
             colsample_bytree=0.9,
             objective=objective,
-            eval_metric="logloss",
-            scale_pos_weight=spw,
+            eval_metric="logloss" if n_classes == 2 else "mlogloss",
             random_state=42,
             n_jobs=-1,
+            **xgb_kwargs,
         )
     return models
 
@@ -653,7 +715,7 @@ def _regression_models() -> dict:
 
 
 def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
-    """Fast models optimized for datasets above FAST_MODELS_THRESHOLD (30k rows), with imbalance awareness."""
+    """Fast models optimized for datasets above FAST_MODELS_THRESHOLD (50k rows), with imbalance awareness."""
     imbalanced = class_ratio > 3.0
     cw = "balanced" if imbalanced else None
 
@@ -712,7 +774,9 @@ def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dic
         )
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
-        spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
+        xgb_kwargs = {}
+        if imbalanced and n_classes == 2:
+            xgb_kwargs["scale_pos_weight"] = round(class_ratio, 2)
         # n_estimators raised 50->80 and max_depth 3->4: XGBoost's histogram
         # tree method (tree_method="hist") is what makes it fast on large N,
         # not the shallow budget, so there's room to give it more capacity
@@ -725,17 +789,17 @@ def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dic
             colsample_bytree=0.8,
             tree_method="hist",
             objective=objective,
-            eval_metric="logloss",
-            scale_pos_weight=spw,
+            eval_metric="logloss" if n_classes == 2 else "mlogloss",
             random_state=42,
             n_jobs=-1,
             verbosity=0,
+            **xgb_kwargs,
         )
     return models
 
 
 def _fast_regression_models() -> dict:
-    """Fast models optimized for datasets above FAST_MODELS_THRESHOLD (30k rows)."""
+    """Fast models optimized for datasets above FAST_MODELS_THRESHOLD (50k rows)."""
     models = {
         "Ridge Regression": Ridge(alpha=1.0),
         # See note in _fast_classification_models: scales well to large N
@@ -799,6 +863,11 @@ def train_all(
     message before each candidate model starts training. Lets the caller (e.g. a
     background training job) surface live progress to the UI.
     """
+    # Everything below selects rows by index label (df.loc[...]); with a
+    # duplicated index that returns extra rows and the X/y lengths stop
+    # matching. A clean positional index makes it safe for any input frame.
+    df = df.reset_index(drop=True)
+
     valid_target = df[target].notna()
     if not valid_target.any():
         raise ValueError(f"Target column '{target}' has no non-missing values.")
@@ -912,25 +981,26 @@ def train_all(
         # not just above the row threshold, fixes that regardless of size.
         one_hot_min_frequency=10,
         one_hot_max_categories=50,
+        problem_type=problem_type,
     )
     
     # OPTIMIZATION: Use faster models for large datasets -- fewer candidates,
     # all with built-in early stopping, so even medium-large datasets (e.g. 45k
     # rows) finish in seconds rather than minutes.
     if use_fast_models:
-        if progress_callback:
-            try:
-                progress_callback(
-                    f"Dataset has {original_n_rows:,} rows -- switching to fast model "
-                    f"panel (early-stopping models, 3 candidates)..."
-                )
-            except Exception:
-                pass
         candidates = (
             _fast_classification_models(len(np.unique(y)), class_ratio=class_ratio)
             if problem_type == "classification"
             else _fast_regression_models()
         )
+        if progress_callback:
+            try:
+                progress_callback(
+                    f"Dataset has {original_n_rows:,} rows -- switching to fast model "
+                    f"panel (early-stopping models, {len(candidates)} candidates)..."
+                )
+            except Exception:
+                pass
     else:
         candidates = (
             _classification_models(len(np.unique(y)), class_ratio=class_ratio)
@@ -959,13 +1029,12 @@ def train_all(
                 # Include memory snapshot per model so it's visible in /diag
                 # even if the process is killed between models.
                 try:
-                    import psutil, os as _os, time as _time
-                    proc = psutil.Process(_os.getpid())
-                    rss_mb = proc.memory_info().rss / 1_048_576
+                    import os as _os
+                    import psutil
+                    rss_mb = psutil.Process(_os.getpid()).memory_info().rss / 1_048_576
                     mem_note = f" | mem: {rss_mb:.0f} MB"
                 except Exception:
                     mem_note = ""
-                    _time = __import__("time")
                 progress_callback(f"Training {name}...{mem_note}")
             except Exception:
                 pass  # never let a progress-reporting hiccup break training
@@ -1023,6 +1092,10 @@ def train_all(
         except Exception as e:
             results.append({"model": "Stacking Ensemble", "error": str(e)})
 
+    if not any("error" not in r for r in results):
+        first_errors = "; ".join(f"{r['model']}: {r['error'][:150]}" for r in results[:3])
+        raise ValueError(f"Every candidate model failed to train. {first_errors}")
+
     fitted = {}
     leaderboard = []
     
@@ -1045,10 +1118,23 @@ def train_all(
     # _cv_mean_score). Otherwise fall back to the single-split primary_score,
     # e.g. on large datasets where CV is skipped to keep runtime bounded.
     scored_rows = [row for row in leaderboard if "metrics" in row]
-    use_cv_rank = len(scored_rows) > 0 and all("cv_score" in row for row in scored_rows)
-    rank_key = (lambda r: r["cv_score"]) if use_cv_rank else (lambda r: r["primary_score"])
+    # The Stacking Ensemble is never CV-scored (that would nest another round
+    # of cross-validation inside its own), so it must not be what decides
+    # whether CV ranking is used -- previously it always disabled it.
+    stack_rows = [row for row in scored_rows if row["model"] == "Stacking Ensemble"]
+    base_rows = [row for row in scored_rows if row["model"] != "Stacking Ensemble"]
+    use_cv_rank = len(base_rows) > 0 and all("cv_score" in row for row in base_rows)
 
-    ranked = sorted(scored_rows, key=rank_key, reverse=True)
+    if use_cv_rank:
+        ranked = sorted(base_rows, key=lambda r: r["cv_score"], reverse=True)
+        # The stack is crowned only if it beats the CV-picked best base model
+        # on the held-out test split; otherwise it is listed after the others.
+        if stack_rows and stack_rows[0]["primary_score"] > ranked[0]["primary_score"]:
+            ranked = stack_rows + ranked
+        else:
+            ranked = ranked + stack_rows
+    else:
+        ranked = sorted(scored_rows, key=lambda r: r["primary_score"], reverse=True)
     failed = [row for row in leaderboard if "metrics" not in row]
     leaderboard = ranked + failed
 
@@ -1114,7 +1200,9 @@ def feature_importance(pipe: Pipeline, X: pd.DataFrame = None, y=None) -> list:
                 importances = estimator.feature_importances_
             elif hasattr(estimator, "coef_"):
                 coef = estimator.coef_
-                importances = np.abs(coef[0]) if coef.ndim > 1 else np.abs(coef)
+                # Multiclass linear models have one coefficient row per class;
+                # average across classes instead of showing class 0 only.
+                importances = np.abs(coef).mean(axis=0) if coef.ndim > 1 else np.abs(coef)
             elif X is not None and y is not None and len(X) > 0:
                 from sklearn.inspection import permutation_importance
 
