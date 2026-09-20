@@ -1,8 +1,8 @@
 """
 AutoML core: given a dataframe + target column, this:
   1. Infers the problem type (classification vs regression)
-  2. Builds a preprocessing pipeline (impute, scale, one-hot encode)
-  3. Trains a panel of candidate models
+  2. Builds a preprocessing pipeline (impute, scale, one-hot encode, target encode)
+  3. Trains a panel of candidate models (including LightGBM, CatBoost, Stacking)
   4. Cross-validates and ranks them on a held-out test split
   5. Returns a leaderboard + keeps fitted pipelines for prediction/export
 """
@@ -23,6 +23,8 @@ from sklearn.ensemble import (
     HistGradientBoostingRegressor,
     RandomForestClassifier,
     RandomForestRegressor,
+    StackingClassifier,
+    StackingRegressor,
 )
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, Ridge, SGDClassifier
@@ -44,7 +46,7 @@ from sklearn.model_selection import (
 )
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer, LabelEncoder, OneHotEncoder, StandardScaler
+from sklearn.preprocessing import FunctionTransformer, LabelEncoder, OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.decomposition import PCA
 
 from . import nlp
@@ -54,6 +56,18 @@ try:
 except Exception:  # XGBoost is optional; scikit-learn models remain the default fallback.
     XGBClassifier = None
     XGBRegressor = None
+
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+except Exception:
+    LGBMClassifier = None
+    LGBMRegressor = None
+
+try:
+    from catboost import CatBoostClassifier, CatBoostRegressor
+except Exception:
+    CatBoostClassifier = None
+    CatBoostRegressor = None
 
 
 LARGE_DATASET_THRESHOLD = 100_000
@@ -135,6 +149,7 @@ def _to_dense(X):
 
 def build_preprocessor(
     X: pd.DataFrame,
+    y: pd.Series = None,
     use_pca: bool = False,
     *,
     max_text_features: int = 300,
@@ -169,15 +184,35 @@ def build_preprocessor(
         # built downstream (see _to_dense) can get, which is what actually risks
         # exhausting memory -- and getting OS-killed -- on large datasets.
         categorical_kwargs["max_categories"] = one_hot_max_categories
+    
+    # Check cardinality to apply Target Encoding for high-cardinality columns
+    high_card_cols = []
+    low_card_cols = []
+    for col in categorical_cols:
+        if X[col].nunique() > 15:
+            high_card_cols.append(col)
+        else:
+            low_card_cols.append(col)
+
     categorical_pipe = Pipeline(steps=[
         ("impute", SimpleImputer(strategy="most_frequent")),
         ("onehot", OneHotEncoder(**categorical_kwargs)),
     ])
 
+    high_card_pipe = Pipeline(steps=[
+        ("impute", SimpleImputer(strategy="most_frequent")),
+        ("target_enc", TargetEncoder(target_type="continuous" if y is not None and pd.api.types.is_numeric_dtype(y) else "binary")),
+        ("scale", StandardScaler())
+    ])
+
     transformers = [
         ("num", numeric_pipe, numeric_cols),
-        ("cat", categorical_pipe, categorical_cols),
     ]
+    if low_card_cols:
+        transformers.append(("cat_low", categorical_pipe, low_card_cols))
+    if high_card_cols:
+        transformers.append(("cat_high", high_card_pipe, high_card_cols))
+
     for i, col in enumerate(text_cols):
         text_pipe = Pipeline(steps=[
             ("flatten", FunctionTransformer(_flatten_text_column, feature_names_out="one-to-one")),
@@ -232,7 +267,7 @@ def _cv_mean_score(name, model, X_train, y_train, problem_type, preprocessor, n_
     Returns None (never raises) if CV isn't a good fit for this candidate or
     this dataset size -- callers fall back to the single-split score, so this
     is purely an enhancement, never a new failure mode."""
-    if n_rows > CV_SELECTION_MAX_ROWS:
+    if n_rows > CV_SELECTION_MAX_ROWS or "Stacking" in name:
         return None
     try:
         candidate_model = clone(model)
@@ -403,6 +438,8 @@ _TUNE_PARAM_GRIDS = {
     "Extra Trees":         {"n_estimators": [200, 300, 400], "max_depth": [10, 16, None], "min_samples_leaf": [1, 2, 5]},
     "Extra Trees (Fast)":  {"n_estimators": [100, 150, 200], "max_depth": [10, 14, 20], "min_samples_leaf": [2, 5, 10]},
     "Gradient Boosting":   {"n_estimators": [80, 120, 160], "max_depth": [2, 3, 4, 5], "learning_rate": [0.03, 0.05, 0.1, 0.2]},
+    "LightGBM":            {"n_estimators": [100, 150, 250], "num_leaves": [15, 31, 63], "learning_rate": [0.03, 0.05, 0.1]},
+    "CatBoost":            {"iterations": [150, 250, 350], "depth": [4, 6, 8], "learning_rate": [0.03, 0.05, 0.1]},
     "XGBoost":             {"n_estimators": [80, 100, 150], "max_depth": [3, 4, 5, 6], "learning_rate": [0.03, 0.05, 0.1, 0.2], "subsample": [0.7, 0.8, 0.9, 1.0], "colsample_bytree": [0.7, 0.8, 0.9, 1.0]},
     "XGBoost (Fast)":      {"n_estimators": [60, 80, 100], "max_depth": [3, 4, 5], "learning_rate": [0.05, 0.1, 0.2]},
     "Histogram Gradient Boosting":        {"max_depth": [None, 6, 10], "learning_rate": [0.03, 0.05, 0.1, 0.2], "max_leaf_nodes": [15, 31, 63]},
@@ -534,6 +571,22 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
         )),
         "K-Nearest Neighbors": KNeighborsClassifier(),
     }
+    if LGBMClassifier is not None:
+        models["LightGBM"] = LGBMClassifier(
+            n_estimators=150,
+            learning_rate=0.05,
+            class_weight=cw,
+            random_state=42,
+            n_jobs=-1,
+            verbose=-1,
+        )
+    if CatBoostClassifier is not None:
+        models["CatBoost"] = CatBoostClassifier(
+            iterations=200,
+            learning_rate=0.05,
+            random_seed=42,
+            verbose=0,
+        )
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
         # scale_pos_weight tells XGBoost how much to up-weight the minority class
@@ -570,6 +623,21 @@ def _regression_models() -> dict:
         )),
         "K-Nearest Neighbors": KNeighborsRegressor(),
     }
+    if LGBMRegressor is not None:
+        models["LightGBM"] = LGBMRegressor(
+            n_estimators=150,
+            learning_rate=0.05,
+            random_state=42,
+            n_jobs=-1,
+            verbose=-1,
+        )
+    if CatBoostRegressor is not None:
+        models["CatBoost"] = CatBoostRegressor(
+            iterations=200,
+            learning_rate=0.05,
+            random_seed=42,
+            verbose=0,
+        )
     if XGBRegressor is not None:
         models["XGBoost"] = XGBRegressor(
             n_estimators=100,
@@ -633,6 +701,15 @@ def _fast_classification_models(n_classes: int, class_ratio: float = 1.0) -> dic
             class_weight=cw,
         ),
     }
+    if LGBMClassifier is not None:
+        models["LightGBM (Fast)"] = LGBMClassifier(
+            n_estimators=100,
+            learning_rate=0.1,
+            class_weight=cw,
+            random_state=42,
+            n_jobs=-1,
+            verbose=-1,
+        )
     if XGBClassifier is not None:
         objective = "binary:logistic" if n_classes == 2 else "multi:softprob"
         spw = round(class_ratio, 2) if imbalanced and n_classes == 2 else 1
@@ -681,6 +758,14 @@ def _fast_regression_models() -> dict:
             random_state=42,
         ),
     }
+    if LGBMRegressor is not None:
+        models["LightGBM (Fast)"] = LGBMRegressor(
+            n_estimators=100,
+            learning_rate=0.1,
+            random_state=42,
+            n_jobs=-1,
+            verbose=-1,
+        )
     if XGBRegressor is not None:
         models["XGBoost (Fast)"] = XGBRegressor(
             n_estimators=80,
@@ -813,6 +898,7 @@ def train_all(
 
     preprocessor = build_preprocessor(
         X,
+        y=y_train,
         use_pca=use_pca,
         max_text_features=120 if use_fast_models else 300,
         # These caps used to apply only when the *row count* crossed
@@ -894,6 +980,49 @@ def train_all(
             )
         results.append(result)
 
+    # --- Stacking Ensemble Step ---
+    # Take top 3 successful non-ensemble models and fit a meta-learner stack
+    successful_results = [r for r in results if "error" not in r]
+    if len(successful_results) >= 2:
+        top_base = sorted(successful_results, key=lambda r: r["primary_score"], reverse=True)[:3]
+        base_estimators = [(r["model"], r["fitted"]) for r in top_base]
+        
+        try:
+            if progress_callback:
+                progress_callback("Building Stacking Ensemble from top base models...")
+                
+            if problem_type == "classification":
+                cw = "balanced" if class_ratio > 3.0 else None
+                stack_estimator = StackingClassifier(
+                    estimators=base_estimators,
+                    final_estimator=LogisticRegression(class_weight=cw),
+                    cv=3,
+                    n_jobs=-1
+                )
+            else:
+                stack_estimator = StackingRegressor(
+                    estimators=base_estimators,
+                    final_estimator=Ridge(),
+                    cv=3,
+                    n_jobs=-1
+                )
+            
+            stack_estimator.fit(X_train, y_train)
+            
+            if problem_type == "classification":
+                metrics, primary = _score_classification(stack_estimator, X_test, y_test, y_train, class_ratio)
+            else:
+                metrics, primary = _score_regression(stack_estimator, X_test, y_test)
+                
+            results.append({
+                "model": "Stacking Ensemble",
+                "metrics": metrics,
+                "primary_score": primary,
+                "fitted": stack_estimator
+            })
+        except Exception as e:
+            results.append({"model": "Stacking Ensemble", "error": str(e)})
+
     fitted = {}
     leaderboard = []
     
@@ -931,7 +1060,7 @@ def train_all(
     # actually scores better on the held-out test set -- this can never make
     # the leaderboard worse, only better. See _refine_winner for the budget
     # guard that keeps this from slowing down large-dataset runs.
-    if best_name is not None:
+    if best_name is not None and best_name in candidates:
         refined = _refine_winner(
             best_name, candidates[best_name], X_train, X_test, y_train, y_test,
             problem_type, preprocessor, n_rows, class_ratio=class_ratio,
@@ -973,46 +1102,60 @@ def feature_importance(pipe: Pipeline, X: pd.DataFrame = None, y=None) -> list:
     on the ORIGINAL columns (not the expanded one-hot/TF-IDF ones), which is
     also more readable for the chart."""
     try:
-        prep = pipe.named_steps["prep"]
-        model = pipe.named_steps["model"]
-        estimator = model.named_steps["estimator"] if isinstance(model, Pipeline) and "estimator" in model.named_steps else model
-        feature_names = prep.get_feature_names_out()
+        # If it's a Stacking Ensenble, extracting direct importance is difficult.
+        # We fall back to permutation importance on the whole pipeline if X/y are available.
+        if hasattr(pipe, "named_steps") and "prep" in pipe.named_steps:
+            prep = pipe.named_steps["prep"]
+            model = pipe.named_steps["model"]
+            estimator = model.named_steps["estimator"] if isinstance(model, Pipeline) and "estimator" in model.named_steps else model
+            feature_names = prep.get_feature_names_out()
 
-        if hasattr(estimator, "feature_importances_"):
-            importances = estimator.feature_importances_
-        elif hasattr(estimator, "coef_"):
-            coef = estimator.coef_
-            importances = np.abs(coef[0]) if coef.ndim > 1 else np.abs(coef)
-        elif X is not None and y is not None and len(X) > 0:
+            if hasattr(estimator, "feature_importances_"):
+                importances = estimator.feature_importances_
+            elif hasattr(estimator, "coef_"):
+                coef = estimator.coef_
+                importances = np.abs(coef[0]) if coef.ndim > 1 else np.abs(coef)
+            elif X is not None and y is not None and len(X) > 0:
+                from sklearn.inspection import permutation_importance
+
+                sample_X, sample_y = X, y
+                # Cap the sample so this stays fast on large held-out splits --
+                # permutation importance refits nothing but re-predicts the full
+                # pipeline once per column per repeat, which adds up.
+                if len(sample_X) > 2000:
+                    idx = np.random.RandomState(42).choice(len(sample_X), 2000, replace=False)
+                    sample_X = sample_X.iloc[idx] if hasattr(sample_X, "iloc") else sample_X[idx]
+                    sample_y = sample_y[idx] if not hasattr(sample_y, "iloc") else sample_y.iloc[idx]
+                result = permutation_importance(
+                    pipe, sample_X, sample_y, n_repeats=5, random_state=42, n_jobs=1
+                )
+                importances = result.importances_mean
+                # Permutation importance is measured against the raw input
+                # columns (it shuffles them before they hit the preprocessor),
+                # not the post-encoding feature names used in the branches above.
+                feature_names = list(sample_X.columns)
+            else:
+                return []
+
+            pairs = sorted(zip(feature_names, importances), key=lambda x: -abs(x[1]))[:15]
+            # Permutation importance can come out slightly negative for pure-noise
+            # columns (shuffling them occasionally helps by chance). Drop those so
+            # the chart doesn't show a feature that provably doesn't matter --
+            # but if every single one is <=0 (degenerate/near-constant model),
+            # keep the top few anyway rather than showing nothing.
+            positive = [(f, v) for f, v in pairs if v > 0]
+            pairs = positive if positive else pairs[:5]
+            return [{"feature": str(f), "importance": round(float(v), 4)} for f, v in pairs]
+        
+        # Fallback block specifically for handling the new Stacking Ensembles
+        if X is not None and y is not None and len(X) > 0:
             from sklearn.inspection import permutation_importance
+            sample_X = X.iloc[:1000] if len(X) > 1000 else X
+            sample_y = y[:1000] if len(y) > 1000 else y
+            res = permutation_importance(pipe, sample_X, sample_y, n_repeats=3, random_state=42)
+            pairs = sorted(zip(sample_X.columns, res.importances_mean), key=lambda x: -abs(x[1]))[:15]
+            return [{"feature": str(f), "importance": round(float(v), 4)} for f, v in pairs if v > 0]
 
-            sample_X, sample_y = X, y
-            # Cap the sample so this stays fast on large held-out splits --
-            # permutation importance refits nothing but re-predicts the full
-            # pipeline once per column per repeat, which adds up.
-            if len(sample_X) > 2000:
-                idx = np.random.RandomState(42).choice(len(sample_X), 2000, replace=False)
-                sample_X = sample_X.iloc[idx] if hasattr(sample_X, "iloc") else sample_X[idx]
-                sample_y = sample_y[idx] if not hasattr(sample_y, "iloc") else sample_y.iloc[idx]
-            result = permutation_importance(
-                pipe, sample_X, sample_y, n_repeats=5, random_state=42, n_jobs=1
-            )
-            importances = result.importances_mean
-            # Permutation importance is measured against the raw input
-            # columns (it shuffles them before they hit the preprocessor),
-            # not the post-encoding feature names used in the branches above.
-            feature_names = list(sample_X.columns)
-        else:
-            return []
-
-        pairs = sorted(zip(feature_names, importances), key=lambda x: -abs(x[1]))[:15]
-        # Permutation importance can come out slightly negative for pure-noise
-        # columns (shuffling them occasionally helps by chance). Drop those so
-        # the chart doesn't show a feature that provably doesn't matter --
-        # but if every single one is <=0 (degenerate/near-constant model),
-        # keep the top few anyway rather than showing nothing.
-        positive = [(f, v) for f, v in pairs if v > 0]
-        pairs = positive if positive else pairs[:5]
-        return [{"feature": str(f), "importance": round(float(v), 4)} for f, v in pairs]
+        return []
     except Exception:
         return []
