@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import json
 import uuid
+from pathlib import Path
 from datetime import datetime
 from typing import Literal
 
@@ -60,6 +61,10 @@ MAX_REMOTE_BYTES = 200 * 1024 * 1024  # 200 MB
 MAX_DATAFRAME_ROWS = 5_500_000  # 5.5 million rows
 MAX_DATAFRAME_COLUMNS = 1_000  # 1000 columns
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 # CORS: open by default for local dev (frontend runs on a different port than
 # the API), but scopable via env var for real deployments — set
 # ALLOWED_ORIGINS to a comma-separated list (e.g. "https://myapp.netlify.app")

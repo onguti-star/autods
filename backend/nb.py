@@ -10,6 +10,14 @@ import json
 from datetime import datetime
 from typing import Any
 
+# Default series colours used by the app's Visualise step. Exported notebook
+# cells fall back to these when a chart carries no custom `_style.palette`, so
+# the charts in the notebook stay colour-matched with the app.
+_DEFAULT_CHART_PALETTE = [
+    "#5fd4d6", "#ffb627", "#5fd98c", "#ef6f6f", "#a78bfa", "#fb923c",
+    "#34d399", "#f472b6", "#60a5fa", "#facc15", "#94a3b8", "#f87171",
+]
+
 # Country name -> ISO-3 code, matching the exact canonical names used by
 # backend/geo_data/world_countries.geojson (see geo.py) -- lets exported
 # notebooks build a Plotly choropleth without needing that boundary file.
@@ -484,6 +492,25 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "chart_type = chart.get('type')\n"
             "x = chart.get('x')\n"
             "y = chart.get('y')\n"
+            "# Background / colours chosen for this visual in the AutoDS Visualise\n"
+            "# step (chart['_style']). Defaults give a white background so the\n"
+            "# series colours stay easy to tell apart.\n"
+            "_style = chart.get('_style') or {}\n"
+            "_bg = _style.get('bg') or '#ffffff'\n"
+            "_ink = _style.get('ink') or '#334155'\n"
+            "_grid = _style.get('grid') or '#e2e8f0'\n"
+            "_palette = _style.get('palette') or " + _py_embed(_DEFAULT_CHART_PALETTE) + "\n"
+            "_has_custom_palette = bool(_style.get('palette'))\n"
+            "plt.rcParams['figure.facecolor'] = _bg\n"
+            "plt.rcParams['savefig.facecolor'] = _bg\n"
+            "plt.rcParams['axes.facecolor'] = _bg\n"
+            "plt.rcParams['axes.edgecolor'] = _grid\n"
+            "plt.rcParams['grid.color'] = _grid\n"
+            "plt.rcParams['text.color'] = _ink\n"
+            "plt.rcParams['axes.labelcolor'] = _ink\n"
+            "plt.rcParams['xtick.color'] = _ink\n"
+            "plt.rcParams['ytick.color'] = _ink\n"
+            "plt.rcParams['axes.prop_cycle'] = plt.cycler(color=_palette)\n"
             "_plotted = False  # set True below once a chart type renders via a non-matplotlib path\n\n"
             "if chart_type in {'scatter', 'line'} and x in df.columns and y in df.columns:\n"
             "    plot_df = df[[x, y]].dropna()\n"
@@ -559,9 +586,14 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "            raise ValueError(\"none of the region names matched Plotly's built-in boundaries\")\n"
             "        fig = px.choropleth(\n"
             "            mapped_rows, locations='_loc', locationmode=locationmode, color=value_col,\n"
-            "            hover_name=hover_col, color_continuous_scale='Viridis', scope=scope,\n"
+            "            hover_name=hover_col, scope=scope,\n"
+            "            # Only override Plotly's Viridis ramp when the visual has its own palette.\n"
+            "            color_continuous_scale=([[0, _palette[0]], [1, _palette[-1]]] if _has_custom_palette and len(_palette) > 1 else 'Viridis'),\n"
             f"            title=chart.get('title') or 'AutoDS chart {i}',\n"
             "        )\n"
+            "        # Match the background / text colours chosen for this visual.\n"
+            "        fig.update_layout(paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_ink),\n"
+            "                          geo=dict(bgcolor=_bg))\n"
             "        skipped = len(rows) - len(mapped_rows)\n"
             "        if skipped:\n"
             "            print(f'{skipped} region(s) had no matching Plotly boundary and were left blank on the map.')\n"

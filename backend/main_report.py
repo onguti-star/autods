@@ -1301,7 +1301,22 @@ def _build_html_report(session, extra_charts=None) -> str:
             // Method 1: Try to copy the entire chart card as an image using html2canvas approach
             // Since we can't use external libraries, we'll create a downloadable link
             try {
-                const dataUrl = canvas.toDataURL('image/png');
+                // Chart.js canvases are transparent — composite onto this
+                // visual's background colour so the saved PNG matches on screen.
+                const style = reportChartStyle(reportCharts[index] || {});
+                let dataUrl;
+                try {
+                    const tmp = document.createElement('canvas');
+                    tmp.width = canvas.width;
+                    tmp.height = canvas.height;
+                    const cx = tmp.getContext('2d');
+                    cx.fillStyle = style.bg;
+                    cx.fillRect(0, 0, tmp.width, tmp.height);
+                    cx.drawImage(canvas, 0, 0);
+                    dataUrl = tmp.toDataURL('image/png');
+                } catch (_) {
+                    dataUrl = canvas.toDataURL('image/png');
+                }
                 
                 // Create a temporary download link
                 const link = document.createElement('a');
@@ -1352,8 +1367,8 @@ def _build_html_report(session, extra_charts=None) -> str:
 
         function copyReportContent() {
             // Create a simplified text version of the report
-            let textContent = 'AUTODS ANALYSIS REPORT\n';
-            textContent += '='.repeat(50) + '\n\n';
+            let textContent = 'AUTODS ANALYSIS REPORT\\n';
+            textContent += '='.repeat(50) + '\\n\\n';
             
             // Extract title and metadata
             const title = document.querySelector('.report-title')?.textContent || 'AutoDS Analysis Report';
@@ -1365,7 +1380,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             sections.forEach(section => {
                 const text = section.textContent.trim();
                 if (text) {
-                    textContent += text + '\n\n';
+                    textContent += text + '\\n\\n';
                 }
             });
             
@@ -1479,7 +1494,62 @@ def _build_html_report(session, extra_charts=None) -> str:
             };
         }
 
-        function renderHeatmap(canvas, chart) {
+        // ---- Chart appearance -------------------------------------------
+        // The app lets each visual carry its own `_style` bag
+        // ({bg, ink, grid, palette?}); use it here so the downloadable report
+        // looks exactly like what was built on screen. Charts saved before
+        // this feature existed simply have no `_style` and keep the defaults.
+        function reportChartStyle(chart) {
+            const s = (chart && chart._style) || {};
+            return {
+                bg: s.bg || '#ffffff',
+                ink: s.ink || '#495057',
+                grid: s.grid || '#dee2e6',
+                palette: (Array.isArray(s.palette) && s.palette.length) ? s.palette : null,
+                customPalette: Array.isArray(s.palette) && s.palette.length > 0,
+            };
+        }
+
+        // Applies the visual's background/text/grid/colour choices to a
+        // Chart.js config built by buildChartConfig().
+        function applyChartStyle(config, style) {
+            if (!config || !style) return config;
+            const opts = config.options = config.options || {};
+            const plugins = opts.plugins = opts.plugins || {};
+            if (style.ink) {
+                if (plugins.legend) {
+                    plugins.legend.labels = Object.assign({}, plugins.legend.labels, { color: style.ink });
+                }
+                opts.color = style.ink;
+            }
+            Object.keys(opts.scales || {}).forEach(key => {
+                const sc = opts.scales[key] = opts.scales[key] || {};
+                if (style.grid) sc.grid = Object.assign({}, sc.grid, { color: style.grid });
+                if (style.ink) {
+                    sc.ticks = Object.assign({}, sc.ticks, { color: style.ink });
+                    if (sc.pointLabels) sc.pointLabels = Object.assign({}, sc.pointLabels, { color: style.ink });
+                }
+            });
+            const pal = style.palette;
+            const datasets = config.data && config.data.datasets;
+            if (pal && pal.length && Array.isArray(datasets)) {
+                datasets.forEach((ds, i) => {
+                    const c = pal[i % pal.length];
+                    if (Array.isArray(ds.backgroundColor)) {
+                        // One colour per slice/segment (pie, doughnut, treemap…)
+                        ds.backgroundColor = pal.slice();
+                        if (typeof ds.borderColor === 'string') ds.borderColor = style.bg;
+                    } else {
+                        if (typeof ds.backgroundColor === 'string') ds.backgroundColor = c;
+                        if (typeof ds.borderColor === 'string') ds.borderColor = c;
+                        if (typeof ds.pointBackgroundColor === 'string') ds.pointBackgroundColor = c;
+                    }
+                });
+            }
+            return config;
+        }
+
+        function renderHeatmap(canvas, chart, style) {
             const matrix = chart.matrix || [];
             const labels = chart.labels || [];
             const n = matrix.length;
@@ -1493,7 +1563,10 @@ def _build_html_report(session, extra_charts=None) -> str:
             canvas.height = height;
 
             const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, width, height);
+            // Start from the visual's chosen background instead of a
+            // transparent canvas.
+            ctx.fillStyle = (style && style.bg) || '#ffffff';
+            ctx.fillRect(0, 0, width, height);
 
             const labelSpace = labels.length ? 120 : 36;
             const topSpace = 30;
@@ -1546,7 +1619,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                 }
             }
 
-            ctx.fillStyle = '#495057';
+            ctx.fillStyle = (style && style.ink) || '#495057';
             ctx.font = '11px Arial, sans-serif';
             for (let i = 0; i < n; i++) {
                 const label = String(labels[i] || '');
@@ -1565,7 +1638,9 @@ def _build_html_report(session, extra_charts=None) -> str:
             return true;
         }
 
-        function buildChartConfig(chart) {
+        function buildChartConfig(chart, style) {
+            style = style || reportChartStyle(chart);
+            const pal = style.palette || pieColors;
             switch (chart.type) {
                 case 'pie':
                     return {
@@ -1574,8 +1649,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             labels: chart.labels,
                             datasets: [{
                                 data: chart.values,
-                                backgroundColor: pieColors,
-                                borderColor: '#ffffff',
+                                backgroundColor: pal,
+                                borderColor: style.bg,
                                 borderWidth: 2
                             }]
                         },
@@ -1707,11 +1782,12 @@ def _build_html_report(session, extra_charts=None) -> str:
                     if (!chart.words || !chart.words.length) return null;
                     const cloudContainer = document.createElement('div');
                     cloudContainer.className = 'wordcloud-wrap';
+                    cloudContainer.style.background = style.bg;
                     const counts = chart.words.map(w => w.count);
                     const min = Math.min(...counts), max = Math.max(...counts);
                     const scale = c => min === max ? 24 : 13 + ((c - min) / (max - min)) * 46;
                     cloudContainer.innerHTML = chart.words.map((w, i) =>
-                        `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${pieColors[i % pieColors.length]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
+                        `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${pal[i % pal.length]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
                     ).join('');
                     canvas.parentElement.insertBefore(cloudContainer, canvas);
                     canvas.remove();
@@ -1829,10 +1905,13 @@ def _build_html_report(session, extra_charts=None) -> str:
         reportCharts.forEach((chart, index) => {
             const canvas = document.getElementById(`chart_${index}`);
             if (!canvas) return;
+            // Background + colours chosen for this visual in the app.
+            const style = reportChartStyle(chart);
+            if (canvas.parentElement) canvas.parentElement.style.background = style.bg;
             if (chart.type === 'heatmap') {
-                if (renderHeatmap(canvas, chart)) return;
+                if (renderHeatmap(canvas, chart, style)) return;
             }
-            const config = buildChartConfig(chart);
+            const config = applyChartStyle(buildChartConfig(chart, style), style);
             if (!config) {
                 // Some chart types (wordcloud, scatter_map) already remove the
                 // canvas themselves inside buildChartConfig. Only insert the

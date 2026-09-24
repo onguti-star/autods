@@ -640,6 +640,7 @@ def _classification_models(n_classes: int, class_ratio: float = 1.0) -> dict:
         )
     if CatBoostClassifier is not None:
         models["CatBoost"] = CatBoostClassifier(
+            allow_writing_files=False,  # no catboost_info/ folder in the working directory
             iterations=200,
             learning_rate=0.05,
             random_seed=42,
@@ -695,6 +696,7 @@ def _regression_models() -> dict:
         )
     if CatBoostRegressor is not None:
         models["CatBoost"] = CatBoostRegressor(
+            allow_writing_files=False,  # no catboost_info/ folder in the working directory
             iterations=200,
             learning_rate=0.05,
             random_seed=42,

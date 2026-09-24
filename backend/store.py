@@ -18,9 +18,14 @@ import pandas as pd
 
 logger = logging.getLogger("autods.store")
 
-# Directory where session dataframes are persisted between restarts
-_SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".sessions")
-_SESSION_DIR = os.path.abspath(_SESSION_DIR)
+# Directory where session dataframes are persisted between restarts.
+# The desktop app sets AUTODS_DATA_DIR to a per-user folder (the install
+# folder may be read-only); otherwise it stays next to the project as before.
+_DATA_DIR = os.environ.get("AUTODS_DATA_DIR", "").strip()
+if _DATA_DIR:
+    _SESSION_DIR = os.path.abspath(os.path.join(_DATA_DIR, "sessions"))
+else:
+    _SESSION_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".sessions"))
 os.makedirs(_SESSION_DIR, exist_ok=True)
 
 

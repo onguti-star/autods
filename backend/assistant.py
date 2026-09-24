@@ -43,7 +43,9 @@ ASSISTANT_KEYWORDS = {
     "relationship", "remove", "sample",
     "scatter", "schema", "search", "sort", "standardize", "starts", "statistics",
     "study", "summary", "target", "total", "unique", "variance",
-    "visualization", "with",
+    "visualization", "with", "suggest", "suggestions", "improve", "next",
+    "recommend", "recommendations", "priority", "checklist", "wrong",
+    "should",
 }
 
 CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
@@ -1891,6 +1893,157 @@ def _is_cluster_question(question: str) -> bool:
     return any(term in q for term in ("cluster", "clusters", "clustered", "segment", "segments"))
 
 
+def _looks_like_id_column(df, col):
+    s = df[col]
+    n = len(s)
+    if n == 0:
+        return False
+    nunique = s.nunique(dropna=True)
+    name = str(col).lower()
+    if re.search(r"(^|_)(id|uuid|guid|index|key)($|_)", name):
+        return nunique / n > 0.9
+    if nunique / n < 0.95:
+        return False
+    # Beyond a name match, only flag integer/text columns as identifiers.
+    # A continuous float column (a price, a score, a measurement) is almost
+    # always unique per row too, without being an ID -- so it's excluded here.
+    return not pd.api.types.is_float_dtype(s)
+
+
+def _looks_like_target_column(df, col):
+    name = str(col).lower()
+    return bool(re.search(r"(target|label|class|outcome|churn|response|y)$", name)) or name in ("target", "label", "y", "class")
+
+
+def _next_steps_report(df: pd.DataFrame) -> str:
+    """A prioritized, actionable checklist -- the "what should I do next"
+    answer. Each item that maps to a real command ends with a copy-pasteable
+    example in backticks; type or paste it into this same box to run it."""
+    n_rows, n_cols = df.shape
+    items = []
+
+    already_flagged = set()   # avoid saying the same column is a problem twice
+
+    dup = int(df.duplicated().sum())
+    if dup:
+        pct = dup / n_rows * 100
+        items.append((3 if pct > 1 else 1,
+            f"{dup:,} duplicate row(s) ({pct:.1f}%). \u2192 try: `remove duplicate rows`"))
+
+    miss = df.isna().sum()
+    miss = miss[miss > 0].sort_values(ascending=False)
+    heavy = miss[miss / n_rows > 0.5]
+    for col, n in heavy.head(4).items():
+        items.append((3, f"'{col}' is {n / n_rows * 100:.0f}% missing -- probably not usable as-is. "
+                          f"\u2192 try: `drop column {col}`"))
+        already_flagged.add(col)
+    moderate = miss[(miss / n_rows <= 0.5) & (miss / n_rows > 0)]
+    if len(moderate):
+        top = moderate.head(5)
+        cols_str = ", ".join(f"{c} ({n / n_rows * 100:.0f}%)" for c, n in top.items())
+        example_col = top.index[0]
+        fill_hint = "the mean" if _is_numeric(df[example_col]) else "the most common value"
+        items.append((2, f"Missing values in: {cols_str}. "
+                          f"\u2192 try: `fill missing {example_col} with {fill_hint}`"))
+
+    constant = [c for c in df.columns if c not in already_flagged and df[c].nunique(dropna=True) <= 1]
+    for col in constant[:4]:
+        items.append((2, f"'{col}' has only one distinct value -- it can't help a model. "
+                          f"\u2192 try: `drop column {col}`"))
+        already_flagged.add(col)
+
+    id_like = [c for c in df.columns if c not in already_flagged and _looks_like_id_column(df, c)]
+    for col in id_like[:3]:
+        items.append((2, f"'{col}' looks like an identifier (almost every value is unique) -- "
+                          f"drop it before training, it won't generalise. \u2192 try: `drop column {col}`"))
+        already_flagged.add(col)
+
+    outlier_cols = []
+    for c in _numeric_cols(df):
+        s = df[c].dropna()
+        if len(s) < 4:
+            continue
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        n_out = int(((s < q1 - 1.5 * iqr) | (s > q3 + 1.5 * iqr)).sum())
+        if n_out / len(s) > 0.02:
+            outlier_cols.append((c, n_out, n_out / len(s) * 100))
+    if outlier_cols:
+        outlier_cols.sort(key=lambda x: x[2], reverse=True)
+        parts = "; ".join(f"{c} ({pct:.1f}%)" for c, _, pct in outlier_cols[:4])
+        items.append((1, f"Possible outliers in: {parts}. Worth a box plot before deciding whether "
+                          f"to cap or remove them -- ask me to \"show outliers in {outlier_cols[0][0]}\" for detail."))
+
+    skewed = []
+    for c in _numeric_cols(df):
+        s = df[c].dropna()
+        if len(s) < 10:
+            continue
+        try:
+            sk = s.skew()
+        except Exception:
+            continue
+        if abs(sk) > 2:
+            skewed.append((c, sk))
+    if skewed:
+        parts = ", ".join(f"{c} (skew {sk:.1f})" for c, sk in skewed[:4])
+        items.append((0, f"Heavily skewed: {parts}. A log transform or the median (instead of the mean) "
+                          f"for filling gaps usually works better for these."))
+
+    numeric = _numeric_cols(df)
+    if len(numeric) >= 2:
+        corr = df[numeric].corr(numeric_only=True)
+        seen = set()
+        strong = []
+        for a in numeric:
+            for b in numeric:
+                if a >= b or (a, b) in seen:
+                    continue
+                seen.add((a, b))
+                v = corr.loc[a, b]
+                if pd.notna(v) and abs(v) > 0.9:
+                    strong.append((a, b, v))
+        if strong:
+            strong.sort(key=lambda x: abs(x[2]), reverse=True)
+            a, b, v = strong[0]
+            items.append((1, f"'{a}' and '{b}' are almost perfectly correlated ({v:.2f}) -- "
+                              f"keeping both as model features is usually redundant."))
+
+    target_candidates = [c for c in df.columns if _looks_like_target_column(df, c)]
+    if target_candidates:
+        col = target_candidates[0]
+        s = df[col]
+        if not _is_numeric(s) or s.nunique(dropna=True) <= 15:
+            counts = s.value_counts(dropna=True)
+            if len(counts) >= 2:
+                majority = counts.iloc[0] / counts.sum() * 100
+                if majority > 80:
+                    items.append((2, f"'{col}' looks like your target, and it's imbalanced -- "
+                                      f"the largest class is {majority:.0f}% of rows. Keep this in mind "
+                                      f"when checking model accuracy on the Training tab."))
+                else:
+                    items.append((0, f"'{col}' looks like a reasonable target column "
+                                      f"({len(counts)} classes, largest is {majority:.0f}%)."))
+
+    if not items:
+        return ("This dataset looks clean: no duplicates, no heavy missingness, no obvious constant "
+                "or ID-like columns, and no extreme outliers. You're in good shape to move on to "
+                "Visualise or Training.")
+
+    items.sort(key=lambda x: -x[0])
+    numbered = [f"{i + 1}. {text}" for i, (_, text) in enumerate(items[:8])]
+    has_command = any("\u2192 try:" in text for _, text in items[:8])
+    closing = (
+        "\n\nYou can type any of the commands above into this box to run them, or ask me about "
+        "a specific one for more detail."
+        if has_command else
+        "\n\nAsk me about any of these for more detail."
+    )
+    return "Here's what I'd look at first, most important first:\n" + "\n".join(numbered) + closing
+
+
 def _recommendations(df: pd.DataFrame) -> str:
     numeric = _numeric_cols(df)
     categorical = _categorical_cols(df)
@@ -2574,7 +2727,7 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
     mentioned = _find_columns_in_text(question, columns)
 
     if not q:
-        return "Ask me about this dataset: summary, missing values, correlations, outliers, distributions, grouped averages, or a possible prediction target."
+        return "Ask me about this dataset: summary, missing values, correlations, outliers, distributions, grouped averages, or a possible prediction target. Or ask \"what should I do next?\" for a prioritized checklist."
 
     if _is_cluster_question(question):
         return _cluster_characteristics(df, question)
@@ -2600,6 +2753,18 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
 
     if any(w in q for w in ("overview", "summarize dataset", "summary of dataset", "study", "understand", "explain dataset", "what is in this data")):
         return _dataset_overview(df) + " " + _recommendations(df)
+
+    next_step_phrases = (
+        "what should i do", "what next", "what's next", "any suggestions",
+        "any suggestion", "suggest something", "suggest some", "how do i improve",
+        "how can i improve", "improve this dataset", "improve my dataset",
+        "what's wrong with", "whats wrong with", "what is wrong with",
+        "help me clean", "what do you recommend", "any recommendations",
+        "recommend anything", "where do i start", "where should i start",
+        "next steps", "priority", "checklist", "what would you do",
+    )
+    if any(p in q for p in next_step_phrases):
+        return _next_steps_report(df)
 
     type_question = any(
         phrase in q
@@ -2792,5 +2957,6 @@ def _answer_question_impl(df: pd.DataFrame, question: str) -> str:
         "correlations, relationships between columns, means/medians/totals, distributions, outliers, "
         "grouped averages, value counts, cluster profiles, target advice, and visualization ideas. Try: "
         "\"study this dataset\", \"strongest correlations\", \"outliers in price\", "
-        "\"average sales by region\", \"describe Cluster 3\", or \"can I predict survival?\""
+        "\"average sales by region\", \"describe Cluster 3\", \"can I predict survival?\", or "
+        "\"what should I do next?\" for a prioritized checklist."
     )
