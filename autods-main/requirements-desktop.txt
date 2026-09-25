@@ -1,0 +1,8 @@
+# Extra packages needed only to BUILD the desktop app (not to run AutoDS from source)
+pyinstaller>=6.10
+pillow>=10.0
+# Native window (no browser needed to display AutoDS)
+pywebview>=5.3
+PyQt6>=6.6; sys_platform == "linux"
+PyQt6-WebEngine>=6.6; sys_platform == "linux"
+QtPy>=2.4; sys_platform == "linux"

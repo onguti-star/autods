@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Comma-separated list of origins allowed to call this API — set this
+      # to your Netlify URL (e.g. "https://my-app.netlify.app"), or the
+      # browser will block the requests even though the server is reachable.
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://CHANGE-ME.netlify.app}
+    volumes:
+      - ./data/sessions:/app/.sessions
+    expose:
+      - "8000"
+    # Deliberately NOT publishing 8000 to the host — Caddy is the only thing
+    # that should be reachable from the internet, so it can terminate TLS.
+    # The two containers talk over the private compose network instead.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+volumes:
+  caddy_data:
+  caddy_config:

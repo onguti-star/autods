@@ -1,0 +1,8 @@
+# Replace this with your real hostname before running `docker compose up`.
+# No domain of your own? Use the free sslip.io trick: if your VPS's public IP
+# is 123.45.67.89, use "123-45-67-89.sslip.io" here — it's a real public DNS
+# name that resolves to your IP, so Caddy can still get a real Let's Encrypt
+# certificate for it automatically. No account or setup needed on your end.
+CHANGE-ME.sslip.io {
+    reverse_proxy backend:8000
+}

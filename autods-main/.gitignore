@@ -1,0 +1,23 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+*.pkl
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated application builds
+/build/AutoDS/
+/dist/
+
+# Uploaded datasets and local assistant state
+/.sessions/
+
+# Local configuration
+claude_api_key.txt
