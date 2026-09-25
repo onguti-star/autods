@@ -1301,22 +1301,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             // Method 1: Try to copy the entire chart card as an image using html2canvas approach
             // Since we can't use external libraries, we'll create a downloadable link
             try {
-                // Chart.js canvases are transparent — composite onto this
-                // visual's background colour so the saved PNG matches on screen.
-                const style = reportChartStyle(reportCharts[index] || {});
-                let dataUrl;
-                try {
-                    const tmp = document.createElement('canvas');
-                    tmp.width = canvas.width;
-                    tmp.height = canvas.height;
-                    const cx = tmp.getContext('2d');
-                    cx.fillStyle = style.bg;
-                    cx.fillRect(0, 0, tmp.width, tmp.height);
-                    cx.drawImage(canvas, 0, 0);
-                    dataUrl = tmp.toDataURL('image/png');
-                } catch (_) {
-                    dataUrl = canvas.toDataURL('image/png');
-                }
+                const dataUrl = canvas.toDataURL('image/png');
                 
                 // Create a temporary download link
                 const link = document.createElement('a');
@@ -1367,8 +1352,8 @@ def _build_html_report(session, extra_charts=None) -> str:
 
         function copyReportContent() {
             // Create a simplified text version of the report
-            let textContent = 'AUTODS ANALYSIS REPORT\\n';
-            textContent += '='.repeat(50) + '\\n\\n';
+            let textContent = 'AUTODS ANALYSIS REPORT\n';
+            textContent += '='.repeat(50) + '\n\n';
             
             // Extract title and metadata
             const title = document.querySelector('.report-title')?.textContent || 'AutoDS Analysis Report';
@@ -1380,7 +1365,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             sections.forEach(section => {
                 const text = section.textContent.trim();
                 if (text) {
-                    textContent += text + '\\n\\n';
+                    textContent += text + '\n\n';
                 }
             });
             
@@ -1494,62 +1479,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             };
         }
 
-        // ---- Chart appearance -------------------------------------------
-        // The app lets each visual carry its own `_style` bag
-        // ({bg, ink, grid, palette?}); use it here so the downloadable report
-        // looks exactly like what was built on screen. Charts saved before
-        // this feature existed simply have no `_style` and keep the defaults.
-        function reportChartStyle(chart) {
-            const s = (chart && chart._style) || {};
-            return {
-                bg: s.bg || '#ffffff',
-                ink: s.ink || '#495057',
-                grid: s.grid || '#dee2e6',
-                palette: (Array.isArray(s.palette) && s.palette.length) ? s.palette : null,
-                customPalette: Array.isArray(s.palette) && s.palette.length > 0,
-            };
-        }
-
-        // Applies the visual's background/text/grid/colour choices to a
-        // Chart.js config built by buildChartConfig().
-        function applyChartStyle(config, style) {
-            if (!config || !style) return config;
-            const opts = config.options = config.options || {};
-            const plugins = opts.plugins = opts.plugins || {};
-            if (style.ink) {
-                if (plugins.legend) {
-                    plugins.legend.labels = Object.assign({}, plugins.legend.labels, { color: style.ink });
-                }
-                opts.color = style.ink;
-            }
-            Object.keys(opts.scales || {}).forEach(key => {
-                const sc = opts.scales[key] = opts.scales[key] || {};
-                if (style.grid) sc.grid = Object.assign({}, sc.grid, { color: style.grid });
-                if (style.ink) {
-                    sc.ticks = Object.assign({}, sc.ticks, { color: style.ink });
-                    if (sc.pointLabels) sc.pointLabels = Object.assign({}, sc.pointLabels, { color: style.ink });
-                }
-            });
-            const pal = style.palette;
-            const datasets = config.data && config.data.datasets;
-            if (pal && pal.length && Array.isArray(datasets)) {
-                datasets.forEach((ds, i) => {
-                    const c = pal[i % pal.length];
-                    if (Array.isArray(ds.backgroundColor)) {
-                        // One colour per slice/segment (pie, doughnut, treemap…)
-                        ds.backgroundColor = pal.slice();
-                        if (typeof ds.borderColor === 'string') ds.borderColor = style.bg;
-                    } else {
-                        if (typeof ds.backgroundColor === 'string') ds.backgroundColor = c;
-                        if (typeof ds.borderColor === 'string') ds.borderColor = c;
-                        if (typeof ds.pointBackgroundColor === 'string') ds.pointBackgroundColor = c;
-                    }
-                });
-            }
-            return config;
-        }
-
-        function renderHeatmap(canvas, chart, style) {
+        function renderHeatmap(canvas, chart) {
             const matrix = chart.matrix || [];
             const labels = chart.labels || [];
             const n = matrix.length;
@@ -1563,10 +1493,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             canvas.height = height;
 
             const ctx = canvas.getContext('2d');
-            // Start from the visual's chosen background instead of a
-            // transparent canvas.
-            ctx.fillStyle = (style && style.bg) || '#ffffff';
-            ctx.fillRect(0, 0, width, height);
+            ctx.clearRect(0, 0, width, height);
 
             const labelSpace = labels.length ? 120 : 36;
             const topSpace = 30;
@@ -1619,7 +1546,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                 }
             }
 
-            ctx.fillStyle = (style && style.ink) || '#495057';
+            ctx.fillStyle = '#495057';
             ctx.font = '11px Arial, sans-serif';
             for (let i = 0; i < n; i++) {
                 const label = String(labels[i] || '');
@@ -1638,9 +1565,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             return true;
         }
 
-        function buildChartConfig(chart, style) {
-            style = style || reportChartStyle(chart);
-            const pal = style.palette || pieColors;
+        function buildChartConfig(chart) {
             switch (chart.type) {
                 case 'pie':
                     return {
@@ -1649,8 +1574,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             labels: chart.labels,
                             datasets: [{
                                 data: chart.values,
-                                backgroundColor: pal,
-                                borderColor: style.bg,
+                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : pieColors,
+                                borderColor: '#ffffff',
                                 borderWidth: 2
                             }]
                         },
@@ -1685,8 +1610,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.x || 'Values',
                                 data: chart.values,
-                                backgroundColor: 'rgba(13,110,253,0.75)',
-                                borderColor: 'rgba(13,110,253,1)',
+                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : (chart.color || 'rgba(13,110,253,0.75)'),
+                                borderColor: chart.color || 'rgba(13,110,253,1)',
                                 borderWidth: 1
                             }]
                         },
@@ -1703,8 +1628,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.y || chart.x || 'Series',
                                 data: chart.values,
-                                borderColor: 'rgba(13,110,253,0.85)',
-                                backgroundColor: 'rgba(13,110,253,0.3)',
+                                borderColor: chart.color || 'rgba(13,110,253,0.85)',
+                                backgroundColor: chart.color ? chart.color + '4d' : 'rgba(13,110,253,0.3)',
                                 fill: true,
                                 tension: 0.25
                             }]
@@ -1719,8 +1644,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                                 label: chart.title || `${chart.x} vs ${chart.y}`,
                                 data: chart.points,
                                 pointRadius: 5,
-                                pointBackgroundColor: 'rgba(13,110,253,0.85)',
-                                borderColor: 'rgba(13,110,253,1)'
+                                pointBackgroundColor: chart.color || 'rgba(13,110,253,0.85)',
+                                borderColor: chart.color || 'rgba(13,110,253,1)'
                             }]
                         },
                         options: {
@@ -1768,8 +1693,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.x || 'Count',
                                 data: chart.values,
-                                backgroundColor: 'rgba(13,110,253,0.75)',
-                                borderColor: 'rgba(13,110,253,1)',
+                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : (chart.color || 'rgba(13,110,253,0.75)'),
+                                borderColor: chart.color || 'rgba(13,110,253,1)',
                                 borderWidth: 1
                             }]
                         },
@@ -1782,12 +1707,11 @@ def _build_html_report(session, extra_charts=None) -> str:
                     if (!chart.words || !chart.words.length) return null;
                     const cloudContainer = document.createElement('div');
                     cloudContainer.className = 'wordcloud-wrap';
-                    cloudContainer.style.background = style.bg;
                     const counts = chart.words.map(w => w.count);
                     const min = Math.min(...counts), max = Math.max(...counts);
                     const scale = c => min === max ? 24 : 13 + ((c - min) / (max - min)) * 46;
                     cloudContainer.innerHTML = chart.words.map((w, i) =>
-                        `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${pal[i % pal.length]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
+                        `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${(chart.colors && chart.colors.length ? chart.colors : pieColors)[i % (chart.colors && chart.colors.length ? chart.colors.length : pieColors.length)]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
                     ).join('');
                     canvas.parentElement.insertBefore(cloudContainer, canvas);
                     canvas.remove();
@@ -1802,8 +1726,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.x || 'Density',
                                 data: chart.values,
-                                borderColor: 'rgba(255,182,39,0.85)',
-                                backgroundColor: 'rgba(255,182,39,0.2)',
+                                borderColor: chart.color || 'rgba(255,182,39,0.85)',
+                                backgroundColor: chart.color ? chart.color + '33' : 'rgba(255,182,39,0.2)',
                                 fill: true,
                                 pointRadius: 0,
                                 tension: 0.4
@@ -1851,7 +1775,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                     const total = chart.values.reduce((a, b) => a + b, 0);
                     treemapContainer.innerHTML = chart.labels.map((label, i) => {
                         const share = total ? (chart.values[i] / total * 100).toFixed(1) : '0.0';
-                        return `<div style="background:${pieColors[i % pieColors.length]}cc;color:#fff;padding:12px;border-radius:4px;text-align:center;font-family:Arial,sans-serif;">
+                        const treemapPal = (chart.colors && chart.colors.length) ? chart.colors : pieColors;
+                        return `<div style="background:${treemapPal[i % treemapPal.length]}cc;color:#fff;padding:12px;border-radius:4px;text-align:center;font-family:Arial,sans-serif;">
                             <div style="font-weight:bold;font-size:12px;margin-bottom:4px;">${label.length > 15 ? label.slice(0, 12) + '…' : label}</div>
                             <div style="font-size:10px;opacity:0.9;">${chart.values[i]} (${share}%)</div>
                         </div>`;
@@ -1866,14 +1791,18 @@ def _build_html_report(session, extra_charts=None) -> str:
                         type: 'radar',
                         data: {
                             labels: chart.labels,
-                            datasets: chart.datasets.map((ds, i) => ({
+                            datasets: chart.datasets.map((ds, i) => {
+                                const radarPal = (chart.colors && chart.colors.length) ? chart.colors : pieColors;
+                                const c = radarPal[i % radarPal.length];
+                                return {
                                 label: ds.label || `Series ${i + 1}`,
                                 data: ds.data,
-                                borderColor: pieColors[i % pieColors.length],
-                                backgroundColor: pieColors[i % pieColors.length] + '33',
-                                pointBackgroundColor: pieColors[i % pieColors.length],
+                                borderColor: c,
+                                backgroundColor: c + '33',
+                                pointBackgroundColor: c,
                                 borderWidth: 2
-                            }))
+                                };
+                            })
                         },
                         options: {
                             ...chartOptions,
@@ -1905,13 +1834,10 @@ def _build_html_report(session, extra_charts=None) -> str:
         reportCharts.forEach((chart, index) => {
             const canvas = document.getElementById(`chart_${index}`);
             if (!canvas) return;
-            // Background + colours chosen for this visual in the app.
-            const style = reportChartStyle(chart);
-            if (canvas.parentElement) canvas.parentElement.style.background = style.bg;
             if (chart.type === 'heatmap') {
-                if (renderHeatmap(canvas, chart, style)) return;
+                if (renderHeatmap(canvas, chart)) return;
             }
-            const config = applyChartStyle(buildChartConfig(chart, style), style);
+            const config = buildChartConfig(chart);
             if (!config) {
                 // Some chart types (wordcloud, scatter_map) already remove the
                 // canvas themselves inside buildChartConfig. Only insert the

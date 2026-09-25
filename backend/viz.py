@@ -459,6 +459,42 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
             **pie,
         }
 
+    if chart_type == "funnel":
+        counts = _bar_data(s, top_n=bar_limit or 12)
+        values = counts["values"]
+        # A funnel is a ranked bar with progressively decreasing stages.
+        if len(values) > 1:
+            values = sorted((float(v) for v in values), reverse=True)
+        return {
+            "type": "funnel", "x": x, "labels": counts["labels"],
+            "values": values, "x_label": x, "y_label": "Count",
+            "caption": f"Ranked stages from '{x}', with the largest values at the top.",
+        }
+
+    if chart_type == "waterfall":
+        if not y or y not in df.columns:
+            raise ValueError("Waterfall chart needs a numeric Y column.")
+        if not pd.api.types.is_numeric_dtype(df[y]):
+            raise ValueError(f"'{y}' must be numeric for a waterfall chart.")
+        agg = df.groupby(x, dropna=True)[y].sum().sort_values(ascending=False).head(12)
+        labels = [str(v) for v in agg.index]
+        values = [float(v) for v in agg.tolist()]
+        return {
+            "type": "waterfall", "x": x, "y": y, "labels": labels,
+            "values": values, "x_label": x, "y_label": y,
+            "caption": f"Contribution of each '{x}' category to total {y}.",
+        }
+
+    if chart_type == "gauge":
+        if not pd.api.types.is_numeric_dtype(s):
+            raise ValueError(f"'{x}' must be numeric for a gauge chart.")
+        value = float(s.dropna().mean())
+        return {
+            "type": "gauge", "x": x, "value": value, "min": 0.0,
+            "max": max(abs(value) * 1.25, 1.0), "x_label": x, "y_label": "Average",
+            "caption": f"Average {x}: {value:,.3g}.",
+        }
+
     if chart_type == "scatter":
         if not y or y not in df.columns:
             raise ValueError("Scatter needs a Y column.")

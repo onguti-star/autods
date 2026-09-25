@@ -12,12 +12,9 @@ __pycache__/
 *.sqlite3
 *.db
 
-# Generated application builds
-/build/AutoDS/
-/dist/
-
-# Uploaded datasets and local assistant state
-/.sessions/
-
-# Local configuration
-claude_api_key.txt
+# desktop build output
+build/
+dist/
+catboost_info/
+.sessions/
+=*
