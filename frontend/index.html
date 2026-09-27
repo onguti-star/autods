@@ -295,6 +295,13 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .inline-option{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-dim);}
 .inline-option input{accent-color:var(--accent);}
 .corr-summary{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);margin:8px 0;}
+/* Colour key for the correlation matrix: the same swatch colours the cells use,
+   so "what does this shade mean?" is answerable without hovering every cell. */
+.corr-legend{margin:10px 0 2px;}
+.corr-legend.hidden{display:none;}
+.corr-scale{display:flex;gap:2px;margin-bottom:6px;}
+.corr-scale .cs-cell{flex:1;max-width:64px;height:22px;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;border:1px solid rgba(255,255,255,0.06);}
+.corr-legend .cl-note{margin:0;font-size:11.5px;color:var(--ink-dim);line-height:1.5;}
 .preview-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;}
 .preview-table th{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;padding:8px 12px;border:1px solid var(--panel-border);text-align:left;position:sticky;top:0;}
 .preview-table th .col-name{color:var(--ink);font-weight:600;}
@@ -314,6 +321,18 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .model-card-meta{font-size:11px;color:var(--ink-dim);margin-bottom:14px;}
 .model-card-predict-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end;}
 .model-card-result{margin-top:10px;}
+/* Batch-predict preview. Scoring a dataset with a lot of columns used to
+   stretch this table past the card, so the numbers spilled outside the panel
+   (the table is white-space:nowrap, i.e. as wide as its columns need). It now
+   lives in its own scroll box: the card keeps its width whatever the target
+   dataset's column count is, and both a horizontal and a vertical scrollbar
+   appear inside the box instead. */
+.model-card-batch-result{max-width:100%;min-width:0;}
+.batch-preview-wrap{max-width:100%;max-height:320px;overflow:auto;border:1px solid var(--panel-border);background:rgba(0,0,0,0.12);}
+.batch-preview-wrap .preview-table{width:auto;min-width:100%;font-size:10.5px;}
+.batch-preview-wrap .preview-table th{padding:6px 9px;}
+.batch-preview-wrap .preview-table td{padding:5px 9px;}
+.batch-preview-hint{margin:6px 0 0;font-size:11px;color:var(--ink-dim);}
 .model-card-collapse-btn{background:transparent;color:var(--ink-dim);border:1px solid var(--panel-border);font-size:10px;padding:3px 9px;cursor:pointer;}
 .model-card-collapse-btn:hover{color:var(--cyan);border-color:var(--cyan);}
 .model-card-body.collapsed{display:none;}
@@ -454,6 +473,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
    only, so chart colors read clearly. Toggled by #biThemeToggle, applies to
    #biWorkspace only -- the rest of the app (and other tabs) stay dark. ---- */
 #biThemeToggle.on{background:rgba(255,182,39,0.12);border-color:var(--accent);color:var(--accent);}
+#biContrastToggle.on{background:rgba(167,139,250,0.16);border-color:#a78bfa;color:#c4b0ff;}
 #panelViz.light-canvas{--panel-border:#dde3ec;}
 #panelViz.light-canvas .bi-pane,
 #panelViz.light-canvas .bi-tile{background:#ffffff;color:#1c2733;}
@@ -646,6 +666,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div>
         <div class="subhead">Correlation matrix</div>
         <div class="chart-box" style="height:70vh;min-height:340px;"><canvas id="corrCanvas"></canvas></div>
+        <div id="corrLegend" class="corr-legend hidden"></div>
         <div id="corrFallback" class="hint" style="margin-top:6px;"></div>
         <div id="corrPicker" class="hidden">
           <div class="pred-row" style="margin-top:10px;">
@@ -896,6 +917,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
       <button type="button" class="sec" id="biResetSizes" title="Undo any tile resizing">Reset sizes</button>
       <button type="button" class="sec" id="biThemeToggle" title="Switch the chart backgrounds between dark and white">☀ Light canvas</button>
+      <button type="button" class="sec" id="biContrastToggle" title="Paint charts with fully saturated colours, or go back to the calmer palette">◐ Vivid colours</button>
     </div>
 
     <div class="bi-kpis" id="biKpis"></div>
@@ -1707,7 +1729,7 @@ function clearAnalysisUI(){
     "cleanLog","cleanNarrative","cleanChatLog","vizResult","vizError",
     "trainStatus","trainNarrative","leaderboardTable","saveRunStatus",
     "savedRunsList","predictFields","predictResult","savedPredictionsList",
-    "chatWrap","corrFallback","corrPairSummary","pcaResult",
+    "chatWrap","corrFallback","corrLegend","corrPairSummary","pcaResult",
     "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
     "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError"
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
@@ -2285,19 +2307,51 @@ function renderPreview(columns, rows, targetId = "previewWrap"){
 function drawCorrelation(corr){
   currentCorrelation = corr;
   hide("corrPicker");
+  const legend = $("corrLegend");
+  if(legend){ legend.innerHTML = ""; legend.classList.add("hidden"); }
   if(!corr || corr.columns.length < 2){
     $("corrFallback").textContent = "Not enough numeric columns.";
     destroyChart("corrCanvas"); destroyChart("corrPairCanvas");
     return;
   }
   $("corrFallback").textContent = "";
-  const L = corr.columns, pts = [];
-  for(let i=0;i<L.length;i++) for(let j=0;j<L.length;j++) pts.push({x:j,y:i,v:corr.matrix[i][j]});
+  const L = corr.columns, M = corr.matrix, n = L.length;
+
+  // One flat entry per cell for Chart.js, plus the fill and the matching text
+  // ink for each cell (see the CORRELATION MATRIX SCALE helpers -- the fill no
+  // longer depends on alpha, so a weak correlation stays visible).
+  const pts = [], fills = [], inks = [];
+  for(let i = 0; i < n; i++){
+    fills[i] = []; inks[i] = [];
+    for(let j = 0; j < n; j++){
+      const v = M[i][j];
+      pts.push({x: j, y: i});
+      fills[i][j] = corrCellColor(v);
+      inks[i][j]  = corrInkOn(fills[i][j]);
+    }
+  }
+  const radius = corrCellRadius(n, "corrCanvas");
+  const edge   = corrCellEdgeColor();
+
   makeChart("corrCanvas",{type:"scatter",
-    data:{datasets:[{data:pts.map(d=>({x:d.x,y:d.y})),backgroundColor:pts.map(d=>d.v>=0?`rgba(95,217,214,${Math.abs(d.v)})`:`rgba(239,111,111,${Math.abs(d.v)})`),pointRadius:11,pointStyle:'rect'}]},
-    options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${L[c.raw.y]} × ${L[c.raw.x]}: ${corr.matrix[c.raw.y][c.raw.x]}`}}},
+    plugins:[corrValuePlugin],
+    data:{datasets:[{
+      data:pts,
+      backgroundColor:pts.map(d=>fills[d.y][d.x]),
+      pointBackgroundColor:pts.map(d=>fills[d.y][d.x]),
+      pointBorderColor:edge,
+      pointBorderWidth:1,                      // hairline gap between cells
+      pointStyle:'rect',
+      pointRadius:radius,
+      pointHoverRadius:radius,
+      pointHitRadius:radius
+    }]},
+    options:{plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c=>`${L[c.raw.y]} × ${L[c.raw.x]}: ${(Number(M[c.raw.y][c.raw.x]) || 0).toFixed(3)}`}},
+        corrValueLabels:{matrix:M, ink:inks, px:radius * 2}},
       scales:{x:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{color:'#1f3a5f'}},
               y:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{color:'#1f3a5f'}}}}});
+  if(legend){ legend.innerHTML = corrScaleLegendHtml(); legend.classList.remove("hidden"); }
   populateCorrelationPicker(corr);
 }
 
@@ -3393,26 +3447,204 @@ let vizTheme = localStorage.getItem("autods.viz.theme") || "dark";
 function vizTextColor(){ return vizTheme === "light" ? "#3d4a5c" : "#8fa3bc"; }
 function vizGridColor(){ return vizTheme === "light" ? "#dde3ec" : "#1f3a5f"; }
 function vizBorderColor(){ return vizTheme === "light" ? "#ffffff" : "#0d1b2e"; }
-const PIE_COLORS = ["#5fd4d6","#ffb627","#5fd98c","#ef6f6f","#a78bfa","#fb923c","#34d399","#f472b6","#60a5fa","#facc15","#94a3b8","#f87171"];
+
+// ---------- CHART COLOURS ----------
+// Two palettes sit behind the Visualise ribbon's "◐ Vivid colours" button:
+//
+//   vivid (default) — fully saturated hues, deliberately far apart in hue and
+//                     lightness so a scatter's points (or a bar chart's bars)
+//                     never blend into each other or into the canvas. There are
+//                     two vivid sets because a colour that pops off the dark
+//                     navy canvas is far too pale on the white Light canvas,
+//                     and vice versa -- vizPalette() picks the set that matches
+//                     the canvas currently in use.
+//   soft            — the original calmer/pastel palette, one click away.
+const VIVID_DARK  = ["#4da3ff","#ff9f43","#2ed573","#ff4757","#b06bff","#17c0eb","#ff6bb5","#ffd93d","#2ae0b0","#a5b4fc","#ff8a5c","#9ade3a"];
+const VIVID_LIGHT = ["#0061d5","#d97706","#12874a","#d40f2f","#6d28d9","#00808f","#c2185b","#a16207","#0f766e","#3730a3","#b45309","#4d7c0f"];
+const SOFT_COLORS = ["#5fd4d6","#ffb627","#5fd98c","#ef6f6f","#a78bfa","#fb923c","#34d399","#f472b6","#60a5fa","#facc15","#94a3b8","#f87171"];
+
+let vizContrast = "vivid";
+try{ vizContrast = localStorage.getItem("autods.viz.contrast") || "vivid"; }catch(e){}
+
+function vizIsVivid(){ return vizContrast !== "soft"; }
+function vizPalette(){
+  if(!vizIsVivid()) return SOFT_COLORS;
+  return vizTheme === "light" ? VIVID_LIGHT : VIVID_DARK;
+}
+function vizPaletteAt(i){
+  const p = vizPalette();
+  return p[((i % p.length) + p.length) % p.length];
+}
+// Series fills. Vivid mode paints at full strength: any transparency turns a
+// saturated colour into a washed-out pastel, which is the exact problem being
+// fixed here. Soft mode keeps the original translucent fills.
+function vizFill(color, softAlphaHex){ return vizIsVivid() ? color : color + softAlphaHex; }
+// For fills that must stay see-through in both modes (area washes, radar and
+// violin bodies). The vivid version is markedly stronger than the soft one, and
+// `softAlphaHex` lets a chart keep its original soft-mode alpha.
+function vizWash(color, softAlphaHex){ return color + (vizIsVivid() ? "5c" : (softAlphaHex || "33")); }
+// The canvas colour, used as a hairline edge around points/bars so that
+// touching marks stay visually separate instead of merging into one blob.
+function vizEdgeColor(){ return vizBorderColor(); }
+// Legible label text on top of an arbitrary fill: dark ink on light fills,
+// white on dark ones. Matters now that fills are painted solid.
+function vizInkOn(colorHex){
+  const h = String(colorHex || "").replace("#", "");
+  if(h.length < 6) return "#ffffff";
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  if(!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return "#ffffff";
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return lum > 0.62 ? "#0b1424" : "#ffffff";
+}
+// canvasId -> the spec a chart was last drawn with, so a canvas/colour change
+// can re-render every Visualise chart (not just the tiles) from its own spec.
+const vizSpecs = {};
+
+// ---------- CORRELATION MATRIX SCALE ----------
+// One colour scale, shared by the Data Overview "Correlation matrix" and the
+// Visualise "Heatmap" (a correlation heatmap). It is anchored to the fixed
+// -1..+1 range rather than the matrix's own min/max, so the same colour always
+// means the same correlation. The cells are opaque and keep a visibility floor:
+// the previous code used alpha = |r|, which drew a weak correlation (r = 0.05)
+// at 5% opacity -- effectively invisible -- and left r = 0 as a hole in the grid.
+const CORR_POS   = [95, 217, 214];   // cyan -> positive correlation
+const CORR_NEG   = [239, 111, 111];  // red  -> negative correlation
+const CORR_FLOOR = 0.26;             // how much colour a "0.0" cell keeps
+
+function corrBgRGB(){ return vizTheme === "light" ? [255, 255, 255] : [17, 34, 57]; }
+function corrCellColor(v){
+  const r = Math.max(-1, Math.min(1, Number(v) || 0));
+  const t = CORR_FLOOR + (1 - CORR_FLOOR) * Math.abs(r);
+  const bg = corrBgRGB(), tgt = r < 0 ? CORR_NEG : CORR_POS;
+  const mix = i => Math.round(bg[i] + (tgt[i] - bg[i]) * t);
+  return `rgb(${mix(0)},${mix(1)},${mix(2)})`;
+}
+// Ink that stays readable on any cell fill: the fills now run from a pale tint
+// of the panel colour all the way to solid cyan/red.
+function corrInkOn(fill){
+  const m = /rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/.exec(String(fill));
+  if(!m) return "#ffffff";
+  const lum = (0.2126 * Number(m[1]) + 0.7152 * Number(m[2]) + 0.0722 * Number(m[3])) / 255;
+  return lum > 0.5 ? "#0b1424" : "#ffffff";
+}
+// "0.05" normally, ".05" when the cell is too narrow for the leading zero.
+function corrValueLabel(v, compact){
+  const s = (Number(v) || 0).toFixed(2);
+  return compact ? s.replace(/^(-?)0\./, "$1.") : s;
+}
+// Cell edge: the canvas colour, so neighbouring cells read as separate squares
+// instead of merging into one block.
+function corrCellEdgeColor(){ return vizTheme === "light" ? "rgba(255,255,255,0.9)" : "rgba(13,27,46,0.9)"; }
+// Cell half-size for a matrix of n columns. The fixed 11px radius used to
+// overlap neighbours once a dataset had more than ~12 numeric columns.
+function corrCellRadius(n, canvasId){
+  const canvas = $(canvasId || "corrCanvas");
+  const box = canvas ? canvas.closest(".chart-box") : null;
+  const rect = box ? box.getBoundingClientRect() : null;
+  const w = rect && rect.width  > 80 ? rect.width  : 620;
+  const h = rect && rect.height > 80 ? rect.height : 420;
+  const plot = Math.max(120, Math.min(w - 130, h - 70));   // allow for axis labels
+  return Math.max(3.5, Math.min(11, plot / Math.max(1, n) / 2 - 0.8));
+}
+// HTML legend under the Data Overview matrix.
+function corrScaleLegendHtml(){
+  const swatches = [-1, -0.5, 0, 0.5, 1].map(v => {
+    const fill = corrCellColor(v);
+    return `<span class="cs-cell" style="background:${fill};color:${corrInkOn(fill)}">${v > 0 ? "+" + v.toFixed(1) : v.toFixed(1)}</span>`;
+  }).join("");
+  return `<div class="corr-scale">${swatches}</div>
+    <p class="cl-note">Colour is the strength of the relationship: <b>pale = none</b>, solid = strong. <b>Cyan = positive</b>, <b>red = negative</b>. Every cell also prints its value — hover one to see both column names.</p>`;
+}
+// Compact canvas legend, drawn inside the Visualise heatmap when there is room
+// below the matrix (the rotated column labels sit just under it).
+function drawCorrCanvasLegend(ctx, rect, topY){
+  if(topY + 40 > rect.height) return;                 // would collide with the labels
+  const stops = [-1, -0.5, 0, 0.5, 1], sw = 30, sh = 12, gap = 1;
+  const x0 = Math.max(8, (rect.width - stops.length * (sw + gap)) / 2);
+  const y = topY + 12;
+  ctx.save();
+  ctx.font = "9px IBM Plex Mono";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = vizTextColor();
+  ctx.fillText("correlation: cyan = positive · red = negative · pale = none, solid = strong", x0, y);
+  stops.forEach((v, i) => {
+    const fill = corrCellColor(v);
+    ctx.fillStyle = fill;
+    ctx.fillRect(x0 + i * (sw + gap), y + 6, sw, sh);
+    ctx.fillStyle = corrInkOn(fill);
+    ctx.font = "8px IBM Plex Mono";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(corrValueLabel(v, true), x0 + i * (sw + gap) + sw / 2, y + 6 + sh / 2);
+  });
+  ctx.restore();
+}
+// Chart.js draws the cells and gives us hover/tooltips, but it cannot print a
+// value inside a cell -- this plugin does, on the chart's own scales, so a weak
+// correlation is readable as a number even where its colour is pale.
+const corrValuePlugin = {
+  id: "corrValueLabels",
+  afterDatasetsDraw(chart, _args, opts){
+    if(!opts || !opts.matrix || !opts.ink) return;
+    const px = Number(opts.px) || 0;
+    if(px < 16) return;                               // no room for a usable number
+    const ctx = chart.ctx, xScale = chart.scales.x, yScale = chart.scales.y;
+    if(!ctx || !xScale || !yScale) return;
+    ctx.save();
+    ctx.font = `${Math.min(12, Math.max(7, px * 0.3))}px IBM Plex Mono`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    opts.matrix.forEach((row, i) => (row || []).forEach((v, j) => {
+      if(!Number.isFinite(Number(v))) return;
+      ctx.fillStyle = (opts.ink[i] && opts.ink[i][j]) || "#ffffff";
+      ctx.fillText(corrValueLabel(v, px < 24), xScale.getPixelForValue(j), yScale.getPixelForValue(i));
+    }));
+    ctx.restore();
+  }
+};
 
 function drawChart(canvasId, ch){
+  vizSpecs[canvasId] = ch;
   if(ch.type === "pie"){
     makeChart(canvasId,{type:"doughnut",
-      data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:ch.colors||PIE_COLORS,borderColor:vizBorderColor(),borderWidth:2}]},
+      data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:ch.colors||vizPalette(),borderColor:vizBorderColor(),borderWidth:2}]},
       options:{plugins:{legend:{position:"right",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}}}});
     return;
   }
   if(ch.type === "scatter"){
+    // Saturated, opaque points with a hairline edge in the canvas colour. The
+    // old default ("#ef6f6faa", 67% transparent) blended into the background
+    // and into neighbouring points -- especially on the white Light canvas,
+    // where translucent marks read as barely-there smudges.
+    const pointColor = ch.color || vizPaletteAt(3);
+    const dense = (ch.points || []).length > 1500;          // keep a busy cloud readable
+    const radius = dense ? 3 : (vizIsVivid() ? 4.5 : 3);
     makeChart(canvasId,{type:"scatter",
-      data:{datasets:[{data:ch.points,backgroundColor:ch.color?ch.color+"aa":"#ef6f6faa",pointRadius:3}]},
+      data:{datasets:[{data:ch.points,
+        backgroundColor:vizFill(pointColor, "aa"),
+        pointBackgroundColor:vizFill(pointColor, "aa"),
+        borderColor:vizIsVivid() ? vizEdgeColor() : pointColor,
+        pointBorderColor:vizIsVivid() ? vizEdgeColor() : pointColor,
+        pointBorderWidth:vizIsVivid() ? 0.9 : 0,
+        pointRadius:radius,
+        pointHoverRadius:radius + 2.5,
+        pointHoverBorderWidth:1.5}]},
       options:{plugins:{legend:{display:false}},
         scales:{x:{title:{display:true,text:ch.x,color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}},
                 y:{title:{display:true,text:ch.y||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     return;
   }
   if(ch.type === "bubble"){
+    const bubbleColor = ch.color || vizPaletteAt(0);
     makeChart(canvasId,{type:"bubble",
-      data:{datasets:[{data:ch.points,backgroundColor:ch.color?ch.color+"88":"#5fd4d688",borderColor:ch.color||"#5fd4d6"}]},
+      data:{datasets:[{data:ch.points,
+        backgroundColor:vizFill(bubbleColor, "88"),
+        pointBackgroundColor:vizFill(bubbleColor, "88"),
+        borderColor:vizIsVivid() ? vizEdgeColor() : bubbleColor,
+        pointBorderColor:vizIsVivid() ? vizEdgeColor() : bubbleColor,
+        pointBorderWidth:vizIsVivid() ? 1.2 : 1,
+        pointHoverBorderWidth:2}]},
       options:{plugins:{legend:{display:false}},
         scales:{x:{title:{display:true,text:ch.x,color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}},
                 y:{title:{display:true,text:ch.y||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
@@ -3430,7 +3662,7 @@ function drawChart(canvasId, ch){
       // Normal box plot: one bar per group — median value only, clean and uncluttered
       const medians = groups.map(([,s]) => s?.median ?? 0);
       makeChart(canvasId,{type:"bar",
-        data:{labels, datasets:[{label:"Median",data:medians,backgroundColor:ch.color?ch.color+"bb":"#5fd4d6bb"}]},
+        data:{labels, datasets:[{label:"Median",data:medians,backgroundColor:vizFill(ch.color||vizPaletteAt(0), "bb")}]},
         options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{display:false},tooltip:boxplotTooltipOptions(ch)},
           scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{color:vizGridColor()}},
                   y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
@@ -3441,9 +3673,9 @@ function drawChart(canvasId, ch){
       const q3s    = groups.map(([,s]) => s?.q3    ?? 0);
       makeChart(canvasId,{type:"bar",
         data:{labels, datasets:[
-          {label:"Q1",    data:q1s,    backgroundColor:"#5fd4d655"},
-          {label:"Median",data:medians,backgroundColor:"#ffb627bb"},
-          {label:"Q3",    data:q3s,    backgroundColor:"#5fd98c55"},
+          {label:"Q1",    data:q1s,    backgroundColor:vizFill(vizPaletteAt(0), "55")},
+          {label:"Median",data:medians,backgroundColor:vizFill(vizPaletteAt(1), "bb")},
+          {label:"Q3",    data:q3s,    backgroundColor:vizFill(vizPaletteAt(2), "55")},
         ]},
         options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}}},tooltip:boxplotTooltipOptions(ch)},
           scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{color:vizGridColor()}},
@@ -3452,8 +3684,16 @@ function drawChart(canvasId, ch){
     return;
   }
   if(ch.type === "line"){
+    const lineColor = ch.color || vizPaletteAt(0);
     makeChart(canvasId,{type:"line",
-      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:ch.color||"#5fd4d6",backgroundColor:(ch.color||"#5fd4d6")+"20",pointRadius:ch.sampled?0:2,tension:0.3}]},
+      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,
+        borderColor:lineColor,
+        backgroundColor:lineColor+"20",
+        borderWidth:vizIsVivid()?2.5:2,
+        pointBackgroundColor:vizFill(lineColor, "aa"),
+        pointBorderColor:vizIsVivid()?vizEdgeColor():lineColor,
+        pointBorderWidth:vizIsVivid()?1:0,
+        pointRadius:ch.sampled?0:(vizIsVivid()?2.5:2),tension:0.3}]},
       options:{plugins:{legend:{display:false}},
         scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:vizGridColor()}},
                 y:{title:{display:true,text:ch.y_label||ch.y||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
@@ -3472,10 +3712,14 @@ function drawChart(canvasId, ch){
     const counts = words.map(w => w.count);
     const min = Math.min(...counts), max = Math.max(...counts);
     const scale = c => min === max ? 24 : 13 + ((c - min) / (max - min)) * 46;
+    // Re-drawing (after a canvas/colour change) must replace the previous word
+    // cloud, not stack a second one underneath it.
+    box.querySelectorAll(".wordcloud-wrap").forEach(n => n.remove());
+    const cloudPal = (ch.colors && ch.colors.length) ? ch.colors : vizPalette();
     const cloudEl = document.createElement("div");
     cloudEl.className = "wordcloud-wrap";
     cloudEl.innerHTML = words.map((w, i) =>
-      `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${(ch.colors&&ch.colors.length?ch.colors:PIE_COLORS)[i % (ch.colors&&ch.colors.length?ch.colors.length:PIE_COLORS.length)]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
+      `<span style="font-size:${scale(w.count).toFixed(0)}px;color:${cloudPal[i % cloudPal.length]};" title="${w.word}: ${w.count} occurrence(s)">${w.word}</span>`
     ).join("");
     box.appendChild(cloudEl);
     return;
@@ -3500,44 +3744,28 @@ function drawChart(canvasId, ch){
     canvas.width = rect.width;
     canvas.height = rect.height;
     
-    // Find min/max for color scaling
-    let min = Infinity, max = -Infinity;
+    // Cells are painted on the shared correlation scale, anchored to -1..+1
+    // (see corrCellColor): a weak correlation keeps a visible tint instead of
+    // fading into the background, and the hue carries the sign. The previous
+    // ramp stretched -max..+max across one blue->red gradient, which painted
+    // negative and positive correlations identically.
     for(let i = 0; i < n; i++){
       for(let j = 0; j < n; j++){
         const v = ch.matrix[i][j];
-        if(v < min) min = v;
-        if(v > max) max = v;
-      }
-    }
-    
-    // Draw cells
-    for(let i = 0; i < n; i++){
-      for(let j = 0; j < n; j++){
-        const v = ch.matrix[i][j];
-        const normalized = max !== min ? (v - min) / (max - min) : 0.5;
+        const fill = corrCellColor(v);
         
-        // Color: blue for negative, red for positive, white for zero
-        let r, g, b;
-        if(v >= 0){
-          r = Math.floor(239 * normalized + 13 * (1 - normalized));
-          g = Math.floor(111 * normalized + 27 * (1 - normalized));
-          b = Math.floor(111 * normalized + 46 * (1 - normalized));
-        } else {
-          r = Math.floor(13 * (1 - normalized) + 239 * normalized);
-          g = Math.floor(27 * (1 - normalized) + 111 * normalized);
-          b = Math.floor(46 * (1 - normalized) + 111 * normalized);
-        }
-        
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillStyle = fill;
         ctx.fillRect(offsetX + j * cellSize, offsetY + i * cellSize, cellSize - 1, cellSize - 1);
         
-        // Add value text if cell is large enough
-        if(cellSize > 30){
-          ctx.fillStyle = Math.abs(normalized) > 0.5 ? "#fff" : "#000";
+        // Print the value too, while the cell is big enough to hold it -- the
+        // number is what makes a weak correlation readable even when its colour
+        // is naturally pale.
+        if(cellSize > 22){
+          ctx.fillStyle = corrInkOn(fill);
           ctx.font = `${Math.min(11, cellSize/3)}px IBM Plex Mono`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(v.toFixed(2), offsetX + j * cellSize + cellSize/2, offsetY + i * cellSize + cellSize/2);
+          ctx.fillText(corrValueLabel(v, cellSize < 26), offsetX + j * cellSize + cellSize/2, offsetY + i * cellSize + cellSize/2);
         }
       }
     }
@@ -3561,6 +3789,10 @@ function drawChart(canvasId, ch){
         ctx.fillText(labels[i] || "", offsetX - 6, offsetY + i * cellSize + cellSize/2);
       }
     }
+    
+    // Colour key. The +88 offset clears the rotated column labels above it, and
+    // drawCorrCanvasLegend() still bails out if the tile has no room to spare.
+    drawCorrCanvasLegend(ctx, rect, offsetY + size + 88);
     
     return;
   }
@@ -3590,13 +3822,14 @@ function drawChart(canvasId, ch){
       const w = cellW - 2;
       const h = cellH - 2;
       
-      const color = (ch.colors && ch.colors.length ? ch.colors : PIE_COLORS)[i % (ch.colors && ch.colors.length ? ch.colors.length : PIE_COLORS.length)];
-      ctx.fillStyle = color + "cc";
+      const treemapPal = (ch.colors && ch.colors.length) ? ch.colors : vizPalette();
+      const color = treemapPal[i % treemapPal.length];
+      ctx.fillStyle = vizFill(color, "cc");
       ctx.fillRect(x + 1, y + 1, w, h);
       
       // Draw label
       const share = total ? (ch.values[i] / total * 100).toFixed(1) : "0.0";
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = vizInkOn(color);
       ctx.font = "bold 11px IBM Plex Mono";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -3606,7 +3839,7 @@ function drawChart(canvasId, ch){
       ctx.fillText(displayLabel, x + cellW/2, y + cellH/2 - 8);
       
       ctx.font = "9px IBM Plex Mono";
-      ctx.fillStyle = "#fffcc";
+      ctx.fillStyle = vizInkOn(color);
       ctx.fillText(`${fmtShort(ch.values[i])} (${share}%)`, x + cellW/2, y + cellH/2 + 8);
     }
     
@@ -3674,9 +3907,11 @@ function drawChart(canvasId, ch){
     // Draw data polygons
     (ch.datasets || []).forEach((ds, idx) => {
       ctx.beginPath();
-      const radarPal = (ch.colors && ch.colors.length) ? ch.colors : PIE_COLORS;
-      ctx.strokeStyle = radarPal[idx % radarPal.length];
-      ctx.fillStyle = radarPal[idx % radarPal.length] + "33";
+      const radarPal = (ch.colors && ch.colors.length) ? ch.colors : vizPalette();
+      const radarColor = radarPal[idx % radarPal.length];
+      ctx.strokeStyle = radarColor;
+      ctx.lineWidth = vizIsVivid() ? 2 : 1;
+      ctx.fillStyle = vizWash(radarColor);
       
       ds.data.forEach((v, i) => {
         const angle = -Math.PI/2 + i * angleStep;
@@ -3697,8 +3932,17 @@ function drawChart(canvasId, ch){
   }
   
   if(ch.type === "area" && ch.labels){
+    const areaColor = ch.color || vizPaletteAt(0);
     makeChart(canvasId,{type:"line",
-      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,borderColor:ch.color||"#5fd4d6",backgroundColor:(ch.color||"#5fd4d6")+"33",fill:true,pointRadius:2,tension:0.3}]},
+      data:{labels:ch.labels,datasets:[{label:ch.y||"",data:ch.values,
+        borderColor:areaColor,
+        backgroundColor:vizWash(areaColor),
+        borderWidth:vizIsVivid()?2.5:2,
+        fill:true,
+        pointBackgroundColor:vizFill(areaColor, "aa"),
+        pointBorderColor:vizIsVivid()?vizEdgeColor():areaColor,
+        pointBorderWidth:vizIsVivid()?1:0,
+        pointRadius:vizIsVivid()?2.5:2,tension:0.3}]},
       options:{plugins:{legend:{display:false}},
         scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:vizGridColor()}},
                 y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
@@ -3736,14 +3980,16 @@ function drawChart(canvasId, ch){
       const x = padding + idx * groupW + groupW / 2;
       const baseY = rect.height - padding;
       
+      const violinPal = (ch.colors && ch.colors.length) ? ch.colors : vizPalette();
+      const violinColor = violinPal[idx % violinPal.length];
+
       // Draw violin shape (mirrored)
       if(stats.bins && stats.widths){
         const maxW = Math.max(...stats.widths);
         const maxBarW = groupW * 0.4;
         
-        const violinPal = (ch.colors && ch.colors.length) ? ch.colors : PIE_COLORS;
-        ctx.fillStyle = violinPal[idx % violinPal.length] + "88";
-        ctx.strokeStyle = violinPal[idx % violinPal.length];
+        ctx.fillStyle = vizWash(violinColor, "88");
+        ctx.strokeStyle = violinColor;
         ctx.lineWidth = 1;
         
         stats.bins.forEach((bin, i) => {
@@ -3759,10 +4005,12 @@ function drawChart(canvasId, ch){
       const q3y = baseY - ((stats.q3 - stats.min) / (stats.max - stats.min || 1)) * chartH;
       const medianY = baseY - ((stats.median - stats.min) / (stats.max - stats.min || 1)) * chartH;
       
-      ctx.fillStyle = PIE_COLORS[idx % PIE_COLORS.length] + "aa";
+      ctx.fillStyle = vizFill(violinColor, "aa");
       ctx.fillRect(x - 8, q3y, 16, q1y - q3y);
       
-      ctx.strokeStyle = "#fff";
+      // The IQR box is painted solid in vivid mode, so the median line has to
+      // follow the fill's lightness to stay visible on the white canvas too.
+      ctx.strokeStyle = vizIsVivid() ? vizInkOn(violinColor) : "#fff";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(x - 8, medianY);
@@ -3784,8 +4032,9 @@ function drawChart(canvasId, ch){
     const box = canvas ? canvas.closest(".chart-box") : null;
     if(!box || !ch.labels.length) return;
     
+    const densityColor = ch.color || vizPaletteAt(1);
     makeChart(canvasId,{type:"line",
-      data:{labels:ch.labels,datasets:[{label:ch.x||"Density",data:ch.values,borderColor:ch.color||"#ffb627",backgroundColor:(ch.color||"#ffb627")+"22",fill:true,pointRadius:0,tension:0.4}]},
+      data:{labels:ch.labels,datasets:[{label:ch.x||"Density",data:ch.values,borderColor:densityColor,backgroundColor:vizWash(densityColor, "22"),borderWidth:vizIsVivid()?2.5:2,fill:true,pointRadius:0,tension:0.4}]},
       options:{plugins:{legend:{display:false}},
         scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:10},grid:{color:vizGridColor()},title:{display:true,text:ch.x,color:vizTextColor()}},
                 y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
@@ -4199,10 +4448,12 @@ function drawChart(canvasId, ch){
   
   // word_frequency renders like a bar chart — falls through to the shared bar rendering below
   // histogram or bar
-  const defaultColor = ch.type==="histogram" ? "#ffb627bb" : "#5fd4d6bb";
-  const color = ch.color ? ch.color+"bb" : defaultColor;
+  const defaultColor = vizFill(ch.type==="histogram" ? vizPaletteAt(1) : vizPaletteAt(0), "bb");
+  const color = ch.color ? vizFill(ch.color, "bb") : defaultColor;
   makeChart(canvasId,{type:"bar",
-    data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:ch.colors||color}]},
+    data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:ch.colors||color,
+      borderColor: vizIsVivid() ? vizEdgeColor() : "transparent",
+      borderWidth: vizIsVivid() ? 1 : 0}]},
     options:{plugins:{legend:{display:false}},
       scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:vizGridColor()}},
               y:{title:{display:true,text:ch.y_label||"Count",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
@@ -4721,23 +4972,22 @@ function renderUnsupervisedChart(canvasId, vizData){
     clusters[cluster].push(p);
   });
   
-  const colors = [
-    '#5fd4d6', '#ffb627', '#5fd98c', '#ef6f6f', '#a78bfa', 
-    '#fb923c', '#34d399', '#f472b6', '#60a5fa', '#facc15'
-  ];
+  // Saturated series colours (one per cluster) so overlapping clusters stay
+  // tellable apart instead of reading as the same washed-out blob.
+  const colors = vizPalette();
   
   const datasets = Object.entries(clusters).map(([cluster, points], idx) => {
     const clusterNum = parseInt(cluster);
     let color = colors[idx % colors.length];
     const isAnomalyChart = /anomaly/i.test(vizData.title || "");
-    if(clusterNum === -1) color = '#ef6f6f';
-    if(isAnomalyChart && clusterNum === 1) color = '#5fd98c';
+    if(clusterNum === -1) color = vizPaletteAt(3);
+    if(isAnomalyChart && clusterNum === 1) color = vizPaletteAt(2);
     
     return {
       label: clusterNum === -1 ? 'Anomaly' : isAnomalyChart && clusterNum === 1 ? 'Normal' : `Cluster ${clusterNum}`,
       data: points.map(p => ({x: p.x, y: p.y})),
-      backgroundColor: color + '99',
-      borderColor: color,
+      backgroundColor: vizFill(color, '99'),
+      borderColor: vizIsVivid() ? vizEdgeColor() : color,
       borderWidth: 1,
       pointRadius: 5,
     };
@@ -5466,15 +5716,20 @@ function renderModelCards(){
           ? `<p class="hint" style="color:var(--bad);margin:6px 0;">This dataset is missing ${data.missing_feature_columns.map(escapeHtml).join(", ")} — those rows were filled blank before scoring, so results may be less reliable.</p>`
           : "";
 
+        // The preview carries every original column plus the prediction, so a
+        // wide target dataset produced a table far wider than this card -- it
+        // spilled out of the panel. The scroll wrapper (.batch-preview-wrap)
+        // keeps it inside, with its own scrollbars.
         const previewCols = data.preview.length ? Object.keys(data.preview[0]) : [];
-        const previewHtml = previewCols.length ? `<table class="preview-table"><thead><tr>` +
+        const previewHtml = previewCols.length ? `<div class="batch-preview-wrap"><table class="preview-table"><thead><tr>` +
           previewCols.map(c => `<th><span class="col-name">${escapeHtml(c)}</span></th>`).join("") +
           `</tr></thead><tbody>` +
           data.preview.map(row => `<tr>${previewCols.map(c => {
             const v = row[c];
             return v === null || v === undefined ? `<td class="null-val">null</td>` : `<td>${escapeHtml(String(v))}</td>`;
           }).join("")}</tr>`).join("") +
-          `</tbody></table>` : "";
+          `</tbody></table></div>` +
+          `<p class="batch-preview-hint">Scroll the table sideways for the remaining columns — it carries all ${previewCols.length} of them (every original column plus the prediction).</p>` : "";
 
         result.innerHTML =
           `<p class="hint" style="margin:8px 0 6px;">Scored ${data.rows_predicted} row(s) with ${escapeHtml(model.bestModel || "the best model")}. Preview of the first ${data.preview.length}:</p>` +
@@ -5685,21 +5940,25 @@ function renderPCA(d){
   // Draw 2D scatter with Chart.js
   const labels = d.scatter_labels.length ? d.scatter_labels : ["all"];
   const colorsMap = {};
-  (labels.length ? labels : ["all"]).forEach((lbl,i) => colorsMap[lbl] = PIE_COLORS[i % PIE_COLORS.length]);
+  (labels.length ? labels : ["all"]).forEach((lbl,i) => colorsMap[lbl] = vizPaletteAt(i));
 
   let datasets;
   if(d.scatter_labels.length){
     datasets = d.scatter_labels.map(lbl => ({
       label: lbl,
       data: d.scatter.filter(p=>p.label===lbl).map(p=>({x:p.x,y:p.y})),
-      backgroundColor: colorsMap[lbl] + "99",
+      backgroundColor: vizFill(colorsMap[lbl], "99"),
+      borderColor: vizIsVivid() ? vizEdgeColor() : colorsMap[lbl],
+      pointBorderWidth: vizIsVivid() ? 0.9 : 0,
       pointRadius: 4,
     }));
   } else {
     datasets = [{
       label: "rows",
       data: d.scatter.map(p=>({x:p.x,y:p.y})),
-      backgroundColor: PIE_COLORS[0] + "88",
+      backgroundColor: vizFill(vizPaletteAt(0), "88"),
+      borderColor: vizIsVivid() ? vizEdgeColor() : vizPaletteAt(0),
+      pointBorderWidth: vizIsVivid() ? 0.9 : 0,
       pointRadius: 4,
     }];
   }
@@ -7615,13 +7874,47 @@ function redrawAllTiles(){
     drawChart(cv.id, t._filtered && t._lastFilteredData ? t._lastFilteredData : t._spec);
   });
 }
+// Every chart the Visualise tab draws goes through drawChart(), which records
+// the spec it was drawn with (see vizSpecs). That lets a canvas/colour change
+// re-render the suggestion gallery and the built visuals as well, not only the
+// tiles that redrawAllTiles() covers.
+function redrawVizCharts(){
+  Object.keys(vizSpecs).forEach(id => {
+    const spec = vizSpecs[id];
+    const cv = $(id);
+    if(!cv || !cv.isConnected){ delete vizSpecs[id]; destroyChart(id); return; }
+    // Maps/choropleth re-fetch their own boundary data and colour by a value
+    // gradient rather than by the series palette, so they are left alone.
+    if(spec && ["choropleth", "scatter_map", "heatmap_map"].includes(spec.type)) return;
+    drawChart(id, spec);
+  });
+  // The KPI sparklines carry palette colours inline, so they have to be rebuilt
+  // from the profile rather than re-drawn (renderKpis is hoisted below).
+  renderKpis();
+}
 themeBtn.addEventListener("click", () => {
   vizTheme = vizTheme === "light" ? "dark" : "light";
   try{ localStorage.setItem("autods.viz.theme", vizTheme); }catch(e){}
   applyVizTheme();
-  redrawAllTiles();
+  redrawVizCharts();
 });
 applyVizTheme();
+
+/* ---------- colours: saturated "vivid" palette vs the calmer original ---------- */
+const contrastBtn = el("biContrastToggle");
+if(contrastBtn){
+  var applyVizContrast = function(){
+    contrastBtn.classList.toggle("on", vizIsVivid());
+    contrastBtn.textContent = vizIsVivid() ? "\u25d0 Vivid colours" : "\u25d1 Calm colours";
+  };
+  contrastBtn.addEventListener("click", () => {
+    vizContrast = vizIsVivid() ? "soft" : "vivid";
+    try{ localStorage.setItem("autods.viz.contrast", vizContrast); }catch(e){}
+    applyVizContrast();
+    redrawVizCharts();
+  });
+  applyVizContrast();
+}
 
 /* ---------- KPI cards (from the dataset profile) ---------- */
 function fmtBig(n){
@@ -7657,7 +7950,7 @@ function renderKpis(){
     {label: "Data quality", value: (100 - missPct).toFixed(missPct < 0.05 ? 0 : 1).replace(/\.0$/, "") + "%",
      sub: `${(p.total_missing_cells || 0).toLocaleString()} missing · ${(p.duplicate_rows || 0).toLocaleString()} duplicate rows`},
   ];
-  const colors = ["#ffb627", "#5fd4d6", "#5fd98c", "#a78bfa"];
+  const colors = [vizPaletteAt(1), vizPaletteAt(0), vizPaletteAt(2), vizPaletteAt(4)];
   const idLike = c => /(^id$|_id$|^id_|^index$|^unnamed)/i.test(c.name) || (c.unique >= rows * 0.95 && /int/i.test(c.dtype || ""));
   (p.columns || []).filter(c => c.type === "numeric" && c.stats && Number.isFinite(c.stats.mean) && !idLike(c))
     .slice(0, 4).forEach((c, i) => {
@@ -7955,12 +8248,12 @@ function toggleColorPopover(tile, btn, isArray){
   pop.className = "bi-color-pop";
   if(isArray){
     const labels = colorLabelsFor(spec);
-    const base = (spec.colors && spec.colors.length ? spec.colors : PIE_COLORS);
+    const base = (spec.colors && spec.colors.length ? spec.colors : vizPalette());
     labels.forEach((lab, i) => {
       const wrap = document.createElement("div");
       wrap.className = "bi-color-swatch";
       const inp = document.createElement("input");
-      inp.type = "color"; inp.value = (base[i % base.length] || "#5fd4d6").slice(0, 7);
+      inp.type = "color"; inp.value = (base[i % base.length] || vizPaletteAt(0)).slice(0, 7);
       inp.addEventListener("input", () => {
         const cur = (spec.colors && spec.colors.length === labels.length) ? spec.colors.slice() : labels.map((_, j) => base[j % base.length]);
         cur[i] = inp.value;
@@ -7974,7 +8267,7 @@ function toggleColorPopover(tile, btn, isArray){
     const wrap = document.createElement("div");
     wrap.className = "bi-color-swatch";
     const inp = document.createElement("input");
-    inp.type = "color"; inp.value = (spec.color || "#5fd4d6").slice(0, 7);
+    inp.type = "color"; inp.value = (spec.color || vizPaletteAt(0)).slice(0, 7);
     inp.addEventListener("input", () => applyTileColor(tile, inp.value, false));
     const lbl = document.createElement("span"); lbl.textContent = "color";
     wrap.append(inp, lbl);

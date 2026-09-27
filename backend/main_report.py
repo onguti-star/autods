@@ -1352,8 +1352,8 @@ def _build_html_report(session, extra_charts=None) -> str:
 
         function copyReportContent() {
             // Create a simplified text version of the report
-            let textContent = 'AUTODS ANALYSIS REPORT\n';
-            textContent += '='.repeat(50) + '\n\n';
+            let textContent = 'AUTODS ANALYSIS REPORT\\n';
+            textContent += '='.repeat(50) + '\\n\\n';
             
             // Extract title and metadata
             const title = document.querySelector('.report-title')?.textContent || 'AutoDS Analysis Report';
@@ -1365,7 +1365,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             sections.forEach(section => {
                 const text = section.textContent.trim();
                 if (text) {
-                    textContent += text + '\n\n';
+                    textContent += text + '\\n\\n';
                 }
             });
             
@@ -1438,7 +1438,14 @@ def _build_html_report(session, extra_charts=None) -> str:
                 tooltip: { mode: 'index', intersect: false }
             }
         };
-        const pieColors = ['#5fd4d6', '#ffb627', '#5fd98c', '#ef6f6f', '#a78bfa', '#fb923c', '#34d399', '#f472b6', '#60a5fa', '#facc15', '#94a3b8', '#f87171'];
+        const pieColors = ['#0061d5', '#d97706', '#12874a', '#d40f2f', '#6d28d9', '#00808f', '#c2185b', '#a16207', '#0f766e', '#3730a3', '#b45309', '#4d7c0f'];
+        // Saturated fallbacks for single-series charts: this is the app's vivid
+        // palette as it appears on the (white) report canvas, so a chart that
+        // carries no custom colour still downloads looking like the on-screen
+        // one instead of the old washed-out blues.
+        const vividBar   = '#0061d5';
+        const vividAmber = '#d97706';
+        const vividGreen = '#12874a';
 
         function fmtShort(value) {
             const n = Number(value);
@@ -1515,18 +1522,31 @@ def _build_html_report(session, extra_charts=None) -> str:
             }
             if (!maxAbs) maxAbs = 1;
 
+            // Weak correlations used to fade into the page: with a white
+            // background a r=0.05 cell landed within 5% of pure white and was
+            // invisible. Every cell now keeps a floor of colour, and the ramp
+            // ends on saturated endpoints, so strength is always readable
+            // without the printed value.
+            const CELL_FLOOR = 0.16;
             function cellColor(value) {
-                const intensity = Math.min(1, Math.abs(value) / maxAbs);
+                const intensity = CELL_FLOOR + (1 - CELL_FLOOR) * Math.min(1, Math.abs(value) / maxAbs);
                 if (value >= 0) {
-                    const r = Math.round(255 - (255 - 220) * intensity);
-                    const g = Math.round(255 - (255 - 53) * intensity);
-                    const b = Math.round(255 - (255 - 69) * intensity);
+                    const r = Math.round(255 - (255 - 0) * intensity);
+                    const g = Math.round(255 - (255 - 122) * intensity);
+                    const b = Math.round(255 - (255 - 204) * intensity);
                     return `rgb(${r},${g},${b})`;
                 }
-                const r = Math.round(255 - (255 - 49) * intensity);
-                const g = Math.round(255 - (255 - 130) * intensity);
-                const b = Math.round(255 - (255 - 206) * intensity);
+                const r = Math.round(255 - (255 - 198) * intensity);
+                const g = Math.round(255 - (255 - 16) * intensity);
+                const b = Math.round(255 - (255 - 62) * intensity);
                 return `rgb(${r},${g},${b})`;
+            }
+
+            // Readable text on either ramp (pale cells need dark ink, strong
+            // cells need white ink).
+            function cellInk(value) {
+                const intensity = CELL_FLOOR + (1 - CELL_FLOOR) * Math.min(1, Math.abs(value) / maxAbs);
+                return intensity > 0.6 ? '#ffffff' : '#212529';
             }
 
             for (let i = 0; i < n; i++) {
@@ -1536,12 +1556,14 @@ def _build_html_report(session, extra_charts=None) -> str:
                     const y = offsetY + i * cellSize;
                     ctx.fillStyle = cellColor(v);
                     ctx.fillRect(x, y, Math.max(1, cellSize - 1), Math.max(1, cellSize - 1));
-                    if (cellSize >= 34) {
-                        ctx.fillStyle = Math.abs(v) > maxAbs * 0.55 ? '#fff' : '#212529';
-                        ctx.font = `${Math.min(12, cellSize / 3)}px Arial, sans-serif`;
+                    if (cellSize >= 16) {
+                        // Compact ".05" form when the cell is narrow.
+                        const text = cellSize < 34 ? v.toFixed(2).replace(/^(-?)0\\./, '$1.') : v.toFixed(2);
+                        ctx.fillStyle = cellInk(v);
+                        ctx.font = `${Math.min(12, Math.max(7, cellSize / 3))}px Arial, sans-serif`;
                         ctx.textAlign = 'center';
                         ctx.textBaseline = 'middle';
-                        ctx.fillText(v.toFixed(2), x + cellSize / 2, y + cellSize / 2);
+                        ctx.fillText(text, x + cellSize / 2, y + cellSize / 2);
                     }
                 }
             }
@@ -1610,8 +1632,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.x || 'Values',
                                 data: chart.values,
-                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : (chart.color || 'rgba(13,110,253,0.75)'),
-                                borderColor: chart.color || 'rgba(13,110,253,1)',
+                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : (chart.color || (chart.type === 'histogram' ? vividAmber : vividBar)),
+                                borderColor: chart.color || 'rgba(255,255,255,0.9)',
                                 borderWidth: 1
                             }]
                         },
@@ -1628,8 +1650,9 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.y || chart.x || 'Series',
                                 data: chart.values,
-                                borderColor: chart.color || 'rgba(13,110,253,0.85)',
-                                backgroundColor: chart.color ? chart.color + '4d' : 'rgba(13,110,253,0.3)',
+                                borderColor: chart.color || vividBar,
+                                backgroundColor: chart.color ? chart.color + '4d' : vividBar + '3d',
+                                borderWidth: 2.5,
                                 fill: true,
                                 tension: 0.25
                             }]
@@ -1644,8 +1667,10 @@ def _build_html_report(session, extra_charts=None) -> str:
                                 label: chart.title || `${chart.x} vs ${chart.y}`,
                                 data: chart.points,
                                 pointRadius: 5,
-                                pointBackgroundColor: chart.color || 'rgba(13,110,253,0.85)',
-                                borderColor: chart.color || 'rgba(13,110,253,1)'
+                                pointBackgroundColor: chart.color || vividBar,
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 1,
+                                borderColor: chart.color || vividBar
                             }]
                         },
                         options: {
@@ -1663,11 +1688,11 @@ def _build_html_report(session, extra_charts=None) -> str:
                     const isSimple = chart._boxplotMode === 'simple';
                     const bpLabels = groupEntries.map(([g]) => g);
                     const bpDatasets = isSimple
-                        ? [{ label: chart.x || 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: 'rgba(95,212,214,0.73)' }]
+                        ? [{ label: chart.x || 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: vividBar }]
                         : [
-                            { label: 'Q1',     data: groupEntries.map(([, s]) => (s && s.q1)     || 0), backgroundColor: 'rgba(95,212,214,0.45)' },
-                            { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: 'rgba(255,182,39,0.75)'  },
-                            { label: 'Q3',     data: groupEntries.map(([, s]) => (s && s.q3)     || 0), backgroundColor: 'rgba(95,217,140,0.45)'  }
+                            { label: 'Q1',     data: groupEntries.map(([, s]) => (s && s.q1)     || 0), backgroundColor: vividBar },
+                            { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: vividAmber  },
+                            { label: 'Q3',     data: groupEntries.map(([, s]) => (s && s.q3)     || 0), backgroundColor: vividGreen  }
                           ];
                     return {
                         type: 'bar',
@@ -1693,8 +1718,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.x || 'Count',
                                 data: chart.values,
-                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : (chart.color || 'rgba(13,110,253,0.75)'),
-                                borderColor: chart.color || 'rgba(13,110,253,1)',
+                                backgroundColor: (chart.colors && chart.colors.length) ? chart.colors : (chart.color || (chart.type === 'histogram' ? vividAmber : vividBar)),
+                                borderColor: chart.color || 'rgba(255,255,255,0.9)',
                                 borderWidth: 1
                             }]
                         },
@@ -1726,8 +1751,9 @@ def _build_html_report(session, extra_charts=None) -> str:
                             datasets: [{
                                 label: chart.x || 'Density',
                                 data: chart.values,
-                                borderColor: chart.color || 'rgba(255,182,39,0.85)',
-                                backgroundColor: chart.color ? chart.color + '33' : 'rgba(255,182,39,0.2)',
+                                borderColor: chart.color || vividAmber,
+                                backgroundColor: chart.color ? chart.color + '33' : vividAmber + '3d',
+                                borderWidth: 2.5,
                                 fill: true,
                                 pointRadius: 0,
                                 tension: 0.4
@@ -1749,9 +1775,9 @@ def _build_html_report(session, extra_charts=None) -> str:
                     
                     const violinLabels = groupEntries.map(([g]) => g);
                     const violinDatasets = [
-                        { label: 'Q1', data: groupEntries.map(([, s]) => (s && s.q1) || 0), backgroundColor: 'rgba(95,212,214,0.45)' },
-                        { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: 'rgba(255,182,39,0.75)' },
-                        { label: 'Q3', data: groupEntries.map(([, s]) => (s && s.q3) || 0), backgroundColor: 'rgba(95,217,140,0.45)' }
+                        { label: 'Q1', data: groupEntries.map(([, s]) => (s && s.q1) || 0), backgroundColor: vividBar },
+                        { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: vividAmber },
+                        { label: 'Q3', data: groupEntries.map(([, s]) => (s && s.q3) || 0), backgroundColor: vividGreen }
                     ];
                     
                     return {
