@@ -1346,6 +1346,22 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   </div>
 </div>
 
+<!-- Clear charts confirmation modal (Visualise panel) -->
+<div class="modal-overlay hidden" id="clearChartsModal">
+  <div class="modal-box">
+    <div class="modal-title">⚠ Clear charts</div>
+    <div class="modal-body">
+      This removes <strong id="clearChartsCount">the charts</strong> you have built in this tab.
+      Your data is untouched, but the charts have to be built again.<br><br>
+      The automatic suggestions stay.
+    </div>
+    <div class="modal-actions">
+      <button class="sec" onclick="dismissClearChartsModal()">Keep my charts</button>
+      <button class="danger" onclick="confirmClearCharts()">Yes, clear them</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // Set this when the frontend and backend are hosted on DIFFERENT origins
 // (e.g. this file on Netlify, the API on your own VPS) -- e.g.
@@ -3223,7 +3239,7 @@ $("vizBtn").addEventListener("click", async () => {
   }catch(err){ $("vizError").textContent = err.message; show("vizError"); }
 });
 
-$("clearChartsBtn").addEventListener("click", clearCustomCharts);
+$("clearChartsBtn").addEventListener("click", openClearChartsModal);
 
 function chartTitle(ch){
   if(ch.type === "scatter" || ch.type === "bubble") return `${ch.y} vs ${ch.x}`;
@@ -3432,6 +3448,37 @@ function downloadChart(canvasId, title){
   link.href = canvas.toDataURL("image/png", 1);
   link.click();
 }
+
+// The Clear charts button used to wipe every built chart on a single click,
+// right next to the fields used to build them -- a mis-click threw away work.
+// It now routes through a confirmation that names how many charts are at
+// stake; the destructive clearCustomCharts() itself is unchanged and is still
+// what the other (non-interactive) call sites use.
+function openClearChartsModal(){
+  // clearCustomCharts() destroys every canvas in #vizResult, so count that --
+  // it is the real blast radius, and it can differ from the spec list.
+  const drawn = $("vizResult") ? $("vizResult").querySelectorAll("canvas").length : 0;
+  const n = drawn || customChartSpecs.filter(c => c._reportSource !== "auto").length;
+  if(n === 0) return;                       // nothing to lose, nothing to ask
+  const label = $("clearChartsCount");
+  if(label) label.textContent = n === 1 ? "1 chart" : `${n} charts`;
+  const modal = $("clearChartsModal");
+  if(modal) modal.classList.remove("hidden");
+}
+function dismissClearChartsModal(){
+  const modal = $("clearChartsModal");
+  if(modal) modal.classList.add("hidden");
+}
+function confirmClearCharts(){
+  dismissClearChartsModal();
+  clearCustomCharts();
+}
+// Escape backs out, same as any cancel.
+document.addEventListener("keydown", e => {
+  if(e.key !== "Escape") return;
+  const modal = $("clearChartsModal");
+  if(modal && !modal.classList.contains("hidden")) dismissClearChartsModal();
+});
 
 function clearCustomCharts(){
   Array.from($("vizResult").querySelectorAll("canvas")).forEach(c => destroyChart(c.id));
