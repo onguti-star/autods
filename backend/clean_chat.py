@@ -34,7 +34,9 @@ _TYPE_ALIASES = {
     "boolean": {"boolean", "bool", "true/false", "yes/no"},
 }
 
-REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|get\s+rid\s+of)"
+REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|eliminate|clear|get\s+rid\s+of)"
+EDIT_VERB_RE = r"(?:replace|change|update|modify|edit|correct|fix|set)"
+ROW_REF_RE = r"(?:row|record|entry|item|line)s?"
 RENAME_VERB_RE = r"(?:rename|call)"
 NAME_JOINER_RE = r"(?:to|into|as)"
 
@@ -451,6 +453,9 @@ HELP_TEXT = (
     "• extract pattern ([A-Za-z]) from Cabin into Deck  (your own regex — first capture group is used)\n"
     "• replace 2 with 0 in profit  (replaces exact values in a column)\n"
     "• replace yes with 1 in discount_applied\n"
+    "• delete row 5  (also: remove / drop / erase record 5)\n"
+    "• replace Sam with Jane in row 4  (changes matching cell(s) in that row)\n"
+    "• change name in row 4 to Jane  (edits one specified cell)\n"
     "• fill missing values in income with median  (mean / mode / zero / a specific value)\n"
     "• remove rows where email is missing\n"
     "• strip whitespace in name\n"
@@ -590,6 +595,66 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if original_df is None:
             return df, "No original data is available to reset to."
         return original_df.copy(), "Restored the original uploaded data — every chat cleaning command has been undone."
+
+    # ---- edit or delete one numbered row (1-based, as shown to people) ----
+    _delete_row = re.search(
+        rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?{ROW_REF_RE}\s*(?:number\s*)?(\d+)\b", ql
+    )
+    if _delete_row:
+        row_number = int(_delete_row.group(1))
+        if not 1 <= row_number <= len(df):
+            return df, f"Row {row_number} is outside this dataset. Choose a row from 1 to {len(df):,}."
+        new_df = df.drop(df.index[row_number - 1]).reset_index(drop=True)
+        return new_df, f"Deleted row {row_number:,}. Rows are now renumbered."
+
+    _cell_edit = re.search(
+        rf"\b{EDIT_VERB_RE}\s+(?:the\s+)?(?:value\s+(?:of|in)\s+)?(?:column\s+)?(.+?)\s+(?:in|on|at)\s+(?:the\s+)?{ROW_REF_RE}\s*(?:number\s*)?(\d+)\s+(?:to|with|as|=)\s*(.+)$",
+        q, re.IGNORECASE,
+    )
+    if _cell_edit:
+        col_text, row_text, value_text = _cell_edit.groups()
+        row_number = int(row_text)
+        col = _match_col(col_text, columns)
+        if not col:
+            return df, f"I could not find a column matching {col_text.strip()!r}. Available columns: {', '.join(columns)}."
+        if not 1 <= row_number <= len(df):
+            return df, f"Row {row_number} is outside this dataset. Choose a row from 1 to {len(df):,}."
+        value_text = value_text.strip(" '\".,:;-")
+        new_df = df.copy()
+        if pd.api.types.is_numeric_dtype(new_df[col]):
+            value = _parse_value_token(value_text)
+            if value is None:
+                return df, f"'{col}' is numeric, so use a numeric replacement value."
+        else:
+            value = value_text
+        new_df.at[new_df.index[row_number - 1], col] = value
+        return new_df, f"Changed '{col}' in row {row_number:,} to '{_fmt(value)}'."
+
+    _row_replace = re.search(
+        rf"\b{EDIT_VERB_RE}\s+(.+?)\s+(?:with|to|into|as)\s+(.+?)\s+(?:in|on|at)\s+(?:the\s+)?{ROW_REF_RE}\s*(?:number\s*)?(\d+)\b",
+        q, re.IGNORECASE,
+    )
+    if _row_replace:
+        old_text, new_text, row_text = _row_replace.groups()
+        row_number = int(row_text)
+        if not 1 <= row_number <= len(df):
+            return df, f"Row {row_number} is outside this dataset. Choose a row from 1 to {len(df):,}."
+        old_text = old_text.strip(" '\".,:;-")
+        new_text = new_text.strip(" '\".,:;-")
+        row = df.iloc[row_number - 1]
+        matching = [col for col in columns if str(row[col]).strip().casefold() == old_text.casefold()]
+        if not matching:
+            return df, f"Row {row_number:,} has no cell equal to '{old_text}'. Name a column explicitly to edit it."
+        new_df = df.copy()
+        for col in matching:
+            if pd.api.types.is_numeric_dtype(new_df[col]):
+                value = _parse_value_token(new_text)
+                if value is None:
+                    return df, f"'{col}' is numeric, so use a numeric replacement value."
+            else:
+                value = new_text
+            new_df.at[new_df.index[row_number - 1], col] = value
+        return new_df, f"Replaced '{old_text}' with '{new_text}' in row {row_number:,} ({len(matching)} cell(s))."
 
     # ---- round numeric column(s) to N decimal places ----
     # "round price to 2 decimal places" / "round latitude to 2 dp" /
@@ -1323,7 +1388,7 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         re.search(r"\breplace\s+(.+?)\s+with\s*(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"in\s+(.+?)\s+replace\s+(.+?)\s+with\s*(.+)", q, re.IGNORECASE)
         or re.search(r"replace\s+(?:the\s+)?(.+?)\s+(?:to|into)\s*(.+?)\s+(?:in\s+)?(.+)", q, re.IGNORECASE)
-        or re.search(r"change\s+(.+?)\s+(?:to|into)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
+        or re.search(r"(?:change|update|modify|edit|correct|fix)\s+(.+?)\s+(?:to|into|with)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"swap\s+(.+?)\s+(?:and|for)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"(?:set|make)\s+(.+?)\s+(?:to|as|equal\s+to)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
     )
