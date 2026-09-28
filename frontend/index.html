@@ -960,6 +960,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="chart-type-grid" id="chartTypeGrid">
       <div class="ct-btn selected" data-type="histogram" onclick="selectChartType(this)"><div class="ct-name">Histogram</div><div class="ct-desc">Distribution of a numeric column</div></div>
       <div class="ct-btn" data-type="bar" onclick="selectChartType(this)"><div class="ct-name">Bar chart</div><div class="ct-desc">Value counts for a category column</div></div>
+      <div class="ct-btn" data-type="grouped_bar" onclick="selectChartType(this)"><div class="ct-name">Grouped bar</div><div class="ct-desc">Compare category counts across a second column</div></div>
       <div class="ct-btn" data-type="pie" onclick="selectChartType(this)"><div class="ct-name">Pie / Donut</div><div class="ct-desc">Proportion of each category</div></div>
       <div class="ct-btn" data-type="boxplot" onclick="selectChartType(this)"><div class="ct-name">Box plot</div><div class="ct-desc">Median, quartiles and outliers</div></div>
       <div class="ct-btn" data-type="scatter" onclick="selectChartType(this)"><div class="ct-name">Scatter</div><div class="ct-desc">Relationship between two numeric columns</div></div>
@@ -3047,7 +3048,7 @@ function updateVizFieldVisibility(){
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : isMap ? "Latitude" : "Column (X)";
   $("yLabel").textContent = isMap ? "Longitude" : "Column (Y)";
-  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
+  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : ["boxplot", "grouped_bar"].includes(t) ? "Split by (required)" : "Group by (optional)";
 
 }
 updateVizFieldVisibility();
@@ -3190,9 +3191,15 @@ $("vizBtn").addEventListener("click", async () => {
     return;
   }
 
+  if(t === "grouped_bar" && !g){
+    $("vizError").textContent = "Pick a column to split the bars by.";
+    show("vizError");
+    return;
+  }
+
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
   if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
-  if(["boxplot","bubble","scatter_map","heatmap_map"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  if(["boxplot","bubble","grouped_bar","scatter_map","heatmap_map"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
 
   // Power BI-style compare/slicer filter: only send it when a column is
   // picked AND at least one (but not every) value is checked — "all
@@ -3248,6 +3255,7 @@ function chartTitle(ch){
   if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
   if(ch.type === "histogram") return `Histogram of ${ch.x}`;
   if(ch.type === "bar") return `Bar chart of ${ch.x}`;
+  if(ch.type === "grouped_bar") return `${ch.x} by ${ch.group}`;
   if(ch.type === "pie") return `Share of ${ch.x}`;
   if(ch.type === "heatmap") return `Correlation heatmap`;
   if(ch.type === "treemap") return `Treemap of ${ch.x}`;
@@ -3659,6 +3667,18 @@ function drawChart(canvasId, ch){
       options:{plugins:{legend:{position:"right",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}}}});
     return;
   }
+  if(ch.type === "grouped_bar" && ch.labels?.length && ch.datasets?.length){
+    makeChart(canvasId,{type:"bar",
+      data:{labels:ch.labels,datasets:ch.datasets.map((dataset, index) => {
+        const color = vizPaletteAt(index);
+        return {label:dataset.label, data:dataset.values, backgroundColor:vizFill(color, "bb"), borderColor:vizIsVivid() ? vizEdgeColor() : color, borderWidth:vizIsVivid() ? 1 : 0};
+      })},
+      options:{plugins:{legend:{display:true,labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
+        scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:vizGridColor()}},
+                y:{beginAtZero:true,title:{display:true,text:ch.y_label||"Count",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
+    return;
+  }
+
   if(ch.type === "scatter"){
     // Saturated, opaque points with a hairline edge in the canvas colour. The
     // old default ("#ef6f6faa", 67% transparent) blended into the background
