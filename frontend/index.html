@@ -5464,15 +5464,20 @@ function renderSavedPredictionsList(){
   }
   $("savedPredictionsHead").style.display = "";
   $("savedPredictionsList").innerHTML = [...predictions].reverse().map(p => {
-    const output = (p.predictions || []).map(v => escapeHtml(v)).join(", ");
+    const output = p.is_batch
+      ? `${(p.rows_predicted || 0).toLocaleString()} rows scored`
+      : (p.predictions || []).map(v => escapeHtml(v)).join(", ");
     const target = escapeHtml(p.target || "prediction");
     const source = escapeHtml(p.source_name || "current training");
     const model = escapeHtml(p.model_name || "");
     const inputs = escapeHtml(formatPredictionInputs(p));
+    const batchDetail = p.is_batch
+      ? `<div class="spr-inputs">Saved to ${escapeHtml(p.scored_dataset || "scored dataset")} as <strong>${escapeHtml(p.saved_column || "prediction")}</strong></div>`
+      : `<div class="spr-inputs">${inputs}</div>`;
     return `<div class="saved-pred-row" data-id="${escapeHtml(p.id)}">
       <div class="spr-main">
-        <div class="spr-pred">${target} → <strong>${output}</strong></div>
-        <div class="spr-inputs">${inputs}</div>
+        <div class="spr-pred">${p.is_batch ? "Batch " : ""}${target} → <strong>${output}</strong></div>
+        ${batchDetail}
         <div class="spr-meta">${source}${model ? ` · ${model}` : ""} · ${escapeHtml(p.created_at || "")}</div>
       </div>
       <button class="icon-btn" title="Delete this saved prediction" data-action="delete-prediction">×</button>
@@ -5806,6 +5811,8 @@ function renderModelCards(){
             ${data.submission_csv ? `<button class="sec model-card-batch-download-submission" data-idx="${idx}">⬇ Download submission CSV (${escapeHtml(data.id_column)}, ${escapeHtml(data.target)})</button>` : ""}
            </div>`;
 
+        setState({savedPredictions: data.saved_predictions || []});
+        renderSavedPredictionsList();
         result.querySelector(".model-card-batch-download-full")?.addEventListener("click", () => {
           downloadTextFile(data.full_csv, `${model.target}_predictions_full.csv`, "text/csv");
         });

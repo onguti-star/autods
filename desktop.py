@@ -160,6 +160,7 @@ def _set_linux_app_identity(icon_path: str) -> None:
         from qtpy.QtWidgets import QApplication
         app = QApplication.instance() or QApplication(sys.argv)
         app.setApplicationName("AutoDS")
+        app.setApplicationDisplayName("AutoDS")
         # Matches the "autods.desktop" file that install.sh / install_launcher.sh
         # create in ~/.local/share/applications -- lets the window manager pull
         # the icon (and name) from there instead of guessing.

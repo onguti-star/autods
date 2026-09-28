@@ -2097,6 +2097,11 @@ def _prediction_summary(prediction_id: str, prediction: dict) -> dict:
         "inputs": prediction["inputs"],
         "predictions": prediction["predictions"],
         "narrative": prediction["narrative"],
+        "is_batch": bool(prediction.get("is_batch")),
+        "rows_predicted": prediction.get("rows_predicted"),
+        "scored_dataset": prediction.get("scored_dataset"),
+        "saved_column": prediction.get("saved_column"),
+        "preview": prediction.get("preview", []),
     }
 
 
@@ -2215,6 +2220,38 @@ def predict_batch(model_session_id: str, req: BatchPredictRequest):
         for row in preview_df.to_dict(orient="records")
     ]
 
+    # Keep batch scores with the scored dataset as a new column, so its current
+    # data, HTML report, and exported notebook all include the predictions.
+    prediction_column = f"predicted_{target}"
+    suffix = 2
+    while prediction_column in target_session.df.columns:
+        prediction_column = f"predicted_{target}_{suffix}"
+        suffix += 1
+    target_session.snapshot_before_change()
+    target_session.df = target_session.df.copy()
+    target_session.df[prediction_column] = preds
+    target_session.save_to_disk()
+
+    # A compact audit record belongs to the model's session. The full output
+    # remains a CSV download; exports retain the batch context and a preview.
+    prediction_id = str(uuid.uuid4())
+    model_session.saved_predictions[prediction_id] = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "target": target,
+        "problem_type": problem_type,
+        "model_name": model_name,
+        "source_name": source_name,
+        "run_id": req.run_id,
+        "inputs": [{"scored_dataset": target_session.filename, "saved_column": prediction_column}],
+        "predictions": [_jsonable_value(p) for p in preds[:10]],
+        "narrative": f"Batch-scored {len(full_df):,} rows from '{target_session.filename}'. Results were saved in column '{prediction_column}' on that dataset.",
+        "is_batch": True,
+        "rows_predicted": int(len(full_df)),
+        "scored_dataset": target_session.filename,
+        "saved_column": prediction_column,
+        "preview": preview,
+    }
+
     return {
         "ok": True,
         "target": target,
@@ -2224,6 +2261,11 @@ def predict_batch(model_session_id: str, req: BatchPredictRequest):
         "rows_predicted": int(len(full_df)),
         "missing_feature_columns": missing_cols,
         "id_column": id_column,
+        "saved_column": prediction_column,
+        "saved_prediction": _prediction_summary(prediction_id, model_session.saved_predictions[prediction_id]),
+        "saved_predictions": [
+            _prediction_summary(pid, p) for pid, p in model_session.saved_predictions.items()
+        ],
         "full_csv": full_df.to_csv(index=False),
         "submission_csv": submission_csv,
         "preview": preview,
