@@ -119,3 +119,83 @@ def test_batch_predict_rejects_empty_target_dataset():
     with pytest.raises(HTTPException) as exc_info:
         main.predict_batch(model_session.id, req)
     assert exc_info.value.status_code == 400
+
+
+# ---- batch predict is kept with BOTH datasets and survives into exports ----
+import base64
+import json
+import re
+
+import pytest
+from fastapi import HTTPException
+
+from backend import nb
+from backend.main_report import _build_html_report
+
+
+def _run_batch():
+    model_session = _make_trained_session()
+    target_session = _make_target_session()
+    result = main.predict_batch(model_session.id, main.BatchPredictRequest(target_session_id=target_session.id))
+    return model_session, target_session, result
+
+
+def test_batch_record_is_stored_on_both_datasets():
+    model_session, target_session, result = _run_batch()
+    pid = result["saved_prediction"]["id"]
+    assert model_session.saved_predictions[pid].get("role") is None
+    scored = target_session.saved_predictions[pid]
+    assert scored["role"] == "scored"
+    assert scored["saved_column"] == "predicted_Survived"
+    assert scored["model_dataset"] == "train.csv"
+
+
+def test_html_report_of_scored_dataset_explains_the_prediction_column():
+    _, target_session, _ = _run_batch()
+    html = _build_html_report(target_session)
+    assert 'id="predictions"' in html
+    assert "Batch predictions added to this dataset" in html
+    assert "predicted_Survived" in html and "train.csv" in html
+
+
+def test_html_report_of_model_dataset_describes_the_batch_not_one_row():
+    model_session, _, _ = _run_batch()
+    html = _build_html_report(model_session)
+    assert "Batch prediction: Survived (3 rows scored)" in html
+    assert "scored_dataset:" not in html          # the old one-row "Inputs:" dump
+
+
+@pytest.mark.parametrize("which", ["model", "scored"])
+def test_notebook_has_batch_section_and_runs(which):
+    model_session, target_session, _ = _run_batch()
+    session = model_session if which == "model" else target_session
+    notebook = json.loads(nb.build_notebook(session))
+    namespace = {}
+    text = ""
+    for cell in notebook["cells"]:
+        source = "".join(cell["source"])
+        text += source + "\n"
+        if cell["cell_type"] == "code":
+            exec(source, namespace)               # every code cell must run
+    assert "Batch prediction" in text
+    if which == "scored":
+        assert "predicted_Survived" in namespace["df"].columns
+
+
+def test_batch_csv_endpoint_rebuilds_full_and_submission_files():
+    model_session, _, result = _run_batch()
+    pid = result["saved_prediction"]["id"]
+    full = main.predict_batch_csv(model_session.id, pid, "full").body.decode()
+    assert full.splitlines()[0] == "PassengerId,Age,Fare,Survived"
+    assert len(full.strip().splitlines()) == 4
+    sub = main.predict_batch_csv(model_session.id, pid, "submission").body.decode()
+    assert sub.splitlines()[0] == "PassengerId,Survived"
+
+
+def test_batch_csv_endpoint_reports_a_removed_column_clearly():
+    model_session, target_session, result = _run_batch()
+    pid = result["saved_prediction"]["id"]
+    target_session.df = target_session.df.drop(columns=["predicted_Survived"])
+    with pytest.raises(HTTPException) as err:
+        main.predict_batch_csv(model_session.id, pid, "full")
+    assert err.value.status_code == 404 and "Run Batch predict again" in err.value.detail
