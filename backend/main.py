@@ -25,13 +25,12 @@ import pandas as pd
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, Response
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from . import assistant
 from . import automl
-from . import batch_report
 from . import clean as clean_module
 from . import clean_chat
 from . import eda
@@ -1089,12 +1088,8 @@ def _fmt_prediction_inputs(rows: list[dict[str, object]]) -> str:
 def _compact_unsupervised_result(result: dict) -> dict:
     """Keep report-worthy unsupervised details without storing huge label arrays twice."""
     compact = dict(result)
-    # unsupervised.py already knows the true scored-row count. Prefer it: the
-    # label list can be truncated for large frames, so len(labels) would
-    # understate it and the report would claim fewer rows were analysed.
-    true_rows = compact.get("n_rows_scored")
     labels = compact.pop("labels", [])
-    compact["n_rows_scored"] = int(true_rows) if true_rows else len(labels)
+    compact["n_rows_scored"] = len(labels)
     points = compact.pop("points", [])
     if points and not compact["n_rows_scored"]:
         compact["n_rows_scored"] = len(points)
@@ -1220,9 +1215,6 @@ def _build_work_report(session) -> str:
     if session.saved_predictions:
         lines.extend(["", "## Predictions", ""])
         for prediction in session.saved_predictions.values():
-            if batch_report.is_batch(prediction):
-                lines.extend(batch_report.markdown_lines(prediction))
-                continue
             outputs = ", ".join(_fmt_report_value(v) for v in prediction.get("predictions", [])) or "missing"
             lines.append(f"- **Target:** `{prediction.get('target', 'Prediction')}` → {outputs}")
             lines.append(
@@ -2105,17 +2097,6 @@ def _prediction_summary(prediction_id: str, prediction: dict) -> dict:
         "inputs": prediction["inputs"],
         "predictions": prediction["predictions"],
         "narrative": prediction["narrative"],
-        "is_batch": bool(prediction.get("is_batch")),
-        "role": prediction.get("role"),                 # "scored" = mirror record kept on the scored dataset
-        "rows_predicted": prediction.get("rows_predicted"),
-        "scored_dataset": prediction.get("scored_dataset"),
-        "scored_session_id": prediction.get("scored_session_id"),
-        "model_session_id": prediction.get("model_session_id"),
-        "model_dataset": prediction.get("model_dataset"),
-        "saved_column": prediction.get("saved_column"),
-        "id_column": prediction.get("id_column"),
-        "missing_feature_columns": prediction.get("missing_feature_columns", []),
-        "preview": prediction.get("preview", []),
     }
 
 
@@ -2234,59 +2215,6 @@ def predict_batch(model_session_id: str, req: BatchPredictRequest):
         for row in preview_df.to_dict(orient="records")
     ]
 
-    # Keep batch scores with the scored dataset as a new column, so its current
-    # data, HTML report, and exported notebook all include the predictions.
-    prediction_column = f"predicted_{target}"
-    suffix = 2
-    while prediction_column in target_session.df.columns:
-        prediction_column = f"predicted_{target}_{suffix}"
-        suffix += 1
-    target_session.snapshot_before_change()
-    target_session.df = target_session.df.copy()
-    target_session.df[prediction_column] = preds
-    target_session.save_to_disk()
-
-    # A compact audit record belongs to the model's session. The full output
-    # stays downloadable (rebuilt on demand from the scored dataset, see
-    # /api/predict_batch_csv); reports and notebooks keep the context + a preview.
-    prediction_id = str(uuid.uuid4())
-    model_record = {
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "target": target,
-        "problem_type": problem_type,
-        "model_name": model_name,
-        "source_name": source_name,
-        "run_id": req.run_id,
-        "inputs": [{"scored_dataset": target_session.filename, "saved_column": prediction_column}],
-        "predictions": [_jsonable_value(p) for p in preds[:10]],
-        "narrative": f"Batch-scored {len(full_df):,} rows from '{target_session.filename}'. Results were saved in column '{prediction_column}' on that dataset.",
-        "is_batch": True,
-        "rows_predicted": int(len(full_df)),
-        "scored_dataset": target_session.filename,
-        "scored_session_id": target_session.id,
-        "model_session_id": model_session.id,
-        "model_dataset": model_session.filename,
-        "saved_column": prediction_column,
-        "id_column": id_column,
-        "missing_feature_columns": list(missing_cols),
-        "preview": preview,
-    }
-    model_session.saved_predictions[prediction_id] = model_record
-
-    # The scored dataset gets a matching record too. Its data already carries the
-    # new column, but without this its own HTML report / notebook would show the
-    # column with no explanation of where it came from.
-    if target_session.id != model_session.id:
-        target_session.saved_predictions[prediction_id] = {
-            **model_record,
-            "role": "scored",
-            "narrative": (
-                f"Column '{prediction_column}' on this dataset holds the {target} predictions from "
-                f"{model_name} ({source_name}), a model trained on '{model_session.filename}'. "
-                f"{len(full_df):,} rows were scored."
-            ),
-        }
-
     return {
         "ok": True,
         "target": target,
@@ -2296,50 +2224,10 @@ def predict_batch(model_session_id: str, req: BatchPredictRequest):
         "rows_predicted": int(len(full_df)),
         "missing_feature_columns": missing_cols,
         "id_column": id_column,
-        "saved_column": prediction_column,
-        "saved_prediction": _prediction_summary(prediction_id, model_session.saved_predictions[prediction_id]),
-        "saved_predictions": [
-            _prediction_summary(pid, p) for pid, p in model_session.saved_predictions.items()
-        ],
         "full_csv": full_df.to_csv(index=False),
         "submission_csv": submission_csv,
         "preview": preview,
     }
-
-
-@app.get("/api/predict_batch_csv/{model_session_id}/{prediction_id}")
-def predict_batch_csv(model_session_id: str, prediction_id: str, kind: Literal["full", "submission"] = "full"):
-    """Rebuild a batch prediction's CSV from the scored dataset. The prediction
-    column lives on that dataset, so the download keeps working after the user
-    has switched tabs, re-rendered the model cards, or restored the page."""
-    model_session = _get_session_or_404(model_session_id)
-    record = model_session.saved_predictions.get(prediction_id)
-    if not record or not record.get("is_batch") or record.get("role") == "scored":
-        raise HTTPException(404, "Batch prediction not found.")
-    target_session = _get_session_or_404(record.get("scored_session_id") or "")
-
-    column, target = record.get("saved_column"), record.get("target")
-    if column not in target_session.df.columns:
-        raise HTTPException(
-            404,
-            f"Column '{column}' is no longer on '{target_session.filename}' (it was removed or the "
-            "dataset was reset), so this CSV can't be rebuilt. Run Batch predict again.",
-        )
-    full_df = target_session.df.copy()
-    full_df[target] = full_df.pop(column)
-
-    if kind == "submission":
-        id_column = record.get("id_column")
-        if not id_column or id_column not in full_df.columns:
-            raise HTTPException(400, "No id column was detected for this dataset, so there is no submission CSV.")
-        out_df, filename = full_df[[id_column, target]], f"{target}_submission.csv"
-    else:
-        out_df, filename = full_df, f"{target}_predictions_full.csv"
-    return Response(
-        content=out_df.to_csv(index=False),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 @app.get("/api/predictions/{session_id}")

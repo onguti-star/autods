@@ -1319,22 +1319,29 @@ def clean_dataframe(df: pd.DataFrame, options: dict | None = None) -> tuple[pd.D
             out = out.rename(columns=renamed)
             log.append(f"Normalised {len(renamed)} column name(s).")
 
-    # 2. Strip whitespace on object columns
+    # 2. Strip whitespace on text-like columns. Includes "category" alongside
+    # "object"/"string" because low-cardinality text columns get downcast to
+    # category dtype for memory during upload (see store.py) — select_dtypes
+    # on "object" alone silently skips those, so a checked "Trim whitespace"
+    # would do nothing on any such column.
     if opt.get("strip_whitespace"):
         stripped = 0
-        for col in out.select_dtypes(include="object").columns:
-            before = out[col].astype(str).str.len().sum()
-            out[col] = out[col].where(out[col].isna(), out[col].astype(str).str.strip())
-            after = out[col].astype(str).str.len().sum()
+        for col in out.select_dtypes(include=["object", "string", "category"]).columns:
+            was_category = isinstance(out[col].dtype, pd.CategoricalDtype)
+            series = out[col].astype(str) if was_category else out[col]
+            before = series.astype(str).str.len().sum()
+            new_series = series.where(series.isna(), series.astype(str).str.strip())
+            after = new_series.astype(str).str.len().sum()
             if after < before:
                 stripped += 1
+            out[col] = new_series.astype("category") if was_category else new_series
         if stripped:
             log.append(f"Stripped leading/trailing whitespace from {stripped} column(s).")
 
     # 3. Fix mixed-type columns (strings that contain numbers)
     if opt.get("fix_mixed_types"):
         fixed = 0
-        for col in out.select_dtypes(include="object").columns:
+        for col in out.select_dtypes(include=["object", "string", "category"]).columns:
             converted = pd.to_numeric(out[col], errors="coerce")
             valid_ratio = converted.notna().sum() / max(out[col].notna().sum(), 1)
             if valid_ratio >= 0.9:
@@ -1387,13 +1394,15 @@ def clean_dataframe(df: pd.DataFrame, options: dict | None = None) -> tuple[pd.D
     cat_strategy = opt.get("fill_missing_categorical", "mode")
     if cat_strategy and cat_strategy != "none":
         filled = 0
-        for col in out.select_dtypes(include="object").columns:
+        for col in out.select_dtypes(include=["object", "string", "category"]).columns:
             n_missing = int(out[col].isna().sum())
             if n_missing:
                 if cat_strategy == "mode" and not out[col].mode(dropna=True).empty:
                     val = out[col].mode(dropna=True).iloc[0]
                 else:
                     val = "Unknown"
+                if isinstance(out[col].dtype, pd.CategoricalDtype) and val not in out[col].cat.categories:
+                    out[col] = out[col].cat.add_categories([val])
                 out[col] = out[col].fillna(val)
                 filled += n_missing
         if filled:

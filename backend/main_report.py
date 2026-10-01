@@ -7,7 +7,6 @@ from datetime import datetime
 import pandas as pd
 
 from . import automl
-from . import batch_report
 from . import eda
 from . import narrate
 
@@ -573,26 +572,6 @@ def _build_html_report(session, extra_charts=None) -> str:
         .prediction-inputs {
             margin-top: 6px;
             overflow-wrap: anywhere;
-        }
-        .batch-preview-wrap {
-            overflow-x: auto;
-            margin-top: 8px;
-            max-width: 100%;
-        }
-        .batch-preview {
-            border-collapse: collapse;
-            font-size: 0.85em;
-            background: #fff;
-        }
-        .batch-preview th,
-        .batch-preview td {
-            border: 1px solid #e3e6ea;
-            padding: 4px 9px;
-            text-align: left;
-            white-space: nowrap;
-        }
-        .batch-preview th {
-            background: #f3f5f7;
         }
         .analysis-item {
             padding: 14px 16px;
@@ -1168,9 +1147,6 @@ def _build_html_report(session, extra_charts=None) -> str:
     if session.saved_predictions:
         html_parts.append("""        <h2 class="section-title" id="predictions">🎯 Saved Predictions</h2>""")
         for prediction in session.saved_predictions.values():
-            if batch_report.is_batch(prediction):
-                html_parts.append(batch_report.html_block(prediction))
-                continue
             target = html.escape(str(prediction.get("target") or "Prediction"))
             outputs = ", ".join(_fmt_report_value(v) for v in prediction.get("predictions", []))
             output = html.escape(outputs or "missing")
@@ -1234,8 +1210,6 @@ def _build_html_report(session, extra_charts=None) -> str:
                 html_parts.append(f"""            <div class="analysis-meta">Rows scored: {int(rows_scored):,}</div>""")
             if reason:
                 html_parts.append(f"""            <div class="analysis-meta">{reason}</div>""")
-            if clustering.get("sampling", {}).get("note"):
-                html_parts.append(f"""            <div class="analysis-meta">ℹ {html.escape(str(clustering["sampling"]["note"]))}</div>""")
             sizes = clustering.get("cluster_sizes") or {}
             if sizes:
                 html_parts.append("            <table class='table'><thead><tr><th>Cluster</th><th>Rows</th></tr></thead><tbody>")
@@ -1254,8 +1228,6 @@ def _build_html_report(session, extra_charts=None) -> str:
             <div class="analysis-meta">Anomalies found: {int(anomaly.get("n_outliers", 0)):,} ({_fmt_report_value(anomaly.get("outlier_percentage", 0))}% of data)</div>
             <div class="analysis-meta">Normal rows: {int(anomaly.get("n_normal", 0)):,}</div>
         </div>""")
-            if anomaly.get("sampling", {}).get("note"):
-                html_parts.append(f"""            <div class="analysis-meta">ℹ {html.escape(str(anomaly["sampling"]["note"]))}</div>""")
         reduction = session.unsupervised_results.get("reduction")
         if reduction:
             html_parts.append(f"""        <div class="analysis-item">
@@ -1265,8 +1237,6 @@ def _build_html_report(session, extra_charts=None) -> str:
             if reduction.get("explained_variance"):
                 variance = ", ".join(f"PC{i + 1}: {_fmt_report_value(v)}%" for i, v in enumerate(reduction.get("explained_variance", [])))
                 html_parts.append(f"""            <div class="analysis-meta">Explained variance: {variance}</div>""")
-            if reduction.get("sampling", {}).get("note"):
-                html_parts.append(f"""            <div class="analysis-meta">ℹ {html.escape(str(reduction["sampling"]["note"]))}</div>""")
             html_parts.append("        </div>")
         association = session.unsupervised_results.get("association")
         if association:
@@ -1274,8 +1244,6 @@ def _build_html_report(session, extra_charts=None) -> str:
             <strong>{html.escape(str(association.get("method", "Association Rules")))}</strong>
             <div class="analysis-meta">Rules found: {int(association.get("n_rules", 0)):,}</div>
             <div class="analysis-meta">Minimum support: {_fmt_report_value(association.get("min_support"))}; minimum confidence: {_fmt_report_value(association.get("min_confidence"))}</div>""")
-            if association.get("sampling", {}).get("note"):
-                html_parts.append(f"""            <div class="analysis-meta">ℹ {html.escape(str(association["sampling"]["note"]))}</div>""")
             rules = association.get("rules") or []
             if rules:
                 html_parts.append("""            <table class="table"><thead><tr><th>Antecedents</th><th>Consequents</th><th>Support</th><th>Confidence</th><th>Lift</th></tr></thead><tbody>""")
@@ -2049,9 +2017,6 @@ def _build_work_report(session) -> str:
     if session.saved_predictions:
         lines.extend(["", "## Predictions", ""])
         for prediction in session.saved_predictions.values():
-            if batch_report.is_batch(prediction):
-                lines.extend(batch_report.markdown_lines(prediction))
-                continue
             outputs = ", ".join(_fmt_report_value(v) for v in prediction.get("predictions", [])) or "missing"
             lines.append(f"- **Target:** `{prediction.get('target', 'Prediction')}` → {outputs}")
             lines.append(

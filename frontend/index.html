@@ -866,7 +866,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="clean-chat-log" id="cleanChatLog"></div>
     <div class="clean-chat-input-row">
-      <input type="text" id="cleanChatInput" placeholder="e.g. delete row 5 · change name in row 4 to Jane" autocomplete="off">
+      <input type="text" id="cleanChatInput" placeholder="e.g. create a new column called revenue" autocomplete="off">
       <button id="cleanChatSendBtn">Send</button>
     </div>
     <div class="actions">
@@ -960,7 +960,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="chart-type-grid" id="chartTypeGrid">
       <div class="ct-btn selected" data-type="histogram" onclick="selectChartType(this)"><div class="ct-name">Histogram</div><div class="ct-desc">Distribution of a numeric column</div></div>
       <div class="ct-btn" data-type="bar" onclick="selectChartType(this)"><div class="ct-name">Bar chart</div><div class="ct-desc">Value counts for a category column</div></div>
-      <div class="ct-btn" data-type="grouped_bar" onclick="selectChartType(this)"><div class="ct-name">Grouped bar</div><div class="ct-desc">Compare category counts across a second column</div></div>
       <div class="ct-btn" data-type="pie" onclick="selectChartType(this)"><div class="ct-name">Pie / Donut</div><div class="ct-desc">Proportion of each category</div></div>
       <div class="ct-btn" data-type="boxplot" onclick="selectChartType(this)"><div class="ct-name">Box plot</div><div class="ct-desc">Median, quartiles and outliers</div></div>
       <div class="ct-btn" data-type="scatter" onclick="selectChartType(this)"><div class="ct-name">Scatter</div><div class="ct-desc">Relationship between two numeric columns</div></div>
@@ -3048,7 +3047,7 @@ function updateVizFieldVisibility(){
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : isMap ? "Latitude" : "Column (X)";
   $("yLabel").textContent = isMap ? "Longitude" : "Column (Y)";
-  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : ["boxplot", "grouped_bar"].includes(t) ? "Split by (required)" : "Group by (optional)";
+  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
 
 }
 updateVizFieldVisibility();
@@ -3191,15 +3190,9 @@ $("vizBtn").addEventListener("click", async () => {
     return;
   }
 
-  if(t === "grouped_bar" && !g){
-    $("vizError").textContent = "Pick a column to split the bars by.";
-    show("vizError");
-    return;
-  }
-
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
   if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
-  if(["boxplot","bubble","grouped_bar","scatter_map","heatmap_map"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  if(["boxplot","bubble","scatter_map","heatmap_map"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
 
   // Power BI-style compare/slicer filter: only send it when a column is
   // picked AND at least one (but not every) value is checked — "all
@@ -3255,7 +3248,6 @@ function chartTitle(ch){
   if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
   if(ch.type === "histogram") return `Histogram of ${ch.x}`;
   if(ch.type === "bar") return `Bar chart of ${ch.x}`;
-  if(ch.type === "grouped_bar") return `${ch.x} by ${ch.group}`;
   if(ch.type === "pie") return `Share of ${ch.x}`;
   if(ch.type === "heatmap") return `Correlation heatmap`;
   if(ch.type === "treemap") return `Treemap of ${ch.x}`;
@@ -3667,18 +3659,6 @@ function drawChart(canvasId, ch){
       options:{plugins:{legend:{position:"right",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}}}});
     return;
   }
-  if(ch.type === "grouped_bar" && ch.labels?.length && ch.datasets?.length){
-    makeChart(canvasId,{type:"bar",
-      data:{labels:ch.labels,datasets:ch.datasets.map((dataset, index) => {
-        const color = vizPaletteAt(index);
-        return {label:dataset.label, data:dataset.values, backgroundColor:vizFill(color, "bb"), borderColor:vizIsVivid() ? vizEdgeColor() : color, borderWidth:vizIsVivid() ? 1 : 0};
-      })},
-      options:{plugins:{legend:{display:true,labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
-        scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:vizGridColor()}},
-                y:{beginAtZero:true,title:{display:true,text:ch.y_label||"Count",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
-    return;
-  }
-
   if(ch.type === "scatter"){
     // Saturated, opaque points with a hairline edge in the canvas colour. The
     // old default ("#ef6f6faa", 67% transparent) blended into the background
@@ -5019,11 +4999,6 @@ async function loadUnsupervisedSuggestions(){
   }
 }
 
-function samplingNoteHtml(data){
-  const note = data?.sampling?.note;
-  return note ? `<div class="hint" style="margin:6px 0 10px;">ℹ ${escapeHtml(note)}</div>` : "";
-}
-
 function showUnsupervisedResult(id, html){
   const el = $(id);
   el.innerHTML = html;
@@ -5112,7 +5087,7 @@ $("analyzeClustersBtn").addEventListener("click", async () => {
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Cluster analysis failed");
     
-    let html = `<div class="result-box"><strong>Cluster Number Analysis</strong><br><br>` + samplingNoteHtml(data);
+    let html = `<div class="result-box"><strong>Cluster Number Analysis</strong><br><br>`;
     html += `<strong>Recommended K:</strong> ${data.recommended_k}<br>`;
     html += `<strong>${data.recommendation}</strong><br>`;
     html += `<br><strong>Method results:</strong><br>`;
@@ -5292,7 +5267,7 @@ $("clusterBtn").addEventListener("click", async () => {
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Clustering failed");
     const methodLabel = {auto:"Auto Best Clustering",kmeans:"K-Means",hierarchical:"Hierarchical",dbscan:"DBSCAN"}[method] || method;
-    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>` + samplingNoteHtml(data);
+    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>`;
     if(data.selected_method) html += `<strong>Selected method:</strong> ${data.selected_method}<br>`;
     if(data.selection_reason) html += `<span class="srr-dim">${data.selection_reason}</span><br><br>`;
     html += `<strong>Cluster sizes:</strong><br>`;
@@ -5339,14 +5314,12 @@ $("anomalyBtn").addEventListener("click", async () => {
     if(!res.ok) throw new Error(data.detail || "Anomaly detection failed");
     const methodLabel = {isolation_forest:"Isolation Forest",lof:"Local Outlier Factor"}[method] || method;
     let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>`;
-    html += samplingNoteHtml(data);
     html += `<strong>Anomalies found:</strong> ${data.n_outliers} (${data.outlier_percentage}% of data)<br>`;
     html += `<strong>Normal rows:</strong> ${data.n_normal}<br>`;
     if(data.anomaly_indices?.length){
       html += `<br><strong>Anomaly row indices (first 20):</strong><br>`;
       html += data.anomaly_indices.slice(0, 20).join(", ");
-      const totalAnom = data.anomaly_indices_total ?? data.anomaly_indices.length;
-      if(totalAnom > 20) html += ` ... (+${(totalAnom - 20).toLocaleString()} more)`;
+      if(data.anomaly_indices.length > 20) html += ` ... (+${data.anomaly_indices.length - 20} more)`;
       html += `<br>`;
     }
     if(data.anomaly_scores?.length){
@@ -5384,7 +5357,7 @@ $("reduceBtn").addEventListener("click", async () => {
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Dimensionality reduction failed");
     const methodLabel = {tsne:"t-SNE",pca:"PCA"}[method] || method;
-    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>` + samplingNoteHtml(data);
+    let html = `<div class="result-box"><strong>${methodLabel} Results</strong><br><br>`;
     html += `<strong>Points generated:</strong> ${data.points?.length || 0}<br>`;
     if(data.explained_variance){
       html += `<br><strong>Explained variance per component:</strong><br>`;
@@ -5417,7 +5390,6 @@ $("assocBtn").addEventListener("click", async () => {
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Association rules failed");
     let html = `<div class="result-box"><strong>Apriori Association Rules</strong><br><br>`;
-    html += samplingNoteHtml(data);
     html += `<strong>Rules found:</strong> ${data.n_rules}<br>`;
     if(data.message){
       html += `<br><em>${data.message}</em><br>`;
@@ -5472,22 +5444,15 @@ function renderSavedPredictionsList(){
   }
   $("savedPredictionsHead").style.display = "";
   $("savedPredictionsList").innerHTML = [...predictions].reverse().map(p => {
-    const output = p.is_batch
-      ? `${(p.rows_predicted || 0).toLocaleString()} rows scored`
-      : (p.predictions || []).map(v => escapeHtml(v)).join(", ");
+    const output = (p.predictions || []).map(v => escapeHtml(v)).join(", ");
     const target = escapeHtml(p.target || "prediction");
     const source = escapeHtml(p.source_name || "current training");
     const model = escapeHtml(p.model_name || "");
     const inputs = escapeHtml(formatPredictionInputs(p));
-    const batchDetail = p.is_batch
-      ? (p.role === "scored"
-          ? `<div class="spr-inputs">Column <strong>${escapeHtml(p.saved_column || "prediction")}</strong> on this dataset was filled by a model trained on ${escapeHtml(p.model_dataset || "another dataset")}</div>`
-          : `<div class="spr-inputs">Saved to ${escapeHtml(p.scored_dataset || "scored dataset")} as <strong>${escapeHtml(p.saved_column || "prediction")}</strong></div>`)
-      : `<div class="spr-inputs">${inputs}</div>`;
     return `<div class="saved-pred-row" data-id="${escapeHtml(p.id)}">
       <div class="spr-main">
-        <div class="spr-pred">${p.is_batch ? "Batch " : ""}${target} → <strong>${output}</strong></div>
-        ${batchDetail}
+        <div class="spr-pred">${target} → <strong>${output}</strong></div>
+        <div class="spr-inputs">${inputs}</div>
         <div class="spr-meta">${source}${model ? ` · ${model}` : ""} · ${escapeHtml(p.created_at || "")}</div>
       </div>
       <button class="icon-btn" title="Delete this saved prediction" data-action="delete-prediction">×</button>
@@ -5516,7 +5481,7 @@ async function refreshSavedPredictions(datasetId = activeDs, sid = getState().se
     const data = await res.json();
     setDatasetState(datasetId, {savedPredictions: data.predictions || []});
   }catch(err){ setDatasetState(datasetId, {savedPredictions: []}); }
-  if(activeDs === datasetId){ renderSavedPredictionsList(); renderAllBatchResults(); }
+  if(activeDs === datasetId) renderSavedPredictionsList();
 }
 
 $("predictBtn").addEventListener("click", async () => {
@@ -5558,13 +5523,6 @@ $("predictBtn").addEventListener("click", async () => {
 // different render. Without this, fast tab-switching could make one
 // dataset's feature-importance bars flash onto another dataset's card.
 let modelCardsRenderToken = 0;
-// The cards last drawn, so the batch-predict results can be redrawn on their own
-// (after a background refresh of saved predictions) without rebuilding the cards.
-let lastModelCards = [];
-// Batch runs currently being scored: "<model dataset>|<target>|<run id>". Lets a
-// card that gets rebuilt mid-run (tab switch and back) still show "Scoring…"
-// and keep its button disabled, instead of inviting a second click.
-const batchInFlight = new Set();
 
 function renderModelCards(){
   const list = $("modelCardsList");
@@ -5597,7 +5555,6 @@ function renderModelCards(){
     }));
 
   const all = [...cards, ...savedCards];
-  lastModelCards = all;
 
   // Tear down any importance charts from the previous render before rebuilding
   // the list below. Card indices get reused across renders (idx 0, 1, 2...),
@@ -5723,10 +5680,6 @@ function renderModelCards(){
     }else{
       sel.disabled = false;
       sel.innerHTML = others.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join("");
-      // Come back to the dataset this card last scored, not just the first tab.
-      const rec = latestBatchRecordFor(all[parseInt(sel.dataset.idx, 10)]);
-      const last = rec && others.find(d => dsState[d.id]?.sessionId === rec.scored_session_id);
-      if(last) sel.value = last.id;
     }
   });
 
@@ -5792,19 +5745,13 @@ function renderModelCards(){
         return;
       }
 
-      // Everything below must keep pointing at the dataset that owns this model,
-      // even if the user switches tabs while the rows are being scored -- so read
-      // the session/tab once, now, instead of calling getSid()/setState() later.
-      const modelDsId = activeDs;
-      const modelSid  = getSid();
-      const key       = batchKey(modelDsId, model);
       const body = {target_session_id: targetSessionId};
       if(model.runId) body.run_id = model.runId;
 
-      batchInFlight.add(key);
-      renderBatchResult(idx, model);
+      result.innerHTML = `<p class="loading">Scoring every row</p>`;
+      btn.disabled = true;
       try{
-        const res  = await fetch(`${API}/predict_batch/${modelSid}`, {
+        const res  = await fetch(`${API}/predict_batch/${getSid()}`, {
           method:"POST",
           headers:{"Content-Type":"application/json"},
           body: JSON.stringify(body)
@@ -5812,119 +5759,45 @@ function renderModelCards(){
         const data = await res.json();
         if(!res.ok) throw new Error(data.detail || "Batch prediction failed");
 
-        // The result lives in the saved predictions of the model's dataset, which is
-        // what the card is drawn from -- so it survives tab switches and re-renders.
-        batchInFlight.delete(key);
-        setDatasetState(modelDsId, {savedPredictions: data.saved_predictions || []});
-        // The scored dataset now has a matching record (and the new column) too.
-        refreshSavedPredictions(targetDsId, targetSessionId);
-        if(activeDs === modelDsId){
-          renderSavedPredictionsList();
-          renderAllBatchResults();
-        }
+        const missingNote = data.missing_feature_columns.length
+          ? `<p class="hint" style="color:var(--bad);margin:6px 0;">This dataset is missing ${data.missing_feature_columns.map(escapeHtml).join(", ")} — those rows were filled blank before scoring, so results may be less reliable.</p>`
+          : "";
+
+        // The preview carries every original column plus the prediction, so a
+        // wide target dataset produced a table far wider than this card -- it
+        // spilled out of the panel. The scroll wrapper (.batch-preview-wrap)
+        // keeps it inside, with its own scrollbars.
+        const previewCols = data.preview.length ? Object.keys(data.preview[0]) : [];
+        const previewHtml = previewCols.length ? `<div class="batch-preview-wrap"><table class="preview-table"><thead><tr>` +
+          previewCols.map(c => `<th><span class="col-name">${escapeHtml(c)}</span></th>`).join("") +
+          `</tr></thead><tbody>` +
+          data.preview.map(row => `<tr>${previewCols.map(c => {
+            const v = row[c];
+            return v === null || v === undefined ? `<td class="null-val">null</td>` : `<td>${escapeHtml(String(v))}</td>`;
+          }).join("")}</tr>`).join("") +
+          `</tbody></table></div>` +
+          `<p class="batch-preview-hint">Scroll the table sideways for the remaining columns — it carries all ${previewCols.length} of them (every original column plus the prediction).</p>` : "";
+
+        result.innerHTML =
+          `<p class="hint" style="margin:8px 0 6px;">Scored ${data.rows_predicted} row(s) with ${escapeHtml(model.bestModel || "the best model")}. Preview of the first ${data.preview.length}:</p>` +
+          missingNote + previewHtml +
+          `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="sec model-card-batch-download-full" data-idx="${idx}">⬇ Download full CSV</button>
+            ${data.submission_csv ? `<button class="sec model-card-batch-download-submission" data-idx="${idx}">⬇ Download submission CSV (${escapeHtml(data.id_column)}, ${escapeHtml(data.target)})</button>` : ""}
+           </div>`;
+
+        result.querySelector(".model-card-batch-download-full")?.addEventListener("click", () => {
+          downloadTextFile(data.full_csv, `${model.target}_predictions_full.csv`, "text/csv");
+        });
+        result.querySelector(".model-card-batch-download-submission")?.addEventListener("click", () => {
+          downloadTextFile(data.submission_csv, `${model.target}_submission.csv`, "text/csv");
+        });
       }catch(err){
-        batchInFlight.delete(key);
-        if(activeDs === modelDsId){
-          renderAllBatchResults();
-          const box = $(`model-card-batch-result-${idx}`);
-          if(box) box.insertAdjacentHTML("afterbegin", `<div class="error-box">${escapeHtml(err.message)}</div>`);
-        }
+        result.innerHTML = `<div class="error-box">${err.message}</div>`;
       }
+      btn.disabled = false;
     });
   });
-
-  renderAllBatchResults();
-}
-
-// ---- Batch predict result (preview + downloads) ---------------------------------
-// Drawn from the saved predictions of the active dataset, never kept only in the
-// page: switching dataset tabs rebuilds every model card, and anything that
-// existed only in the old DOM would be lost with it.
-function batchKey(dsId, model){ return `${dsId}|${model.target}|${model.runId || ""}`; }
-
-function latestBatchRecordFor(model){
-  if(!model) return null;
-  const preds = getState().savedPredictions || [];
-  for(let i = preds.length - 1; i >= 0; i--){
-    const p = preds[i];
-    if(p.is_batch && p.role !== "scored" && p.target === model.target &&
-       (p.run_id || null) === (model.runId || null)) return p;
-  }
-  return null;
-}
-
-function renderAllBatchResults(){
-  lastModelCards.forEach((m, idx) => renderBatchResult(idx, m));
-}
-
-async function downloadBatchCsv(modelSid, rec, kind, statusEl){
-  statusEl.textContent = "Preparing file…";
-  try{
-    const res = await fetch(`${API}/predict_batch_csv/${modelSid}/${encodeURIComponent(rec.id)}?kind=${kind}`);
-    if(!res.ok){
-      let msg = "Download failed.";
-      try{ msg = (await res.json()).detail || msg; }catch(e){}
-      throw new Error(msg);
-    }
-    const text = await res.text();
-    downloadTextFile(text, kind === "submission" ? `${rec.target}_submission.csv` : `${rec.target}_predictions_full.csv`, "text/csv");
-    statusEl.textContent = "";
-  }catch(err){
-    statusEl.textContent = err.message;
-    statusEl.style.color = "var(--bad)";
-  }
-}
-
-function renderBatchResult(idx, model){
-  const result = $(`model-card-batch-result-${idx}`);
-  const btn    = $(`model-card-${idx}`)?.querySelector(".model-card-batch-predict-btn");
-  if(!result || !model) return;
-
-  const running = batchInFlight.has(batchKey(activeDs, model));
-  if(btn) btn.disabled = running;
-  if(running){
-    result.innerHTML = `<p class="loading">Scoring every row</p>`;
-    return;
-  }
-
-  const rec = latestBatchRecordFor(model);
-  if(!rec){ result.innerHTML = ""; return; }
-
-  const modelSid = getSid();
-  const missing = rec.missing_feature_columns || [];
-  const missingNote = missing.length
-    ? `<p class="hint" style="color:var(--bad);margin:6px 0;">The scored dataset is missing ${missing.map(escapeHtml).join(", ")} — those were filled blank before scoring, so results may be less reliable.</p>`
-    : "";
-
-  // The preview carries every original column plus the prediction, so a wide
-  // dataset makes a wide table; .batch-preview-wrap scrolls it inside the card.
-  const rows = rec.preview || [];
-  const previewCols = rows.length ? Object.keys(rows[0]) : [];
-  const previewHtml = previewCols.length
-    ? `<div class="batch-preview-wrap"><table class="preview-table"><thead><tr>` +
-      previewCols.map(c => `<th><span class="col-name">${escapeHtml(c)}</span></th>`).join("") +
-      `</tr></thead><tbody>` +
-      rows.map(row => `<tr>${previewCols.map(c => {
-        const v = row[c];
-        return v === null || v === undefined ? `<td class="null-val">null</td>` : `<td>${escapeHtml(String(v))}</td>`;
-      }).join("")}</tr>`).join("") +
-      `</tbody></table></div>` +
-      `<p class="batch-preview-hint">Scroll the table sideways for the remaining columns — it carries all ${previewCols.length} of them (every original column plus the prediction).</p>`
-    : "";
-
-  result.innerHTML =
-    `<p class="hint" style="margin:8px 0 6px;">Scored ${Number(rec.rows_predicted || 0).toLocaleString()} row(s) of <strong>${escapeHtml(rec.scored_dataset || "the dataset")}</strong> with ${escapeHtml(rec.model_name || model.bestModel || "the best model")}` +
-    ` — saved there as column <strong>${escapeHtml(rec.saved_column || "")}</strong>. Preview of the first ${rows.length}:</p>` +
-    missingNote + previewHtml +
-    `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-       <button class="sec batch-dl-full">⬇ Download full CSV</button>
-       ${rec.id_column ? `<button class="sec batch-dl-submission">⬇ Download submission CSV (${escapeHtml(rec.id_column)}, ${escapeHtml(rec.target)})</button>` : ""}
-       <span class="hint batch-dl-status" style="margin:0;"></span>
-     </div>`;
-
-  const status = result.querySelector(".batch-dl-status");
-  result.querySelector(".batch-dl-full")?.addEventListener("click", () => downloadBatchCsv(modelSid, rec, "full", status));
-  result.querySelector(".batch-dl-submission")?.addEventListener("click", () => downloadBatchCsv(modelSid, rec, "submission", status));
 }
 
 function openModelCards(){

@@ -451,27 +451,6 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
             **bar,
         }
 
-    if chart_type == "grouped_bar":
-        if not group or group not in df.columns:
-            raise ValueError("Grouped bar chart needs a column to split by.")
-        pairs = df[[x, group]].dropna()
-        if pairs.empty:
-            raise ValueError("No complete values are available for this grouped bar chart.")
-        table = pd.crosstab(pairs[x], pairs[group])
-        table = table.loc[table.sum(axis=1).sort_values(ascending=False).head(20).index]
-        table = table.loc[:, table.sum(axis=0).sort_values(ascending=False).head(10).index]
-        return {
-            "type": "grouped_bar", "x": x, "group": group,
-            "labels": [str(value) for value in table.index],
-            "datasets": [
-                {"label": str(category), "values": [int(value) for value in table[category].tolist()]}
-                for category in table.columns
-            ],
-            "x_label": x, "y_label": "Count",
-            "caption": f"Counts of '{x}' split by '{group}'.",
-        }
-
-
     if chart_type == "pie":
         pie = _pie_data(s)
         return {

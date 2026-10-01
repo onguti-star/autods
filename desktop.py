@@ -147,9 +147,6 @@ def _patch_qt_downloads() -> None:
     wq.BrowserView.on_download_requested = on_download_requested
 
 
-_QT_APP = None   # must stay referenced: a QApplication that is garbage-collected takes its name/icon with it
-
-
 def _set_linux_app_identity(icon_path: str) -> None:
     """Without this, GNOME/KDE show a generic icon (often a settings-like gear)
     for this window: they can only show the AutoDS icon in the taskbar, dock and
@@ -159,17 +156,10 @@ def _set_linux_app_identity(icon_path: str) -> None:
     QApplication.instance() or QApplication(sys.argv)), so this is called first.
     """
     try:
-        # QtWebEngine insists on being imported BEFORE any QApplication exists
-        # (otherwise pywebview's own import fails with "QtWebEngineWidgets must be
-        # imported ... before a QCoreApplication instance is created").
-        from qtpy import QtWebEngineWidgets  # noqa: F401
         from qtpy.QtGui import QIcon
         from qtpy.QtWidgets import QApplication
-        global _QT_APP
         app = QApplication.instance() or QApplication(sys.argv)
-        _QT_APP = app
         app.setApplicationName("AutoDS")
-        app.setApplicationDisplayName("AutoDS")
         # Matches the "autods.desktop" file that install.sh / install_launcher.sh
         # create in ~/.local/share/applications -- lets the window manager pull
         # the icon (and name) from there instead of guessing.

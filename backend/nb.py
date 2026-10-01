@@ -10,8 +10,6 @@ import json
 from datetime import datetime
 from typing import Any
 
-from . import batch_report
-
 # Country name -> ISO-3 code, matching the exact canonical names used by
 # backend/geo_data/world_countries.geojson (see geo.py) -- lets exported
 # notebooks build a Plotly choropleth without needing that boundary file.
@@ -659,30 +657,17 @@ def _add_prediction_cells(cells: list[dict], session):
     if not predictions:
         return
 
-    single = [p for p in predictions.values() if not batch_report.is_batch(p)]
-    batches = [p for p in predictions.values() if batch_report.is_batch(p)]
-
     cells.append(_markdown_cell("## Predictions Done"))
-    if single:
-        cells.append(_code_cell(
-            "import json\n\n"
-            f"saved_predictions = {_py_embed(single)}\n\n"
-            "for prediction in saved_predictions:\n"
-            "    print('target:', prediction.get('target'))\n"
-            "    print('model:', prediction.get('model_name'))\n"
-            "    print('inputs:', prediction.get('inputs'))\n"
-            "    print('predictions:', prediction.get('predictions'))\n"
-            "    print()\n"
-        ))
-    for prediction in batches:
-        cells.append(_markdown_cell(batch_report.notebook_markdown(prediction)))
-        if prediction.get("preview"):
-            cells.append(_code_cell(
-                "import json\n"
-                "import pandas as pd\n\n"
-                f"batch_preview = pd.DataFrame({_py_embed(prediction['preview'])})\n"
-                "batch_preview"
-            ))
+    cells.append(_code_cell(
+        "import json\n\n"
+        f"saved_predictions = {_py_embed(list(predictions.values()))}\n\n"
+        "for prediction in saved_predictions:\n"
+        "    print('target:', prediction.get('target'))\n"
+        "    print('model:', prediction.get('model_name'))\n"
+        "    print('inputs:', prediction.get('inputs'))\n"
+        "    print('predictions:', prediction.get('predictions'))\n"
+        "    print()\n"
+    ))
 
 
 def _add_unsupervised_cells(cells: list[dict], session):

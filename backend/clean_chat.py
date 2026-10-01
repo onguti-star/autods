@@ -34,9 +34,7 @@ _TYPE_ALIASES = {
     "boolean": {"boolean", "bool", "true/false", "yes/no"},
 }
 
-REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|eliminate|clear|get\s+rid\s+of)"
-EDIT_VERB_RE = r"(?:replace|change|update|modify|edit|correct|fix|set)"
-ROW_REF_RE = r"(?:row|record|entry|item|line)s?"
+REMOVE_VERB_RE = r"(?:drop|remove|delete|discard|erase|get\s+rid\s+of)"
 RENAME_VERB_RE = r"(?:rename|call)"
 NAME_JOINER_RE = r"(?:to|into|as)"
 
@@ -446,16 +444,15 @@ HELP_TEXT = (
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
     "• create column doubled as quantity * 2\n"
-    "• split first word from full_name into title and name\n"
+    "• split first word from full_name into title and name  (also: split full_name into title and name)\n"
+    "• split sub_category into category_type  (one new column for the first word; the rest "
+    "stays in sub_category, e.g. 'Mountain Bike' → category_type='Mountain', sub_category='Bike')\n"
     "• extract title from Name into Title  (pulls the title out of 'Last, Title. First' names)\n"
     "• extract deck from Cabin into Deck  (first letter of a cabin code like 'C85')\n"
     "• extract first letter from Cabin into Deck\n"
     "• extract pattern ([A-Za-z]) from Cabin into Deck  (your own regex — first capture group is used)\n"
     "• replace 2 with 0 in profit  (replaces exact values in a column)\n"
     "• replace yes with 1 in discount_applied\n"
-    "• delete row 5  (also: remove / drop / erase record 5)\n"
-    "• replace Sam with Jane in row 4  (changes matching cell(s) in that row)\n"
-    "• change name in row 4 to Jane  (edits one specified cell)\n"
     "• fill missing values in income with median  (mean / mode / zero / a specific value)\n"
     "• remove rows where email is missing\n"
     "• strip whitespace in name\n"
@@ -596,66 +593,6 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             return df, "No original data is available to reset to."
         return original_df.copy(), "Restored the original uploaded data — every chat cleaning command has been undone."
 
-    # ---- edit or delete one numbered row (1-based, as shown to people) ----
-    _delete_row = re.search(
-        rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?{ROW_REF_RE}\s*(?:number\s*)?(\d+)\b", ql
-    )
-    if _delete_row:
-        row_number = int(_delete_row.group(1))
-        if not 1 <= row_number <= len(df):
-            return df, f"Row {row_number} is outside this dataset. Choose a row from 1 to {len(df):,}."
-        new_df = df.drop(df.index[row_number - 1]).reset_index(drop=True)
-        return new_df, f"Deleted row {row_number:,}. Rows are now renumbered."
-
-    _cell_edit = re.search(
-        rf"\b{EDIT_VERB_RE}\s+(?:the\s+)?(?:value\s+(?:of|in)\s+)?(?:column\s+)?(.+?)\s+(?:in|on|at)\s+(?:the\s+)?{ROW_REF_RE}\s*(?:number\s*)?(\d+)\s+(?:to|with|as|=)\s*(.+)$",
-        q, re.IGNORECASE,
-    )
-    if _cell_edit:
-        col_text, row_text, value_text = _cell_edit.groups()
-        row_number = int(row_text)
-        col = _match_col(col_text, columns)
-        if not col:
-            return df, f"I could not find a column matching {col_text.strip()!r}. Available columns: {', '.join(columns)}."
-        if not 1 <= row_number <= len(df):
-            return df, f"Row {row_number} is outside this dataset. Choose a row from 1 to {len(df):,}."
-        value_text = value_text.strip(" '\".,:;-")
-        new_df = df.copy()
-        if pd.api.types.is_numeric_dtype(new_df[col]):
-            value = _parse_value_token(value_text)
-            if value is None:
-                return df, f"'{col}' is numeric, so use a numeric replacement value."
-        else:
-            value = value_text
-        new_df.at[new_df.index[row_number - 1], col] = value
-        return new_df, f"Changed '{col}' in row {row_number:,} to '{_fmt(value)}'."
-
-    _row_replace = re.search(
-        rf"\b{EDIT_VERB_RE}\s+(.+?)\s+(?:with|to|into|as)\s+(.+?)\s+(?:in|on|at)\s+(?:the\s+)?{ROW_REF_RE}\s*(?:number\s*)?(\d+)\b",
-        q, re.IGNORECASE,
-    )
-    if _row_replace:
-        old_text, new_text, row_text = _row_replace.groups()
-        row_number = int(row_text)
-        if not 1 <= row_number <= len(df):
-            return df, f"Row {row_number} is outside this dataset. Choose a row from 1 to {len(df):,}."
-        old_text = old_text.strip(" '\".,:;-")
-        new_text = new_text.strip(" '\".,:;-")
-        row = df.iloc[row_number - 1]
-        matching = [col for col in columns if str(row[col]).strip().casefold() == old_text.casefold()]
-        if not matching:
-            return df, f"Row {row_number:,} has no cell equal to '{old_text}'. Name a column explicitly to edit it."
-        new_df = df.copy()
-        for col in matching:
-            if pd.api.types.is_numeric_dtype(new_df[col]):
-                value = _parse_value_token(new_text)
-                if value is None:
-                    return df, f"'{col}' is numeric, so use a numeric replacement value."
-            else:
-                value = new_text
-            new_df.at[new_df.index[row_number - 1], col] = value
-        return new_df, f"Replaced '{old_text}' with '{new_text}' in row {row_number:,} ({len(matching)} cell(s))."
-
     # ---- round numeric column(s) to N decimal places ----
     # "round price to 2 decimal places" / "round latitude to 2 dp" /
     # "keep 2 decimals in longitude" / "round all numeric columns to 3 decimals"
@@ -710,13 +647,23 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, msg
 
 
-    # ---- split first word into two new columns ----
-    split_patterns = [
+    # ---- split first word into one or two columns ----
+    # Two-target form creates two brand-new columns (first word / remainder).
+    # One-target form creates just one new column for the first word and
+    # overwrites the source column in place with the remainder — e.g. a
+    # "sub_category" of "Mountain Bike" becomes a new "category_type" column
+    # holding "Mountain" while "sub_category" itself becomes "Bike".
+    # The last two patterns in each list don't require the words "first
+    # word" at all ("split sub_category into mountain and bike" /
+    # "split sub_category into mountain"), since first-word is the only
+    # split strategy this understands, so it's the sensible default.
+    split_two_patterns = [
         r"\b(?:split|separate|extract)\s+(?:the\s+)?first\s+word\s+(?:from|in|of)\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\s+(?:and|,)\s+(\w+)\b",
         r"\b(?:split|separate|extract)\s+(.+?)\s+(?:by|on|using)\s+(?:the\s+)?first\s+word\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\s+(?:and|,)\s+(\w+)\b",
         r"\bcreate\s+(?:new\s+)?columns?\s+(\w+)\s+(?:and|,)\s+(\w+)\s+from\s+(.+?)\s+(?:by\s+)?(?:splitting|separating|extracting)\s+(?:the\s+)?first\s+word\b",
+        r"\b(?:split|separate)\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\s+(?:and|,)\s+(\w+)\b",
     ]
-    for i, pattern in enumerate(split_patterns):
+    for i, pattern in enumerate(split_two_patterns):
         m = re.search(pattern, q, re.IGNORECASE)
         if not m:
             continue
@@ -742,6 +689,66 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
 
         new_df = _split_first_word_columns(df, source_col, first_col, rest_col)
         return new_df, f"Split first word from '{source_col}' into '{first_col}' and '{rest_col}'."
+
+    # One-target form: only one new column name is given, so the first word
+    # goes there and the remainder overwrites the source column in place.
+    split_one_patterns = [
+        r"\b(?:split|separate|extract)\s+(?:the\s+)?first\s+word\s+(?:from|in|of)\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b",
+        r"\b(?:split|separate)\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b",
+    ]
+    for pattern in split_one_patterns:
+        m = re.search(pattern, q, re.IGNORECASE)
+        if not m:
+            continue
+
+        source_text, new_col = m.group(1), m.group(2)
+        source_key = re.sub(r"^(?:the|a|an)\s+", "", source_text.strip().lower())
+        source_col = _match_col(source_text, columns)
+        if not source_col and source_key in ("row", "rows", "cell", "value", "values"):
+            source_col = _default_text_column(df)
+        if not source_col:
+            return df, (
+                f"I couldn't find the source column to split. Available columns: {', '.join(columns)}. "
+                "Try: split sub_category into category_type (the first word goes into the new "
+                "column, the rest stays in sub_category)."
+            )
+        if new_col in columns:
+            return df, (
+                f"'{new_col}' already exists. Choose a new column name, e.g. "
+                f"split first word from {source_col} into {new_col}_type."
+            )
+        if new_col == source_col:
+            return df, "Choose a new column name that's different from the source column."
+
+        new_df = _split_first_word_columns(df, source_col, new_col, source_col)
+        return new_df, (
+            f"Split first word from '{source_col}' into new column '{new_col}'; "
+            f"the rest of the value now stays in '{source_col}'."
+        )
+
+    # ---- couldn't match a split/separate command: give a targeted suggestion ----
+    # Rather than dumping the full HELP_TEXT wall of text, try to work out
+    # which column they probably meant and show the exact phrasing to use
+    # for *that* column, so a slightly-off command is easy to fix.
+    if re.search(r"\b(?:split|separate)\b", ql):
+        mentioned = _find_columns_in_text(q, columns)
+        example_col = mentioned[0] if mentioned else (columns[0] if columns else "full_name")
+        if mentioned:
+            hint = (
+                f"I see you mentioned '{example_col}' but couldn't match the rest of the command. "
+            )
+        else:
+            hint = (
+                "I couldn't tell which column you meant. "
+                f"Available columns: {', '.join(columns)}. "
+            )
+        return df, (
+            hint
+            + "Splitting only works by first word right now. Try one of:\n"
+            + f"• split {example_col} into new_col_1 and new_col_2  (creates two new columns)\n"
+            + f"• split {example_col} into new_col_1  (first word goes to new_col_1, "
+              f"the rest stays in {example_col})"
+        )
 
     # ---- extract a text pattern into a new column ----
     # Covers feature engineering that "split first word" can't: pulling a
@@ -1388,7 +1395,7 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         re.search(r"\breplace\s+(.+?)\s+with\s*(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"in\s+(.+?)\s+replace\s+(.+?)\s+with\s*(.+)", q, re.IGNORECASE)
         or re.search(r"replace\s+(?:the\s+)?(.+?)\s+(?:to|into)\s*(.+?)\s+(?:in\s+)?(.+)", q, re.IGNORECASE)
-        or re.search(r"(?:change|update|modify|edit|correct|fix)\s+(.+?)\s+(?:to|into|with)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
+        or re.search(r"change\s+(.+?)\s+(?:to|into)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"swap\s+(.+?)\s+(?:and|for)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
         or re.search(r"(?:set|make)\s+(.+?)\s+(?:to|as|equal\s+to)\s+(.+?)\s+in\s+(.+)", q, re.IGNORECASE)
     )
