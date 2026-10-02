@@ -1,8 +1,0 @@
-.git
-.sessions
-**/__pycache__
-**/*.pyc
-.pytest_cache
-tests
-*.md
-.env

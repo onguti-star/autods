@@ -42,6 +42,28 @@ def test_notebook_export_only_includes_completed_work():
         delete_session(session.id)
 
 
+def test_notebook_includes_auto_suggested_charts_when_work_done_but_no_visuals_viewed():
+    # Regression test: training (or any other real work) happened, but the
+    # person never opened the Visuals tab, so no chart history was ever
+    # captured. The notebook should still ship with some charts instead of
+    # silently having none.
+    session = Session(
+        pd.DataFrame({"x": list(range(20)), "y": [v * 2 for v in range(20)]}),
+        "data.csv",
+    )
+    try:
+        session.leaderboard = [
+            {"model": "Random Forest", "metrics": {"r2": 0.9}, "primary_score": 0.9}
+        ]
+        session.best_model_name = "Random Forest"
+
+        text = _notebook_text(nb.build_notebook(session, charts=None))
+
+        assert "Visualizations Done" in text
+    finally:
+        delete_session(session.id)
+
+
 def test_notebook_export_has_simple_data_fallback_when_no_work_recorded():
     session = Session(pd.DataFrame({"x": [1, 2], "name": ["a", "b"]}), "data.csv")
     try:

@@ -473,6 +473,29 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
     all_charts = charts if charts else ([getattr(session, "last_visualization", None)] if getattr(session, "last_visualization", None) else [])
     all_charts = [c for c in all_charts if c]
     if not all_charts:
+        # Nothing was ever viewed/staged for this session. If other real
+        # work has happened (cleaning, training, etc.) the person clearly
+        # used the app and just never opened the Visuals tab before
+        # downloading — fall back to the same auto-suggestion logic the
+        # Visuals tab uses so the notebook isn't left with zero charts. For
+        # a genuinely untouched fresh upload, leave this alone so the
+        # "no actions recorded yet" message below still applies.
+        other_work_done = any([
+            getattr(session, "notes", None) and session.notes.strip(),
+            getattr(session, "cleaning_log", None),
+            getattr(session, "chat_clean_log", None),
+            getattr(session, "leaderboard", None),
+            getattr(session, "saved_runs", None),
+            getattr(session, "saved_predictions", None),
+            getattr(session, "unsupervised_results", None),
+        ])
+        if other_work_done:
+            try:
+                from . import viz
+                all_charts = viz.suggest_visuals(session.df, has_geojson=bool(session.geojson))
+            except Exception:
+                all_charts = []
+    if not all_charts:
         return
 
     cells.append(_markdown_cell(f"## Visualizations Done ({len(all_charts)})"))

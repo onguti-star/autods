@@ -182,7 +182,10 @@ def run_window(url: str) -> int:
     import webview
     webview.settings["ALLOW_DOWNLOADS"] = True            # CSV / Excel / report / model exports
     _patch_qt_downloads()
-    webview.create_window("AutoDS", url, width=1440, height=900, min_size=(980, 640))
+    webview.create_window(
+        "AutoDS", url, width=1440, height=900, min_size=(980, 640),
+        text_select=True,   # pywebview disables text selection (and so copy) by default
+    )
     webview.start(
         gui="qt" if platform.system() == "Linux" else None,
         private_mode=False,                                # keep saved datasets/layout between runs

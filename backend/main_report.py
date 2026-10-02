@@ -9,6 +9,7 @@ import pandas as pd
 from . import automl
 from . import eda
 from . import narrate
+from . import viz
 
 
 def _fmt_report_value(value) -> str:
@@ -318,6 +319,19 @@ def _build_html_report(session, extra_charts=None) -> str:
     type_counts = _column_type_counts(profile)
     quality_flags = _quality_flags(profile)
     charts = list(extra_charts or [])
+    if not charts:
+        # If the person downloads the report without ever opening the
+        # Visuals tab, customChartSpecs on the frontend is still empty and
+        # nothing gets POSTed here — which used to mean a report with zero
+        # charts and no indication why. Fall back to the same
+        # auto-suggestion logic the Visuals tab itself uses, so the
+        # downloaded report always has something to look at.
+        try:
+            charts = viz.suggest_visuals(session.df, has_geojson=bool(getattr(session, "geojson", None)))
+            for c in charts:
+                c["reason"] = c.get("reason", "") or "Automatically suggested based on this dataset."
+        except Exception:
+            charts = []
     chart_data_json = json.dumps(charts)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     pca_result = _report_pca_result(session)
@@ -741,6 +755,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                 <li><a href="#updated-preview">Updated Data (First 15 Rows)</a></li>""")
     if getattr(session, "notes", "").strip():
         html_parts.append('                <li><a href="#notes">Notes</a></li>')
+    if _has_cleaning_history(session):
+        html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
     html_parts.append("""                <li><a href="#summary">EDA Summary</a></li>
                 <li><a href="#quality">Data Quality Details</a></li>
                 <li><a href="#describe">Data Describe Summary</a></li>
@@ -751,8 +767,6 @@ def _build_html_report(session, extra_charts=None) -> str:
     if pca_result:
         html_parts.append('                <li><a href="#pca">Principal Component Analysis (PCA)</a></li>')
     
-    if _has_cleaning_history(session):
-        html_parts.append('                <li><a href="#cleaning">Data Cleaning Log</a></li>')
     if session.leaderboard or session.saved_runs:
         html_parts.append('                <li><a href="#training">Model Training Results</a></li>')
     if session.saved_predictions:
@@ -825,6 +839,30 @@ def _build_html_report(session, extra_charts=None) -> str:
         html_parts.append(f"""        <h2 class="section-title" id="notes">🖊️ Notes</h2>
         <div class="narrative-text">
             {notes_html}
+        </div>""")
+
+    # Cleaning Log Section — placed right after Notes and before any analysis,
+    # since cleaning happens first in the actual workflow (raw data -> clean
+    # -> explore/visualize -> model), not after the charts.
+    if _has_cleaning_history(session):
+        html_parts.append("""        <h2 class="section-title" id="cleaning">✨ Data Cleaning Log</h2>""")
+        html_parts.append(f"""        <div class="summary-grid">
+            <div class="stat-box"><div class="stat-value">{len(session.cleaning_log):,}</div><div class="stat-label">structured cleaning entries</div></div>
+            <div class="stat-box"><div class="stat-value">{len(session.chat_clean_log):,}</div><div class="stat-label">Clean Assist commands</div></div>
+        </div>""")
+        for entry in session.cleaning_log:
+            html_parts.append(f"""        <div class="cleaning-item">
+            <span class="cleaning-type">Structured clean</span><br>
+            ✓ {html.escape(str(entry))}
+        </div>""")
+        for entry in session.chat_clean_log:
+            command = html.escape(str(entry.get("command", "")))
+            message = html.escape(str(entry.get("message", "")))
+            command_type = html.escape(_cleaning_command_type(str(entry.get("command", "")), str(entry.get("message", ""))))
+            html_parts.append(f"""        <div class="cleaning-item">
+            <span class="cleaning-type">{command_type}</span><br>
+            ✓ <strong>{command}</strong><br>
+            <span>{message}</span>
         </div>""")
 
     # EDA Summary Section
@@ -1030,28 +1068,6 @@ def _build_html_report(session, extra_charts=None) -> str:
                 </tr>""")
                 html_parts.append("""            </tbody>
         </table>""")
-
-    # Cleaning Log Section
-    if _has_cleaning_history(session):
-        html_parts.append("""        <h2 class="section-title" id="cleaning">✨ Data Cleaning Log</h2>""")
-        html_parts.append(f"""        <div class="summary-grid">
-            <div class="stat-box"><div class="stat-value">{len(session.cleaning_log):,}</div><div class="stat-label">structured cleaning entries</div></div>
-            <div class="stat-box"><div class="stat-value">{len(session.chat_clean_log):,}</div><div class="stat-label">Clean Assist commands</div></div>
-        </div>""")
-        for entry in session.cleaning_log:
-            html_parts.append(f"""        <div class="cleaning-item">
-            <span class="cleaning-type">Structured clean</span><br>
-            ✓ {html.escape(str(entry))}
-        </div>""")
-        for entry in session.chat_clean_log:
-            command = html.escape(str(entry.get("command", "")))
-            message = html.escape(str(entry.get("message", "")))
-            command_type = html.escape(_cleaning_command_type(str(entry.get("command", "")), str(entry.get("message", ""))))
-            html_parts.append(f"""        <div class="cleaning-item">
-            <span class="cleaning-type">{command_type}</span><br>
-            ✓ <strong>{command}</strong><br>
-            <span>{message}</span>
-        </div>""")
 
     # Model Training Section — covers every trained model, not just the current one
     all_runs = []
