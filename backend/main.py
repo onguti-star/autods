@@ -739,8 +739,14 @@ def _convert_column_type(df: pd.DataFrame, column: str, dtype: str) -> tuple[pd.
 
     def _parse_dates(series):
         """Try pandas auto-parse first, then fall back through common formats."""
-        # Try dayfirst=True by default — matches DD/MM/YYYY used in Kenya
-        result = pd.to_datetime(series, dayfirst=True, errors="coerce")
+        # format="mixed" makes pandas infer the format row-by-row instead of
+        # guessing one format from the first value and applying it to the
+        # whole column. Without it, a column mixing "01-09-2026" and
+        # "09/09/2026" silently turns whichever style doesn't match the
+        # guessed format into missing data (NaT) — no error, just quietly
+        # dropped dates. dayfirst=True still applies per-row so "01-09-2026"
+        # continues to mean 1 Sept, matching DD/MM/YYYY conventions.
+        result = pd.to_datetime(series, dayfirst=True, format="mixed", errors="coerce")
         if result.notna().sum() >= series.notna().sum() * 0.5:
             return result
         for fmt in DATE_FORMATS:

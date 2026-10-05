@@ -614,6 +614,9 @@ def _add_visualization_cells(cells: list[dict], session, charts: list | None = N
             "    plt.tight_layout()\n"
             "    plt.show()\n"
         ))
+        user_note = str(chart.get("user_note") or "").strip()
+        if user_note:
+            cells.append(_markdown_cell(f"**Your notes:**\n\n{user_note}"))
 
 
 def _add_training_cells(cells: list[dict], session):

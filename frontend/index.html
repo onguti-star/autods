@@ -55,7 +55,7 @@ button:hover{filter:brightness(1.1);}button:active{transform:translateY(1px);}
 button:disabled{background:#3a4357;color:var(--ink-dim);cursor:not-allowed;}
 button.sec{background:transparent;color:var(--cyan);border:1px solid var(--panel-border);}
 button.sec:hover{border-color:var(--cyan);}
-button.dl{background:transparent;color:var(--good);border:git 1px solid var(--good);}
+button.dl{background:transparent;color:var(--good);border:1px solid var(--good);}
 button.dl:hover{background:rgba(95,217,140,0.08);}
 select,input[type=text],input[type=number]{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--ink);border:1px solid var(--panel-border);padding:7px 10px;font-size:12px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -210,6 +210,13 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .chart-panel-title{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--accent);}
 .chart-panel-actions{display:flex;align-items:center;gap:6px;}
 .chart-explain{font-size:11px;color:var(--ink-dim);line-height:1.45;margin-top:9px;border-left:2px solid var(--cyan);padding-left:9px;}
+.chart-note-wrap{margin-top:10px;}
+.chart-note-wrap label{display:block;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-dim);margin-bottom:4px;}
+.chart-note-wrap textarea{width:100%;min-height:56px;resize:vertical;background:var(--panel-2,#0e1623);border:1px solid var(--border,#273345);border-radius:6px;color:var(--ink,#e8edf5);font-size:12px;line-height:1.45;padding:7px 9px;font-family:inherit;}
+.chart-note-wrap textarea:focus{outline:none;border-color:var(--cyan);}
+.chart-note-wrap .chart-note-saved{font-size:10px;color:var(--cyan);opacity:0;transition:opacity .25s;margin-left:6px;}
+.chart-note-wrap .chart-note-saved.show{opacity:1;}
+.chart-panel--map .chart-note-wrap textarea{background:#fff;border-color:#d7dee8;color:#1a2433;}
 .icon-btn{background:transparent;color:var(--ink-dim);border:1px solid var(--panel-border);padding:4px 8px;line-height:1;}
 .icon-btn:hover{color:var(--cyan);border-color:var(--cyan);}
 .icon-btn.close:hover{color:var(--bad);border-color:var(--bad);}
@@ -3080,7 +3087,27 @@ function renderVizSuggestions(charts){
     const reportSpec = {...ch, title: ch.title || chartTitle(ch), reason: "", _reportSource: "auto"};
     card._spec = reportSpec;
     customChartSpecs.push(reportSpec);
-    card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div>`;
+    const noteId = "vizNote_" + id;
+    card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div><div class="chart-note-wrap"><label for="${noteId}">Your notes <span class="chart-note-saved">saved ✓</span></label><textarea id="${noteId}" placeholder="Write what this chart actually means to you — this is yours, not auto-generated. Included in the downloaded HTML report and notebook.">${escapeHtml(reportSpec.user_note || "")}</textarea></div>`;
+    const noteEl = card.querySelector(`#${CSS.escape(noteId)}`);
+    const savedIndicator = card.querySelector(".chart-note-saved");
+    let noteSaveTimer = null;
+    noteEl.addEventListener("input", () => {
+      reportSpec.user_note = noteEl.value;
+      ch.user_note = noteEl.value;   // also persisted on the cached suggestion
+      // itself, since renderVizSuggestions() rebuilds a fresh reportSpec from
+      // vizSuggestionsData whenever this tab/dataset is restored — without
+      // this, a note typed into an auto-suggested tile would be lost on
+      // navigating away and back, even though customChartSpecs alone is
+      // enough for a download that happens before navigating away.
+      if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
+      clearTimeout(noteSaveTimer);
+      savedIndicator.classList.remove("show");
+      noteSaveTimer = setTimeout(() => {
+        savedIndicator.classList.add("show");
+        setTimeout(() => savedIndicator.classList.remove("show"), 1200);
+      }, 500);
+    });
     card.querySelector(".close").addEventListener("click", () => {
       destroyChart(id);
       card.remove();
@@ -3417,8 +3444,22 @@ function _renderCustomChartCard(spec){
   const compareNote = spec.filter_col && spec.filter_values && spec.filter_values.length
     ? `<div class="chart-filter-note">Comparing ${escapeHtml(spec.filter_col)}: ${spec.filter_values.map(escapeHtml).join(", ")}</div>`
     : "";
-  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div>${compareNote}<div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${spec.reason || explainChart(spec)}</div>`;
+  const noteId = "vizNote_" + id;
+  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div>${compareNote}<div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${spec.reason || explainChart(spec)}</div><div class="chart-note-wrap"><label for="${noteId}">Your notes <span class="chart-note-saved">saved ✓</span></label><textarea id="${noteId}" placeholder="Write what this chart actually means to you — this is yours, not auto-generated. Included in the downloaded HTML report and notebook.">${escapeHtml(spec.user_note || "")}</textarea></div>`;
   panel.querySelector(".download").addEventListener("click", () => downloadChart(id, chartTitle(spec)));
+  const noteEl = panel.querySelector(`#${CSS.escape(noteId)}`);
+  const savedIndicator = panel.querySelector(".chart-note-saved");
+  let noteSaveTimer = null;
+  noteEl.addEventListener("input", () => {
+    spec.user_note = noteEl.value;
+    if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
+    clearTimeout(noteSaveTimer);
+    savedIndicator.classList.remove("show");
+    noteSaveTimer = setTimeout(() => {
+      savedIndicator.classList.add("show");
+      setTimeout(() => savedIndicator.classList.remove("show"), 1200);
+    }, 500);
+  });
   if(spec.type === "wordcloud"){
     panel.querySelector(".download").style.display = "none";   // rendered as HTML, not a canvas — nothing to export as PNG
   }

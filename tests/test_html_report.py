@@ -85,3 +85,31 @@ def test_cleaning_log_appears_before_visualizations_not_after():
 
     assert cleaning_pos < summary_pos
     assert cleaning_pos < viz_pos
+
+
+def test_html_report_includes_users_own_chart_note():
+    df = pd.DataFrame({"price": list(range(1, 11)), "qty": list(range(10, 0, -1))})
+    chart = {
+        "title": "price vs qty",
+        "reason": "Automatically suggested.",
+        "type": "scatter",
+        "x": "price",
+        "y": "qty",
+        "user_note": "The dip here looks like the March promo period.",
+    }
+
+    report = _build_html_report(_session_for_report(df), extra_charts=[chart])
+
+    assert "The dip here looks like the March promo period." in report
+    assert "chart-user-note" in report
+
+
+def test_html_report_omits_note_block_when_no_user_note_given():
+    df = pd.DataFrame({"price": list(range(1, 11)), "qty": list(range(10, 0, -1))})
+    chart = {"title": "price vs qty", "type": "scatter", "x": "price", "y": "qty"}
+
+    report = _build_html_report(_session_for_report(df), extra_charts=[chart])
+
+    # The CSS class is always defined in <style>; what matters is that no
+    # actual note block gets rendered for this chart.
+    assert '<div class="chart-user-note">' not in report

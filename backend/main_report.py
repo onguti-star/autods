@@ -685,6 +685,25 @@ def _build_html_report(session, extra_charts=None) -> str:
             font-size: 0.9em;
             margin-bottom: 12px;
         }
+        .chart-user-note {
+            background: #fff8e6;
+            border-left: 3px solid #f5a623;
+            padding: 10px 12px;
+            margin-top: 12px;
+            border-radius: 4px;
+            font-size: 0.92em;
+            color: #4a3b00;
+            white-space: pre-wrap;
+        }
+        .chart-user-note .label {
+            display: block;
+            font-size: 0.75em;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #b17a00;
+            margin-bottom: 4px;
+        }
         @media (max-width: 992px) {
             .chart-row {
                 grid-template-columns: 1fr;
@@ -1010,6 +1029,11 @@ def _build_html_report(session, extra_charts=None) -> str:
             canvas_id = f"chart_{index}"
             chart_title = html.escape(str(chart.get("title") or "Visualization"))
             chart_note = html.escape(str(chart.get("reason") or ""))
+            user_note = str(chart.get("user_note") or "").strip()
+            user_note_html = (
+                f'<div class="chart-user-note"><span class="label">Your notes</span>{html.escape(user_note)}</div>'
+                if user_note else ""
+            )
             html_parts.append(f"""            <div class="chart-card">
                 <div class="chart-title">{chart_title}</div>
                 <div class="chart-notice">{chart_note}</div>
@@ -1017,6 +1041,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                     <button class="chart-btn" onclick="copyChart({index})">📋 Copy Image</button>
                 </div>
                 <div class="chart-canvas-wrap"><canvas id="{canvas_id}"></canvas></div>
+                {user_note_html}
             </div>""")
         html_parts.append("        </div>")
 

@@ -74,3 +74,20 @@ def test_notebook_export_has_simple_data_fallback_when_no_work_recorded():
         assert "df.describe(include='all')" in text
     finally:
         delete_session(session.id)
+
+
+def test_notebook_includes_users_own_chart_note():
+    session = Session(
+        pd.DataFrame({"price": list(range(1, 11)), "qty": list(range(10, 0, -1))}),
+        "data.csv",
+    )
+    try:
+        chart = {
+            "title": "price vs qty", "type": "scatter", "x": "price", "y": "qty",
+            "user_note": "The dip here looks like the March promo period.",
+        }
+        text = _notebook_text(nb.build_notebook(session, charts=[chart]))
+
+        assert "The dip here looks like the March promo period." in text
+    finally:
+        delete_session(session.id)
