@@ -1893,6 +1893,33 @@ def _build_html_report(session, extra_charts=None) -> str:
                     canvas.remove();
                     return null;
                 }
+                case 'stacked_bar': {
+                    if (!chart.labels || !chart.series || !chart.series.length) return null;
+                    return {
+                        type: 'bar',
+                        data: {
+                            labels: chart.labels,
+                            datasets: chart.series.map((s, i) => ({
+                                label: s.label,
+                                data: s.values,
+                                backgroundColor: pieColors[i % pieColors.length],
+                                borderColor: '#ffffff',
+                                borderWidth: 1
+                            }))
+                        },
+                        options: {
+                            ...chartOptions,
+                            plugins: {
+                                ...chartOptions.plugins,
+                                legend: { display: true, position: 'bottom', labels: { color: '#495057', boxWidth: 12, padding: 12 } }
+                            },
+                            scales: {
+                                x: { stacked: true },
+                                y: { stacked: true, beginAtZero: true }
+                            }
+                        }
+                    };
+                }
                 default:
                     return null;
             }

@@ -972,6 +972,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="ct-btn" data-type="scatter" onclick="selectChartType(this)"><div class="ct-name">Scatter</div><div class="ct-desc">Relationship between two numeric columns</div></div>
       <div class="ct-btn" data-type="line" onclick="selectChartType(this)"><div class="ct-name">Line chart</div><div class="ct-desc">Trend of Y across X values</div></div>
       <div class="ct-btn" data-type="bubble" onclick="selectChartType(this)"><div class="ct-name">Bubble chart</div><div class="ct-desc">Scatter where dot size = a third column</div></div>
+      <div class="ct-btn" data-type="stacked_bar" onclick="selectChartType(this)"><div class="ct-name">Stacked bar</div><div class="ct-desc">Breakdown of a group column within each category</div></div>
       <div class="ct-btn" data-type="area" onclick="selectChartType(this)"><div class="ct-name">Area chart</div><div class="ct-desc">Cumulative trend over X values</div></div>
       <div class="ct-btn" data-type="heatmap" onclick="selectChartType(this)"><div class="ct-name">Heatmap</div><div class="ct-desc">Correlation matrix visualization</div></div>
       <div class="ct-btn" data-type="treemap" onclick="selectChartType(this)"><div class="ct-name">Treemap</div><div class="ct-desc">Hierarchical view of categories</div></div>
@@ -3048,13 +3049,13 @@ function updateVizFieldVisibility(){
   $("histMinWrap").style.display = t === "histogram" ? "" : "none";
   $("histMaxWrap").style.display = t === "histogram" ? "" : "none";
   $("histBinWidthWrap").style.display = t === "histogram" ? "" : "none";
-  $("barLimitWrap").style.display = t === "bar" ? "" : "none";
+  $("barLimitWrap").style.display = (t === "bar" || t === "stacked_bar") ? "" : "none";
   $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
   $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : isMap ? "Latitude" : "Column (X)";
   $("yLabel").textContent = isMap ? "Longitude" : "Column (Y)";
-  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : t === "boxplot" ? "Group by (required)" : "Group by (optional)";
+  $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : (t === "boxplot" || t === "stacked_bar") ? "Group by (required)" : "Group by (optional)";
 
 }
 updateVizFieldVisibility();
@@ -3216,10 +3217,15 @@ $("vizBtn").addEventListener("click", async () => {
     show("vizError");
     return;
   }
+  if(t === "stacked_bar" && !g){
+    $("vizError").textContent = "Stacked bar needs a \"Group by\" column too — that's what gets split into stacked segments.";
+    show("vizError");
+    return;
+  }
 
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
   if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
-  if(["boxplot","bubble","scatter_map","heatmap_map"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
+  if(["boxplot","bubble","scatter_map","heatmap_map","stacked_bar"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
 
   // Power BI-style compare/slicer filter: only send it when a column is
   // picked AND at least one (but not every) value is checked — "all
@@ -3245,7 +3251,7 @@ $("vizBtn").addEventListener("click", async () => {
     if(xMax !== "") url += `&x_max=${encodeURIComponent(xMax)}`;
     if(binWidth !== "") url += `&bin_width=${encodeURIComponent(binWidth)}`;
   }
-  if(t === "bar"){
+  if(t === "bar" || t === "stacked_bar"){
     const barLimit = $("barLimit").value.trim();
     if(barLimit !== "") url += `&bar_limit=${encodeURIComponent(barLimit)}`;
   }
@@ -3275,6 +3281,7 @@ function chartTitle(ch){
   if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
   if(ch.type === "histogram") return `Histogram of ${ch.x}`;
   if(ch.type === "bar") return `Bar chart of ${ch.x}`;
+  if(ch.type === "stacked_bar") return `${ch.x} by ${ch.group} (stacked)`;
   if(ch.type === "pie") return `Share of ${ch.x}`;
   if(ch.type === "heatmap") return `Correlation heatmap`;
   if(ch.type === "treemap") return `Treemap of ${ch.x}`;
@@ -4534,6 +4541,25 @@ function drawChart(canvasId, ch){
     return;
   }
   
+  if(ch.type === "stacked_bar"){
+    const datasets = (ch.series || []).map((s, i) => ({
+      label: s.label,
+      data: s.values,
+      backgroundColor: vizFill(vizPaletteAt(i), "cc"),
+      borderColor: vizIsVivid() ? vizEdgeColor() : "transparent",
+      borderWidth: vizIsVivid() ? 1 : 0,
+    }));
+    makeChart(canvasId,{type:"bar",
+      data:{labels:ch.labels, datasets},
+      options:{
+        plugins:{legend:{display:true,position:"bottom",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
+        scales:{
+          x:{stacked:true,title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:vizGridColor()}},
+          y:{stacked:true,title:{display:true,text:ch.y_label||"Count",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}
+        }
+      }});
+    return;
+  }
   // word_frequency renders like a bar chart — falls through to the shared bar rendering below
   // histogram or bar
   const defaultColor = vizFill(ch.type==="histogram" ? vizPaletteAt(1) : vizPaletteAt(0), "bb");

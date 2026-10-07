@@ -77,6 +77,38 @@ def _bar_data(s: pd.Series, top_n: int = None):
     return {"labels": [str(i) for i in counts.index], "values": [int(v) for v in counts.values]}
 
 
+def _stacked_bar_data(df: pd.DataFrame, x: str, group: str, top_n: int = None, max_series: int = 8):
+    """Crosstab of x-category vs group-category counts, shaped for a
+    Chart.js stacked bar: one label per x-category, one dataset (series)
+    per group-category. Caps both axes so a high-cardinality column doesn't
+    produce an unreadable chart — x-categories are capped at top_n (by total
+    row count), group-categories beyond max_series are folded into "Other"."""
+    sub = df[[x, group]].dropna()
+    counts = pd.crosstab(sub[x], sub[group])
+
+    # Cap x-axis categories to the top_n most frequent (by row total)
+    row_totals = counts.sum(axis=1).sort_values(ascending=False)
+    if top_n is not None:
+        row_totals = row_totals.head(top_n)
+    counts = counts.loc[row_totals.index]
+
+    # Cap number of stacked series; fold the rest into "Other"
+    col_totals = counts.sum(axis=0).sort_values(ascending=False)
+    if len(col_totals) > max_series:
+        keep_cols = col_totals.head(max_series - 1).index.tolist()
+        other_cols = [c for c in counts.columns if c not in keep_cols]
+        other_sum = counts[other_cols].sum(axis=1)
+        counts = counts[keep_cols].copy()
+        counts["Other"] = other_sum
+
+    labels = [str(i) for i in counts.index]
+    series = [
+        {"label": str(col), "values": [int(v) for v in counts[col].tolist()]}
+        for col in counts.columns
+    ]
+    return {"labels": labels, "series": series}
+
+
 def _scatter_data(df: pd.DataFrame, x: str, y: str, size_col: str = None, max_points: int = 600):
     cols = [c for c in [x, y, size_col] if c]
     sub = df[cols].dropna()
@@ -449,6 +481,23 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
             "type": "bar", "x": x, "bar_limit": top_n,
             "x_label": x, "y_label": "Count", "caption": caption,
             **bar,
+        }
+
+    if chart_type == "stacked_bar":
+        if not group:
+            raise ValueError("Stacked bar charts need a 'Group by' column — pick one in addition to the main column.")
+        if group not in df.columns:
+            raise ValueError(f"Column '{group}' not found.")
+        top_n = min(max(int(bar_limit), 1), 1000) if bar_limit is not None else 15
+        stacked = _stacked_bar_data(df, x, group, top_n=top_n)
+        total_categories = df[x].nunique(dropna=True)
+        caption = f"Count of '{group}' broken down within each '{x}', stacked into one bar per '{x}'."
+        if total_categories > len(stacked["labels"]):
+            caption += f" Showing top {len(stacked['labels'])} of {total_categories:,} '{x}' values."
+        return {
+            "type": "stacked_bar", "x": x, "group": group, "bar_limit": top_n,
+            "x_label": x, "y_label": "Count", "caption": caption,
+            **stacked,
         }
 
     if chart_type == "pie":
