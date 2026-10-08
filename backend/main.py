@@ -40,6 +40,7 @@ from . import nlp
 from . import nb as nb_module
 from . import pca_analysis
 from . import simulation as simulation_module
+from . import pivot as pivot_module
 from . import unsupervised
 from . import viz
 from .main_report import _build_html_report
@@ -1060,6 +1061,16 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
 
 
 # ---------- Simulate ----------
+
+@app.post("/api/pivot/{session_id}")
+def pivot_table(session_id: str, req: pivot_module.PivotRequest):
+    """Build a pivot table from the session's current dataset (read-only)."""
+    session = _get_session_or_404(session_id)
+    try:
+        return pivot_module.build_pivot(session.df, req)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
 
 @app.post("/api/simulate/{session_id}")
 def simulate_scenario(session_id: str, req: simulation_module.SimulationRequest):

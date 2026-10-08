@@ -178,6 +178,19 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .sim-guide-step .sg-title{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--cyan);margin-bottom:4px;}
 .sim-guide-step .sg-copy{font-size:11px;color:var(--ink-dim);line-height:1.45;}
 .sim-note{font-size:11px;color:var(--ink-dim);line-height:1.55;margin-top:8px;border-left:2px solid var(--accent);padding-left:10px;}
+.pv-wrap{overflow:auto;max-height:70vh;border:1px solid var(--panel-border);margin-top:10px;}
+.pv-table{border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12px;min-width:100%;}
+.pv-table th,.pv-table td{padding:6px 10px;border-bottom:1px solid var(--panel-border);white-space:nowrap;}
+.pv-table thead th{position:sticky;top:0;background:var(--panel,#0e1a2b);color:var(--accent);text-align:right;font-weight:600;z-index:1;border-bottom:2px solid var(--panel-border);}
+.pv-table thead th.pv-lbl,.pv-table tbody th{text-align:left;}
+.pv-table tbody th{font-weight:500;color:var(--ink);background:var(--panel,#0e1a2b);position:sticky;left:0;}
+.pv-table td{text-align:right;color:var(--ink);}
+.pv-table tr.pv-total th,.pv-table tr.pv-total td{font-weight:700;border-top:2px solid var(--panel-border);}
+.pv-table td.pv-tcol{font-weight:700;}
+.pv-span{font-size:10px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:1px;text-align:center !important;}
+.pv-caption{font-size:13px;color:var(--ink);margin:14px 0 2px;font-weight:600;}
+.pv-notes{font-size:11px;color:var(--ink-dim);line-height:1.55;margin-top:6px;}
+.pv-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
 .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px;}
 .hidden{display:none!important;}
 .viz-grid{display:grid;grid-template-columns:1fr;gap:20px;margin-bottom:16px;}
@@ -1026,6 +1039,65 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     </div>
 
+    <details id="pivotDropdown" style="margin-top:20px;margin-bottom:8px;">
+      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:14px;">▶</span>
+        ▦ Pivot table — summarise your data by category
+      </summary>
+      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
+        <p class="hint" style="margin:0 0 14px;">Group your rows by one or two fields, optionally spread another field across the columns, and let AutoDS add up (or average, count…) a number for every combination. Example: <em>Rows</em> = region, <em>Columns</em> = product, <em>Values</em> = revenue, <em>Calculate</em> = Sum.</p>
+        <div class="pred-row">
+          <div class="pred-field"><label>Rows</label><select id="pvRow1"></select></div>
+          <div class="pred-field"><label>Then by (optional)</label><select id="pvRow2"></select></div>
+          <div class="pred-field"><label>Columns (optional)</label><select id="pvCol"></select></div>
+          <div class="pred-field"><label>Values</label><select id="pvVal1"></select></div>
+          <div class="pred-field"><label>Second value (optional)</label><select id="pvVal2"></select></div>
+        </div>
+        <div class="pred-row" style="margin-top:10px;">
+          <div class="pred-field"><label>Calculate</label>
+            <select id="pvAgg">
+              <option value="sum">Sum</option><option value="mean">Average</option><option value="median">Median</option>
+              <option value="min">Minimum</option><option value="max">Maximum</option>
+              <option value="count">Count (non-blank)</option><option value="nunique">Distinct count</option><option value="std">Std. deviation</option>
+            </select>
+          </div>
+          <div class="pred-field"><label>Show as</label>
+            <select id="pvPercent">
+              <option value="none">Numbers</option><option value="of_total">% of grand total</option>
+              <option value="of_row">% of each row</option><option value="of_col">% of each column</option>
+            </select>
+          </div>
+          <div class="pred-field"><label>Group dates by</label>
+            <select id="pvDate">
+              <option value="">Leave as is</option><option value="year">Year</option><option value="quarter">Quarter</option>
+              <option value="month">Month</option><option value="weekday">Weekday</option>
+            </select>
+          </div>
+          <div class="pred-field"><label>Sort</label>
+            <select id="pvSort">
+              <option value="label_asc">Labels A → Z</option><option value="label_desc">Labels Z → A</option>
+              <option value="value_desc">Biggest first</option><option value="value_asc">Smallest first</option>
+            </select>
+          </div>
+          <div class="pred-field"><button id="pvBtn" style="margin-top:13px;">Build pivot</button></div>
+        </div>
+        <div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap;">
+          <label class="inline-option"><input type="checkbox" id="pvTotals" checked> Show totals</label>
+          <label class="inline-option"><input type="checkbox" id="pvHeat" checked> Colour scale</label>
+        </div>
+        <div id="pvError" class="error-box hidden" style="margin-top:10px;"></div>
+        <div id="pvResult" class="hidden">
+          <div class="pv-caption" id="pvCaption"></div>
+          <div class="pv-notes" id="pvNotes"></div>
+          <div class="pv-wrap" id="pvTableWrap"></div>
+          <div class="pv-actions">
+            <button class="sec" id="pvCopyBtn">Copy table</button>
+            <button class="sec" id="pvCsvBtn">Download CSV</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
     <details id="simDropdown" style="margin-top:20px;margin-bottom:18px;">
       <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
         <span id="simDropdownArrow" style="font-size:14px;transition:transform .2s;">▶</span>
@@ -1773,7 +1845,7 @@ function clearAnalysisUI(){
   ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName"].forEach(id => {
     if($(id)) $(id).value = "";
   });
-  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","pcaColorCol","predictSourceSelect","simOutcome","simDriver"].forEach(id => {
+  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2"].forEach(id => {
     if($(id)) $(id).innerHTML = "";
   });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
@@ -2789,6 +2861,148 @@ $("simBtn").addEventListener("click", async () => {
   }
 });
 
+// ---------- PIVOT TABLE ----------
+let pivotLast = null;
+
+function populatePivotSelects(){
+  if(!$("pvRow1")) return;
+  const cols = (typeof allColumns !== "undefined" && allColumns) ? allColumns : [];
+  const numeric = new Set(numericColumnNames());
+  const opt = c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`;
+  const none = `<option value="">None</option>`;
+  $("pvRow1").innerHTML = cols.map(opt).join("");
+  $("pvRow2").innerHTML = none + cols.map(opt).join("");
+  $("pvCol").innerHTML  = none + cols.map(opt).join("");
+  $("pvVal1").innerHTML = `<option value="">Count rows</option>` + cols.map(opt).join("");
+  $("pvVal2").innerHTML = none + cols.map(opt).join("");
+  // Sensible defaults: first non-numeric column for Rows, first numeric one for Values
+  const firstText = cols.find(c => !numeric.has(c)) || cols[0];
+  if(firstText) $("pvRow1").value = firstText;
+}
+
+function _pvFmt(v, isPercent){
+  if(v === null || v === undefined) return "";
+  if(typeof v === "number"){
+    return v.toLocaleString(undefined, {maximumFractionDigits: 6}) + (isPercent ? "%" : "");
+  }
+  return escapeHtml(String(v));
+}
+
+function renderPivot(data){
+  pivotLast = data;
+  $("pvCaption").textContent = data.caption;
+  $("pvNotes").innerHTML = (data.notes || []).map(n => `<div>• ${escapeHtml(n)}</div>`).join("");
+
+  const nRowFields = data.row_fields.length;
+  const heat = $("pvHeat").checked;
+  let max = 0;
+  data.rows.forEach(r => {
+    if(r.is_total) return;
+    r.cells.forEach((v, i) => {
+      if(data.headers[i] === "Total") return;
+      if(typeof v === "number") max = Math.max(max, Math.abs(v));
+    });
+  });
+
+  let head = "";
+  if(data.column_fields.length){
+    head += `<tr><th colspan="${nRowFields}"></th><th class="pv-span" colspan="${data.headers.length}">across ${escapeHtml(data.column_fields.join(" / "))}</th></tr>`;
+  }
+  head += `<tr>${data.row_fields.map(f => `<th class="pv-lbl">${escapeHtml(f)}</th>`).join("")}${data.headers.map(h => `<th>${escapeHtml(h)}</th>`).join("")}</tr>`;
+
+  let prev = null;
+  const body = data.rows.map(r => {
+    const labelCells = r.labels.map((lab, level) => {
+      // show a group label once, not on every repeated row (except the Total row)
+      const repeated = prev && !r.is_total && r.labels.slice(0, level + 1).every((x, i) => x === prev[i]);
+      return `<th>${repeated ? "" : escapeHtml(lab)}</th>`;
+    }).join("");
+    prev = r.labels;
+    const cells = r.cells.map((v, i) => {
+      const isTotalCol = data.headers[i] === "Total";
+      let style = "";
+      if(heat && max > 0 && !r.is_total && !isTotalCol && typeof v === "number"){
+        style = ` style="background:rgba(255,182,39,${(Math.abs(v) / max * 0.45).toFixed(3)})"`;
+      }
+      return `<td${isTotalCol ? ' class="pv-tcol"' : ""}${style}>${_pvFmt(v, data.is_percent)}</td>`;
+    }).join("");
+    return `<tr${r.is_total ? ' class="pv-total"' : ""}>${labelCells}${cells}</tr>`;
+  }).join("");
+
+  $("pvTableWrap").innerHTML = `<table class="pv-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  show("pvResult");
+}
+
+function _pvRowsAsMatrix(){
+  if(!pivotLast) return [];
+  const d = pivotLast;
+  const out = [[...d.row_fields, ...d.headers]];
+  d.rows.forEach(r => out.push([...r.labels, ...r.cells.map(v => v === null ? "" : v)]));
+  return out;
+}
+
+$("pvBtn").addEventListener("click", async () => {
+  hide("pvError");
+  const pick = id => $(id).value;
+  const body = {
+    rows: [pick("pvRow1"), pick("pvRow2")].filter(Boolean),
+    columns: [pick("pvCol")].filter(Boolean),
+    values: [...new Set([pick("pvVal1"), pick("pvVal2")].filter(Boolean))],
+    aggregate: pick("pvAgg"),
+    percent: pick("pvPercent"),
+    date_by: pick("pvDate") || null,
+    totals: $("pvTotals").checked,
+  };
+  const sort = pick("pvSort").split("_");
+  body.sort_by = sort[0];
+  body.descending = sort[1] === "desc";
+  $("pvBtn").disabled = true;
+  $("pvBtn").textContent = "Building…";
+  try{
+    const res = await fetch(`${API}/pivot/${getSid()}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if(!res.ok){
+      const detail = Array.isArray(data.detail) ? "Please check the fields you picked." : data.detail;
+      throw new Error(detail || "Couldn't build the pivot table.");
+    }
+    renderPivot(data);
+  }catch(err){
+    $("pvError").textContent = err.message;
+    show("pvError");
+    hide("pvResult");
+  }finally{
+    $("pvBtn").disabled = false;
+    $("pvBtn").textContent = "Build pivot";
+  }
+});
+
+// Re-shade when the colour-scale box is toggled, without another server call
+$("pvHeat").addEventListener("change", () => { if(pivotLast) renderPivot(pivotLast); });
+
+$("pvCopyBtn").addEventListener("click", async () => {
+  const text = _pvRowsAsMatrix().map(r => r.join("\t")).join("\n");
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(_){
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand("copy"); }catch(__){}
+    ta.remove();
+  }
+  const b = $("pvCopyBtn"); b.textContent = "Copied ✓";
+  setTimeout(() => { b.textContent = "Copy table"; }, 1400);
+});
+
+$("pvCsvBtn").addEventListener("click", () => {
+  const q = v => { const t = String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const csv = _pvRowsAsMatrix().map(r => r.map(q).join(",")).join("\n");
+  downloadTextFile(csv, "pivot_table.csv", "text/csv");
+});
+
 // ---------- VISUALISE ----------
 function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
@@ -3004,6 +3218,7 @@ async function runDatabaseAnalysis(){
 }
 
 function populateSimulationSelects(){
+  populatePivotSelects();
   const numeric = numericColumnNames();
   const opts = numeric.map(c => `<option value="${c}">${c}</option>`).join("");
   if($("simOutcome")) $("simOutcome").innerHTML = opts;

@@ -53,7 +53,7 @@ CLEAN_KEYWORDS = ASSISTANT_KEYWORDS | {
     "create", "delete", "drop",
     "duplicates", "emails", "export", "extract", "fill", "first", "float", "greater",
     "insert", "integer", "keep", "lowercase", "make", "missing", "move", "multiply",
-    "named", "number", "numbers",
+    "named", "numbers",
     "outliers", "punctuation", "push", "rename", "replace", "reset", "rows",
     "product", "send", "separate", "separator", "decimal", "comma", "dot", "period",
     "round", "rounding", "decimals", "decimal", "titled",

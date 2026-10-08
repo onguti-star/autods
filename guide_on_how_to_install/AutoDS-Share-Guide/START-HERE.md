@@ -27,10 +27,13 @@ Use this if there is no download for your system (for example an Intel Mac), or 
 want the latest code. You need **Python 3.12** (3.10 to 3.13 also work).
 
 1. Unzip the project folder you were sent.
-2. Copy the helper for your system **into the project folder, next to `desktop.py`**:
-   - Windows: `windows/run-autods-windows.bat`
-   - macOS: `macos/run-autods-mac.command`
-   - Linux: `linux/run-autods-linux.sh`
+2. Find the helper for your system **in the project folder, next to `desktop.py`**:
+   - Windows: `run-autods-windows.bat`
+   - macOS: `run-autods-mac.command`
+   - Linux: `run-autods-linux.sh`
+
+   (If a helper is missing, copy it from this guide's `windows/`, `macos/` or `linux/`
+   folder into the project folder.)
 3. Run it. The first run creates a private environment and installs the packages
    (about 5 to 10 minutes and roughly 2 GB of disk). Later runs start in seconds.
 
