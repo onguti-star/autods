@@ -432,6 +432,35 @@ def _parse_value_token(raw: str):
     return raw
 
 
+# Shared pieces for the "remove row N" cleaning command. Row numbers are
+# 1-based (row 1 = first row), matching the "Row #" column shown in tables.
+_ROW_NUM_ITEM_RE = r"(?:rows?\s*)?#?\s*\d+"
+_ROW_NUM_SEP_RE = r"(?:\s*(?:,|;|&|/)\s*|\s+(?:and|or)\s+|\s*(?:to|through|-)\s*)"
+_ROW_NUM_LIST_RE = rf"{_ROW_NUM_ITEM_RE}(?:{_ROW_NUM_SEP_RE}{_ROW_NUM_ITEM_RE})*"
+
+
+def _parse_row_number_list(spec: str) -> list[int]:
+    """Turn a phrase like '3, 7 and 12' or '2 to 5' into a list of row numbers.
+    Ranges ('2 to 5', '2 through 5', '2-5') are expanded. Raises ValueError on
+    malformed input so callers can fall through to the other parsers."""
+    tokens = re.findall(r"\d+|\bto\b|\bthrough\b|-", spec)
+    nums: list[int] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok.isdigit():
+            raise ValueError(f"range operator '{tok}' has no starting number")
+        n = int(tok)
+        if i + 2 < len(tokens) and tokens[i + 1] in ("to", "through", "-") and tokens[i + 2].isdigit():
+            a, b = sorted((n, int(tokens[i + 2])))
+            nums.extend(range(a, b + 1))
+            i += 3
+        else:
+            nums.append(n)
+            i += 1
+    return nums
+
+
 HELP_TEXT = (
     "I understand plain-English cleaning commands. Try things like:\n"
     "• remove duplicates\n"
@@ -466,6 +495,7 @@ HELP_TEXT = (
     "• uppercase country_code\n"
     "• remove outliers in salary\n"
     "• remove rows where status is cancelled\n"
+    "• remove row 5  (deletes by row number counting from 1; also: remove rows 3, 7 and 12 / remove rows 2 to 5)\n"
     "• keep only rows where country is Kenya\n"
     "• check distinct status values and counts\n"
     "• show default rate by grade\n"
@@ -1055,6 +1085,36 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             val = _parse_value_token(strategy_raw)
         new_df[col] = new_df[col].fillna(val)
         return new_df, f"Filled {n_missing:,} missing value(s) in '{col}' with {_fmt(val)}."
+
+    # ---- drop rows by row number (1-based, matching the 'Row #' column in tables) ----
+    # "remove row 5" / "delete row number 4" / "drop rows 3, 7 and 12" / "remove rows 2 to 5"
+    _row_num_m = re.search(
+        rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?rows?\s*(?:numbers?|nums?|nos?\.?|#)?\s*"
+        rf"({_ROW_NUM_LIST_RE})"
+        rf"(?:\s+(?:from|out\s+of|in)\s+(?:the\s+)?(?:dataset|data|table|sheet))?"
+        rf"(?=[\s.,;:!?]*$)",
+        ql,
+    )
+    if _row_num_m:
+        try:
+            row_numbers = _parse_row_number_list(_row_num_m.group(1))
+        except ValueError:
+            row_numbers = []
+        if row_numbers:
+            total = len(df)
+            out_of_range = sorted({n for n in row_numbers if n < 1 or n > total})
+            if out_of_range:
+                return df, (
+                    f"Row number(s) {', '.join(str(n) for n in out_of_range)} "
+                    f"{'is' if len(out_of_range) == 1 else 'are'} out of range — the dataset "
+                    f"has {total:,} row(s), numbered from 1. Nothing removed."
+                )
+            targets = sorted(set(row_numbers))
+            drop_positions = {n - 1 for n in targets}
+            new_df = df.iloc[[i for i in range(total) if i not in drop_positions]].reset_index(drop=True)
+            if len(targets) == 1:
+                return new_df, f"Removed row {targets[0]}."
+            return new_df, f"Removed rows {', '.join(str(n) for n in targets)}."
 
     # ---- drop rows where col is missing ----
     m = re.search(rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+is\s+(?:missing|null|na|empty)\b", ql) or \
