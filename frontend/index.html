@@ -1092,6 +1092,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="pv-wrap" id="pvTableWrap"></div>
           <div class="pv-actions">
             <button class="sec" id="pvCopyBtn" title="Copies as a real table when pasted into Word, LibreOffice, Docs, Slack, etc.">Copy table</button>
+            <button class="sec" id="pvNotesBtn" title="Adds a real table to this dataset's Notes (shows as a table with the preview toggle on)">📝 Add to notes</button>
             <button class="sec" id="pvCsvBtn">Download CSV</button>
           </div>
         </div>
@@ -2983,14 +2984,12 @@ $("pvBtn").addEventListener("click", async () => {
 // Re-shade when the colour-scale box is toggled, without another server call
 $("pvHeat").addEventListener("change", () => { if(pivotLast) renderPivot(pivotLast); });
 
-$("pvCopyBtn").addEventListener("click", async () => {
+// Same {columns, rows} shape (object rows keyed by column name) the rest of
+// the app's tables use. Shared by the "Copy table" and "Add to notes" buttons
+// below, so both always reflect exactly what's currently on screen.
+function _pvTableObj(){
   const matrix = _pvRowsAsMatrix();
-  if(!matrix.length) return;
-  const b = $("pvCopyBtn");
-  // Same {columns, rows} shape (object rows keyed by column name) the rest of
-  // the app's tables use, so this copies BOTH a real HTML table — which pastes
-  // as a formatted table into Word, LibreOffice Writer and Google Docs — and
-  // tab-separated text, which pastes as separate columns into Excel/Calc.
+  if(!matrix.length) return null;
   const seen = {};
   const columns = matrix[0].map(c => {
     let name = String(c);
@@ -3002,15 +3001,42 @@ $("pvCopyBtn").addEventListener("click", async () => {
     Object.fromEntries(columns.map((c, i) => [c, r[i]]))
   );
   const tsv = matrix.map(r => r.join("\t")).join("\n");
+  return {columns, rows, tsv};
+}
+
+$("pvCopyBtn").addEventListener("click", async () => {
+  const t = _pvTableObj();
+  if(!t) return;
+  const b = $("pvCopyBtn");
+  // Copies BOTH a real HTML table — which pastes as a formatted table into
+  // Word, LibreOffice Writer and Google Docs — and tab-separated text, which
+  // pastes as separate columns into Excel/Calc.
   const result = await copyTableToClipboard(
-    {columns, rows},
+    {columns: t.columns, rows: t.rows},
     pivotLast ? pivotLast.caption : "",
-    tsv
+    t.tsv
   );
   b.textContent = result === true ? "Copied ✓"
     : result === "plain-only" ? "Copied (text only) ✓"
     : "Copy failed";
   setTimeout(() => { b.textContent = "Copy table"; }, 1400);
+});
+
+// Appends the pivot as a real table into this dataset's own Notes (markdown
+// under the hood — renderNotesMarkup()/_render_notes_html() turn it into an
+// actual <table> wherever Notes are previewed or exported), instead of the
+// plain tab-separated values a clipboard paste gives you in a plain-text box.
+$("pvNotesBtn").addEventListener("click", async () => {
+  const t = _pvTableObj();
+  if(!t) return;
+  const b = $("pvNotesBtn");
+  b.disabled = true;
+  const result = await appendTableToNotes({columns: t.columns, rows: t.rows}, pivotLast ? pivotLast.caption : "");
+  b.textContent = result === true ? "✓ Added to notes"
+    : result === "local" ? "✓ Added (offline)"
+    : "Load a dataset first";
+  b.disabled = false;
+  setTimeout(() => { b.textContent = "📝 Add to notes"; }, 1800);
 });
 
 $("pvCsvBtn").addEventListener("click", () => {
