@@ -1091,7 +1091,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="pv-notes" id="pvNotes"></div>
           <div class="pv-wrap" id="pvTableWrap"></div>
           <div class="pv-actions">
-            <button class="sec" id="pvCopyBtn">Copy table</button>
+            <button class="sec" id="pvCopyBtn" title="Copies as a real table when pasted into Word, LibreOffice, Docs, Slack, etc.">Copy table</button>
             <button class="sec" id="pvCsvBtn">Download CSV</button>
           </div>
         </div>
@@ -2984,16 +2984,32 @@ $("pvBtn").addEventListener("click", async () => {
 $("pvHeat").addEventListener("change", () => { if(pivotLast) renderPivot(pivotLast); });
 
 $("pvCopyBtn").addEventListener("click", async () => {
-  const text = _pvRowsAsMatrix().map(r => r.join("\t")).join("\n");
-  try{
-    await navigator.clipboard.writeText(text);
-  }catch(_){
-    const ta = document.createElement("textarea");
-    ta.value = text; document.body.appendChild(ta); ta.select();
-    try{ document.execCommand("copy"); }catch(__){}
-    ta.remove();
-  }
-  const b = $("pvCopyBtn"); b.textContent = "Copied ✓";
+  const matrix = _pvRowsAsMatrix();
+  if(!matrix.length) return;
+  const b = $("pvCopyBtn");
+  // Same {columns, rows} shape (object rows keyed by column name) the rest of
+  // the app's tables use, so this copies BOTH a real HTML table — which pastes
+  // as a formatted table into Word, LibreOffice Writer and Google Docs — and
+  // tab-separated text, which pastes as separate columns into Excel/Calc.
+  const seen = {};
+  const columns = matrix[0].map(c => {
+    let name = String(c);
+    if(name in seen){ seen[name] += 1; name = `${name} (${seen[name]})`; }
+    else { seen[name] = 1; }
+    return name;
+  });
+  const rows = matrix.slice(1).map(r =>
+    Object.fromEntries(columns.map((c, i) => [c, r[i]]))
+  );
+  const tsv = matrix.map(r => r.join("\t")).join("\n");
+  const result = await copyTableToClipboard(
+    {columns, rows},
+    pivotLast ? pivotLast.caption : "",
+    tsv
+  );
+  b.textContent = result === true ? "Copied ✓"
+    : result === "plain-only" ? "Copied (text only) ✓"
+    : "Copy failed";
   setTimeout(() => { b.textContent = "Copy table"; }, 1400);
 });
 
@@ -6428,12 +6444,14 @@ function tableToHtml(table, title){
 window.tableToHtml = tableToHtml;
 
 // Copies a table to the OS clipboard as BOTH a real HTML table and a
-// markdown plain-text fallback, so it pastes as an actual table into
-// rich-text apps (Word, LibreOffice, Docs, Slack, email) via the HTML
-// version, and as a table Notes/the downloaded report can also render
-// anywhere that only accepts plain text. Returns true/false/"plain-only".
-async function copyTableToClipboard(table, title){
-  const plain = tableToMarkdown(table, title);
+// plain-text fallback (markdown by default; pass `plain` to override — e.g.
+// tab-separated text so Excel/Calc paste as separate columns), so it pastes
+// as an actual table into rich-text apps (Word, LibreOffice, Docs, Slack,
+// email) via the HTML version, and as a table Notes/the downloaded report
+// can also render anywhere that only accepts plain text.
+// Returns true/false/"plain-only".
+async function copyTableToClipboard(table, title, plain){
+  if(typeof plain !== "string") plain = tableToMarkdown(table, title);
   const html = tableToHtml(table, title);
   if(navigator.clipboard && window.ClipboardItem){
     try{
