@@ -147,6 +147,56 @@ def _patch_qt_downloads() -> None:
     wq.BrowserView.on_download_requested = on_download_requested
 
 
+def _patch_qt_feature_permissions() -> None:
+    """Answer Qt's feature-permission requests with real enums, never raw ints.
+
+    pywebview 6.2's handler calls setFeaturePermission(url, feature, 1|2), but
+    PyQt6's setFeaturePermission() takes a PermissionPolicy *enum* and raises
+    TypeError on a plain int -- and PyQt6 ABORTS the process when an exception
+    escapes a Qt slot. Qt emits featurePermissionRequested the moment a page
+    touches the clipboard, so the pivot table's "Copy table" button was killing
+    the native window process with SIGABRT; the launcher's watchdog then saw no
+    pages left and shut the whole app down ("Window closed -- shutting down.").
+
+    Graft the same handler with proper enums: grant media (as pywebview did)
+    plus clipboard -- which the copy button needs -- deny everything else, and
+    never let an answer raise, so no permission request can take the window
+    down again.
+    """
+    try:
+        from webview.platforms import qt as wq
+        from qtpy.QtWebEngineWidgets import QWebEnginePage
+    except Exception:
+        return
+    web_page = getattr(getattr(wq, "BrowserView", None), "WebPage", None)
+    if web_page is None or not hasattr(web_page, "onFeaturePermissionRequested"):
+        return
+    try:
+        granted = QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
+        denied = QWebEnginePage.PermissionPolicy.PermissionDeniedByUser
+        feature_enum = QWebEnginePage.Feature
+    except AttributeError:
+        return  # unexpected Qt flavour -- leave pywebview's own handler alone
+    grant_features = {
+        f for f in (
+            getattr(feature_enum, "MediaAudioCapture", None),
+            getattr(feature_enum, "MediaVideoCapture", None),
+            getattr(feature_enum, "MediaAudioVideoCapture", None),
+            getattr(feature_enum, "ClipboardReadWrite", None),
+        )
+        if f is not None
+    }
+
+    def on_feature_permission_requested(self, url, feature):
+        try:
+            policy = granted if feature in grant_features else denied
+            self.setFeaturePermission(url, feature, policy)
+        except Exception:
+            pass  # a permission answer must never be able to crash the window
+
+    web_page.onFeaturePermissionRequested = on_feature_permission_requested
+
+
 def _set_linux_app_identity(icon_path: str) -> None:
     """Without this, GNOME/KDE show a generic icon (often a settings-like gear)
     for this window: they can only show the AutoDS icon in the taskbar, dock and
@@ -182,6 +232,7 @@ def run_window(url: str) -> int:
     import webview
     webview.settings["ALLOW_DOWNLOADS"] = True            # CSV / Excel / report / model exports
     _patch_qt_downloads()
+    _patch_qt_feature_permissions()
     webview.create_window(
         "AutoDS", url, width=1440, height=900, min_size=(980, 640),
         text_select=True,   # pywebview disables text selection (and so copy) by default
