@@ -583,6 +583,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="src-tab" onclick="switchSrc(this,'srcUrl')">🌐 URL</div>
       <div class="src-tab" onclick="switchSrc(this,'srcPaste')">📋 Paste</div>
       <div class="src-tab" onclick="switchSrc(this,'srcDb')">🗄 Database</div>
+      <div class="src-tab" onclick="switchSrc(this,'srcMerge')">🔗 Merge</div>
     </div>
 
     <!-- File -->
@@ -687,6 +688,46 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <textarea id="dbQuery" rows="3" placeholder="SELECT * FROM orders LIMIT 5000"></textarea>
       </div>
       <div class="actions"><button onclick="uploadDb()">Run query</button></div>
+    </div>
+
+    <!-- Merge -->
+    <div class="src-panel" id="srcMerge">
+      <p class="hint">Join two datasets you've already loaded into separate tabs — like a SQL join or a VLOOKUP, by matching key column(s) on each side.</p>
+      <div class="pred-row" style="margin-bottom:8px;">
+        <div class="pred-field" style="flex:1;min-width:220px;">
+          <label>Left dataset</label>
+          <select id="mergeLeftDs" onchange="onMergeDatasetsChanged()"></select>
+        </div>
+        <div class="pred-field" style="flex:1;min-width:220px;">
+          <label>Right dataset</label>
+          <select id="mergeRightDs" onchange="onMergeDatasetsChanged()"></select>
+        </div>
+        <div class="pred-field">
+          <label>Join type</label>
+          <select id="mergeHow">
+            <option value="inner">Inner (only matching rows)</option>
+            <option value="left">Left (keep all left rows)</option>
+            <option value="right">Right (keep all right rows)</option>
+            <option value="outer">Outer (keep all rows, both sides)</option>
+          </select>
+        </div>
+      </div>
+      <div class="pred-row" style="margin-bottom:8px;">
+        <div class="pred-field" style="flex:1;min-width:220px;">
+          <label>Left join column</label>
+          <select id="mergeLeftOn"></select>
+        </div>
+        <div class="pred-field" style="flex:1;min-width:220px;">
+          <label>Right join column</label>
+          <select id="mergeRightOn"></select>
+        </div>
+        <div class="pred-field">
+          <label>New dataset name (optional)</label>
+          <input type="text" id="mergeName" placeholder="merged_data">
+        </div>
+      </div>
+      <p class="hint" id="mergeSuggestHint" style="display:none;"></p>
+      <div class="actions"><button onclick="mergeDatasets()">Merge datasets</button></div>
     </div>
 
     <div id="uploadStatus"></div>
@@ -1774,6 +1815,7 @@ function switchSrc(tab, panelId){
   document.querySelectorAll(".src-panel").forEach(p => p.classList.remove("active"));
   tab.classList.add("active");
   $(panelId).classList.add("active");
+  if(panelId === "srcMerge") populateMergeDsSelects();
 }
 
 // ---------- DATASET TABS ----------
@@ -2191,6 +2233,82 @@ async function uploadPaste(){
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Failed to parse");
     _onUploaded(data);
+  }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// ---------- MERGE / JOIN DATASETS ----------
+function populateMergeDsSelects(){
+  const loaded = datasets.filter(d => d.sessionId);
+  const leftSel = $("mergeLeftDs"), rightSel = $("mergeRightDs");
+  if(loaded.length < 2){
+    leftSel.innerHTML = rightSel.innerHTML = `<option value="">Load at least 2 datasets first</option>`;
+    $("mergeLeftOn").innerHTML = $("mergeRightOn").innerHTML = "";
+    return;
+  }
+  const opts = loaded.map(d => `<option value="${d.sessionId}">${d.name}</option>`).join("");
+  leftSel.innerHTML = opts;
+  rightSel.innerHTML = opts;
+  // Default to two different tabs if possible
+  if(loaded.length > 1) rightSel.selectedIndex = 1;
+  onMergeDatasetsChanged();
+}
+
+async function onMergeDatasetsChanged(){
+  const leftId = $("mergeLeftDs").value, rightId = $("mergeRightDs").value;
+  const leftOnSel = $("mergeLeftOn"), rightOnSel = $("mergeRightOn"), hint = $("mergeSuggestHint");
+  if(!leftId || !rightId){ leftOnSel.innerHTML = rightOnSel.innerHTML = ""; return; }
+  if(leftId === rightId){
+    hint.style.display = "block";
+    hint.textContent = "Pick two different datasets to merge.";
+    leftOnSel.innerHTML = rightOnSel.innerHTML = "";
+    return;
+  }
+  try{
+    const res = await fetch(`${API}/merge_columns?left_session_id=${encodeURIComponent(leftId)}&right_session_id=${encodeURIComponent(rightId)}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not load columns");
+    leftOnSel.innerHTML = data.left_columns.map(c => `<option value="${c}">${c}</option>`).join("");
+    rightOnSel.innerHTML = data.right_columns.map(c => `<option value="${c}">${c}</option>`).join("");
+    if(data.suggested_keys && data.suggested_keys.length){
+      const key = data.suggested_keys[0];
+      leftOnSel.value = key; rightOnSel.value = key;
+      hint.style.display = "block";
+      hint.textContent = `Matching column name found: "${key}" (pre-selected on both sides). Change either dropdown if that's not the right key.`;
+    } else {
+      hint.style.display = "block";
+      hint.textContent = "No column with the same name on both sides — pick the key columns manually.";
+    }
+  }catch(err){
+    hint.style.display = "block";
+    hint.textContent = err.message;
+  }
+}
+
+async function mergeDatasets(){
+  const left_session_id = $("mergeLeftDs").value, right_session_id = $("mergeRightDs").value;
+  const left_on = $("mergeLeftOn").value, right_on = $("mergeRightOn").value;
+  if(!left_session_id || !right_session_id){ alert("Choose two datasets to merge."); return; }
+  if(left_session_id === right_session_id){ alert("Choose two different datasets."); return; }
+  if(!left_on || !right_on){ alert("Choose a join column on each side."); return; }
+  $("uploadStatus").innerHTML = `<p class="loading">Merging datasets…</p>`;
+  try{
+    const res = await fetch(`${API}/merge`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        left_session_id, right_session_id,
+        left_on: [left_on], right_on: [right_on],
+        how: $("mergeHow").value,
+        name: $("mergeName").value.trim(),
+      })});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Merge failed");
+    // Land the merged result in a brand-new dataset tab rather than overwriting either source tab
+    const id = "ds_" + Date.now();
+    datasets.push({id, name: data.filename, sessionId: data.session_id});
+    activeDs = id;
+    dsState[id] = {};
+    renderDsTabs();
+    _onUploaded(data);
+    $("uploadStatus").innerHTML = `<p style="color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;">✓ Merged into a new dataset: ${data.matched_rows.toLocaleString()} rows × ${data.shape.columns} columns</p>`;
   }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
 }
 

@@ -129,6 +129,56 @@ def _default_text_column(df: pd.DataFrame) -> str | None:
     return text_cols[0] if len(text_cols) == 1 else None
 
 
+def _parse_join_separator(raw: str | None) -> str:
+    """Turn the trailing '...with a space' / '...using a comma' clause of a
+    combine-columns command into the literal separator string. Defaults to a
+    single space (the common "First Last" case) when nothing was specified."""
+    if not raw:
+        return " "
+    key = raw.strip(" '\"").lower()
+    named = {
+        "space": " ", "a space": " ", "whitespace": " ", "blank": " ",
+        "comma": ",", "a comma": ",",
+        "comma and space": ", ", "comma space": ", ", "comma, space": ", ", "a comma and a space": ", ",
+        "dash": "-", "a dash": "-", "hyphen": "-", "a hyphen": "-",
+        "underscore": "_", "an underscore": "_",
+        "pipe": "|", "a pipe": "|", "bar": "|",
+        "slash": "/", "a slash": "/",
+        "tab": "\t", "a tab": "\t",
+        "newline": "\n", "a newline": "\n", "line break": "\n",
+        "nothing": "", "no separator": "", "no space": "", "none": "",
+    }
+    if key in named:
+        return named[key]
+    # Anything short and non-alphabetic (e.g. "with a ' - '") is treated as a
+    # literal separator exactly as typed, quotes stripped.
+    stripped = raw.strip(" '\"")
+    if stripped and len(stripped) <= 5 and not stripped.isalpha():
+        return stripped
+    return " "
+
+
+def _combine_columns(df: pd.DataFrame, source_cols: list, new_col: str, sep: str) -> pd.DataFrame:
+    """Join several columns' values row-by-row with `sep`, skipping any
+    missing/blank source values rather than leaving stray separators (so a
+    blank middle_name doesn't turn 'John  Smith' into a double space)."""
+    new_df = df.copy()
+
+    def combine_row(row):
+        parts = []
+        for c in source_cols:
+            v = row[c]
+            if pd.isna(v):
+                continue
+            s = str(v).strip()
+            if s:
+                parts.append(s)
+        return sep.join(parts) if parts else pd.NA
+
+    new_df[new_col] = new_df.apply(combine_row, axis=1)
+    return new_df
+
+
 def _split_first_word_columns(
     df: pd.DataFrame,
     source_col: str,
@@ -473,6 +523,9 @@ HELP_TEXT = (
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
     "• create column doubled as quantity * 2\n"
+    "• combine first_name and last_name into full_name  (joins with a space by default)\n"
+    "• merge first_name, middle_name and last_name into full_name with a comma  (any number of columns; "
+    "also: concatenate / concat / join; separators: space, comma, dash, underscore, pipe, slash, tab, nothing)\n"
     "• split first word from full_name into title and name  (also: split full_name into title and name)\n"
     "• split sub_category into category_type  (one new column for the first word; the rest "
     "stays in sub_category, e.g. 'Mountain Bike' → category_type='Mountain', sub_category='Bike')\n"
@@ -676,6 +729,54 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             msg += f" Skipped (not numeric): {', '.join(skipped)}."
         return new_df, msg
 
+
+    # ---- combine two or more columns into one new column ----
+    # Mirrors the split command below but in reverse: "combine first_name and
+    # last_name into full_name" joins each row's values with a separator
+    # (space by default; "with a comma", "using a dash", etc. override it).
+    # Must run before the split patterns since "join" below could otherwise
+    # collide with other "into"-style phrasing.
+    _combine_m = re.search(
+        r"\b(?:combine|merge|concatenate|concat|join)\s+(?:columns?\s+)?(.+?)\s+into\s+(?:a\s+)?(?:new\s+)?(?:column\s+)?(\w+)\b"
+        r"(?:\s+(?:with|using|separated\s+by)\s+(?:a\s+)?(.+))?\s*$",
+        q, re.IGNORECASE,
+    )
+    if _combine_m:
+        source_text, new_col, sep_text = _combine_m.group(1), _combine_m.group(2), _combine_m.group(3)
+        tokens = [t.strip(" '\"") for t in re.split(r"\s*,\s*|\s+and\s+", source_text) if t.strip(" '\"")]
+        source_cols, unmatched = [], []
+        for t in tokens:
+            col = _match_col(t, columns)
+            if col:
+                if col not in source_cols:
+                    source_cols.append(col)
+            else:
+                unmatched.append(t)
+        if unmatched:
+            return df, (
+                f"I couldn't find column(s) matching: {', '.join(unmatched)}. "
+                f"Available columns: {', '.join(columns)}."
+            )
+        if len(source_cols) < 2:
+            return df, (
+                "Give me at least two source columns to combine, e.g. "
+                "combine first_name and last_name into full_name."
+            )
+        if new_col in columns:
+            return df, f"'{new_col}' already exists. Choose a new column name."
+
+        sep = _parse_join_separator(sep_text)
+        new_df = _combine_columns(df, source_cols, new_col, sep)
+        sep_label = {
+            " ": "a space", ", ": "a comma + space", ",": "a comma", "": "nothing (no separator)",
+            "-": "a dash", "_": "an underscore", "|": "a pipe", "/": "a slash",
+            "\t": "a tab", "\n": "a newline",
+        }.get(sep, f"'{sep}'")
+        return new_df, (
+            f"Combined {', '.join(chr(39) + c + chr(39) for c in source_cols)} into new column "
+            f"'{new_col}' (joined with {sep_label}). The original columns are still there — "
+            f"say 'drop column {source_cols[0]}' if you want to remove one."
+        )
 
     # ---- split first word into one or two columns ----
     # Two-target form creates two brand-new columns (first word / remainder).

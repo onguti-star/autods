@@ -616,6 +616,86 @@ def upload_db(req: DbRequest):
     return _session_response(session, df)
 
 
+# ---------- Merge / join two datasets ----------
+
+class MergeRequest(BaseModel):
+    left_session_id: str = Field(min_length=1)
+    right_session_id: str = Field(min_length=1)
+    left_on: list[str] = Field(min_length=1, max_length=10)
+    right_on: list[str] = Field(min_length=1, max_length=10)
+    how: Literal["inner", "left", "right", "outer"] = "inner"
+    name: str = Field(default="", max_length=120)
+
+    @field_validator("left_on", "right_on")
+    @classmethod
+    def no_blank_keys(cls, value: list[str]) -> list[str]:
+        if any(not v.strip() for v in value):
+            raise ValueError("Join key columns cannot be blank.")
+        return value
+
+
+@app.get("/api/merge_columns")
+def merge_columns(left_session_id: str, right_session_id: str):
+    """Return each side's column list, plus names present on both sides --
+    used by the merge UI to populate key-column dropdowns and suggest matches."""
+    left = _get_session_or_404(left_session_id)
+    right = _get_session_or_404(right_session_id)
+    left_cols = list(left.df.columns)
+    right_cols = list(right.df.columns)
+    shared = [c for c in left_cols if c in right_cols]
+    return {
+        "left_columns": left_cols,
+        "right_columns": right_cols,
+        "suggested_keys": shared,
+    }
+
+
+@app.post("/api/merge")
+def merge_datasets(req: MergeRequest):
+    """Merge (join) two already-uploaded datasets into a new dataset/session,
+    mirroring pandas.merge. left_on/right_on may list several columns for a
+    composite key; they're matched positionally (left_on[i] <-> right_on[i])."""
+    if req.left_session_id == req.right_session_id:
+        raise HTTPException(400, "Choose two different datasets to merge.")
+    left = _get_session_or_404(req.left_session_id)
+    right = _get_session_or_404(req.right_session_id)
+
+    if len(req.left_on) != len(req.right_on):
+        raise HTTPException(400, "left_on and right_on must list the same number of columns.")
+
+    missing_left = [c for c in req.left_on if c not in left.df.columns]
+    missing_right = [c for c in req.right_on if c not in right.df.columns]
+    if missing_left:
+        raise HTTPException(400, f"Column(s) not found in the left dataset: {', '.join(missing_left)}")
+    if missing_right:
+        raise HTTPException(400, f"Column(s) not found in the right dataset: {', '.join(missing_right)}")
+
+    try:
+        merged = pd.merge(
+            left.df, right.df,
+            left_on=req.left_on, right_on=req.right_on,
+            how=req.how, suffixes=("_left", "_right"),
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Could not merge datasets: {e}")
+
+    if merged.empty:
+        raise HTTPException(
+            400,
+            f"The {req.how} join produced no rows. Double-check the join key(s) and join type "
+            "(e.g. an inner join needs matching values on both sides).",
+        )
+
+    _validate_dataframe_size(merged)
+    name = req.name.strip() or f"{left.filename.rsplit('.', 1)[0]}_merged_{right.filename.rsplit('.', 1)[0]}.csv"
+    if not name.lower().endswith(".csv"):
+        name += ".csv"
+    session = create_session(merged, name)
+    resp = _session_response(session, merged)
+    resp["matched_rows"] = merged.shape[0]
+    return resp
+
+
 # ---------- EDA ----------
 
 @app.get("/api/eda/{session_id}")
