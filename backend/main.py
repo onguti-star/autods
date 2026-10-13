@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import io
 import html
 import ipaddress
@@ -186,6 +187,101 @@ def _ensure_allowed_remote_url(url: str) -> str:
     return url
 
 
+# Separators we auto-detect / accept, plus friendly aliases a user (or the
+# frontend's separator dropdown) can send instead of the raw character.
+_SEP_ALIASES = {
+    "comma": ",",
+    "semicolon": ";",
+    "tab": "\t", "\\t": "\t",
+    "pipe": "|",
+    "colon": ":",
+    "space": " ",
+}
+_SEP_CANDIDATES = [",", ";", "\t", "|", ":"]
+
+
+def _normalize_sep(sep: str | None) -> str | None:
+    """Turn a user-supplied separator (raw char or friendly name like 'tab') into
+    the literal character pandas expects. Returns None if nothing was given."""
+    if sep is None:
+        return None
+    sep = sep.strip()
+    if not sep:
+        return None
+    return _SEP_ALIASES.get(sep.lower(), sep)
+
+
+def _row_match_score(sample: str, sep: str) -> tuple[int, float]:
+    """Parse `sample` with `sep` (treated as regex if it's a character class
+    like '[,;]') and report (num_columns, fraction_of_rows_with_that_width).
+
+    A low fraction means the file is "ragged" under this separator -- a sign
+    that rows don't actually share one consistent delimiter.
+    """
+    try:
+        df = pd.read_csv(
+            io.StringIO(sample), sep=sep, engine="python",
+            on_bad_lines="skip", nrows=200,
+        )
+    except Exception:
+        return (1, 0.0)
+    if df.shape[1] <= 1 or df.empty:
+        return (df.shape[1], 0.0)
+    # Re-parse keeping ragged lines (skip nothing) so we can see how many rows
+    # actually had the "right" number of fields vs. got dropped/mangled.
+    lines = [ln for ln in sample.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return (df.shape[1], 1.0)
+    header_fields = len(re.split(sep, lines[0])) if any(c in sep for c in "[](){}|") or len(sep) > 1 else lines[0].count(sep) + 1
+    body = lines[1:51]
+    if not body:
+        return (df.shape[1], 1.0)
+    matches = sum(1 for ln in body if (len(re.split(sep, ln)) if (any(c in sep for c in "[](){}|") or len(sep) > 1) else ln.count(sep) + 1) == header_fields)
+    return (df.shape[1], matches / len(body))
+
+
+def _detect_separator(contents: bytes) -> str:
+    """Guess the field separator of a delimited text file.
+
+    Tries each common candidate on a sample of the file and keeps whichever
+    yields the most columns with the most consistent row widths. If every
+    single-character candidate produces "ragged" rows (a sign the file
+    genuinely mixes delimiters -- e.g. some fields use ',' and others use ';'
+    interchangeably), falls back to a combined regex that accepts any of the
+    top candidates as a delimiter. Falls back to csv.Sniffer, then comma.
+    """
+    sample = contents[:65536].decode("utf-8", errors="replace")
+
+    scored = []  # (cols, match_fraction, sep)
+    for sep in _SEP_CANDIDATES:
+        cols, frac = _row_match_score(sample, re.escape(sep))
+        if cols > 1:
+            scored.append((cols, frac, sep))
+
+    if not scored:
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|: ")
+            return dialect.delimiter
+        except Exception:
+            return ","
+
+    scored.sort(key=lambda t: (t[1], t[0]), reverse=True)
+    best_cols, best_frac, best_sep = scored[0]
+    if best_frac >= 0.9:
+        return best_sep
+
+    # No single character gives consistent rows -- the file likely mixes
+    # delimiters. Try a regex character class over the top candidates (by
+    # column count) and keep it only if it's actually more consistent.
+    top_chars = sorted({s for _, _, s in scored[:3]})
+    combo = "[" + re.escape("".join(top_chars)) + "]"
+    combo_cols, combo_frac = _row_match_score(sample, combo)
+    if combo_cols > 1 and combo_frac > best_frac:
+        return combo
+
+    return best_sep
+
+
 def _read_csv_bytes(contents: bytes, sep: str | None = None) -> pd.DataFrame:
     kwargs = {"sep": sep} if sep else {}
     try:
@@ -280,18 +376,34 @@ def _optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _df_from_bytes(contents: bytes, name: str) -> pd.DataFrame:
+def _read_delimited(contents: bytes, sep: str) -> pd.DataFrame:
+    """pd.read_csv with the right engine: regex separators (e.g. the '[,;]'
+    combo _detect_separator can return for mixed-delimiter files) only work
+    with the python engine, which also tolerates ragged/bad lines better."""
+    needs_python = len(sep) != 1
+    return pd.read_csv(
+        io.BytesIO(contents), sep=sep,
+        engine="python" if needs_python else "c",
+        on_bad_lines="skip", encoding_errors="replace",
+    )
+
+
+def _df_from_bytes(contents: bytes, name: str, sep: str | None = None) -> pd.DataFrame:
     n = name.lower()
-    if n.endswith(".csv"):
-        for sep in [",", ";", "\t"]:
-            try:
-                df = pd.read_csv(io.BytesIO(contents), sep=sep,
-                                 on_bad_lines="skip", encoding_errors="replace")
-                if df.shape[1] > 1:
-                    return _optimize_dtypes(df)
-            except Exception:
-                continue
-        df = pd.read_csv(io.BytesIO(contents), on_bad_lines="skip")
+    if n.endswith((".csv", ".txt")):
+        # Honor an explicit separator (from the upload form or URL param) over
+        # auto-detection, so a user can fix a wrongly-guessed delimiter. A
+        # custom separator with more than one character (e.g. "[,;]") is
+        # treated as a regex -- useful for files that genuinely mix delimiters.
+        chosen_sep = _normalize_sep(sep) or _detect_separator(contents)
+        try:
+            df = _read_delimited(contents, chosen_sep)
+            if df.shape[1] > 1 or sep:
+                return _optimize_dtypes(df)
+        except Exception:
+            pass
+        # Last-resort fallback: default comma parsing.
+        df = pd.read_csv(io.BytesIO(contents), on_bad_lines="skip", encoding_errors="replace")
         return _optimize_dtypes(df)
     if n.endswith((".xlsx", ".xls")):
         df = pd.read_excel(io.BytesIO(contents))
@@ -317,8 +429,9 @@ def _df_from_bytes(contents: bytes, name: str) -> pd.DataFrame:
     if n.endswith(".json"):
         df = pd.read_json(io.BytesIO(contents))
         return _optimize_dtypes(df)
-    if n.endswith((".tsv", ".txt")):
-        df = pd.read_csv(io.BytesIO(contents), sep="\t", on_bad_lines="skip")
+    if n.endswith(".tsv"):
+        chosen_sep = _normalize_sep(sep) or "\t"
+        df = _read_delimited(contents, chosen_sep)
         return _optimize_dtypes(df)
     if n.endswith(".parquet"):
         return pd.read_parquet(io.BytesIO(contents))
@@ -351,13 +464,13 @@ def _session_response(session, df):
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), separator: str | None = Form(None)):
     name = file.filename or "data.csv"
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, f"File is too large. Maximum upload size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     try:
-        result = _df_from_bytes(contents, name)
+        result = _df_from_bytes(contents, name, sep=separator)
         df, raw_geojson = result if isinstance(result, tuple) else (result, None)
     except HTTPException:
         raise
@@ -375,6 +488,7 @@ async def upload(file: UploadFile = File(...)):
 class UrlUploadRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     name: str = Field(default="", max_length=120)
+    separator: str | None = Field(default=None, max_length=8)
 
 
 @app.post("/api/upload_url")
@@ -430,7 +544,7 @@ def upload_url(req: UrlUploadRequest):
             )
     
     try:
-        result = _df_from_bytes(contents, name)
+        result = _df_from_bytes(contents, name, sep=req.separator)
         df, raw_geojson = result if isinstance(result, tuple) else (result, None)
     except HTTPException:
         raise
@@ -455,7 +569,7 @@ class PasteRequest(BaseModel):
 def upload_paste(req: PasteRequest):
     """Accept raw pasted CSV/TSV text."""
     try:
-        sep = "\t" if req.separator in ("\\t", "\t", "tab") else req.separator
+        sep = _normalize_sep(req.separator) or ","
         df = pd.read_csv(io.StringIO(req.text.strip()), sep=sep)
     except Exception as e:
         raise HTTPException(400, f"Could not parse pasted text: {e}")

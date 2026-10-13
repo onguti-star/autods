@@ -588,11 +588,35 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <!-- File -->
     <div class="src-panel active" id="srcFile">
       <p class="hint">CSV, Excel (.xlsx), JSON, TSV, Parquet, or SQLite (.db)</p>
+      <div class="pred-row" style="margin-bottom:8px;">
+        <div class="pred-field">
+          <label>Separator (CSV/TXT only)</label>
+          <select id="fileSep" onchange="document.getElementById('fileSepCustomWrap').style.display = this.value==='custom' ? 'block' : 'none';">
+            <option value="">Auto-detect</option>
+            <option value=",">Comma (,)</option>
+            <option value=";">Semicolon (;)</option>
+            <option value="tab">Tab</option>
+            <option value="|">Pipe (|)</option>
+            <option value=":">Colon (:)</option>
+            <option value="space">Space</option>
+            <option value="custom">Custom / mixed…</option>
+          </select>
+        </div>
+        <div class="pred-field" id="fileSepCustomWrap" style="display:none;">
+          <label>Custom separator (regex)</label>
+          <input type="text" id="fileSepCustom" placeholder="e.g. [,;] for comma OR semicolon">
+        </div>
+      </div>
       <div class="dropzone" id="dropzone">
         <div class="big">Drop a file here, or click to browse</div>
         <div class="small">.csv · .xlsx · .json · .tsv · .parquet · .db</div>
         <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.json,.tsv,.txt,.parquet,.db,.sqlite,.sqlite3"/>
       </div>
+      <p class="hint" id="fileSepHint" style="display:none;margin-top:6px;">
+        Data looking wrong (everything in one column, or oddly split)? Pick the correct separator above —
+        if the file genuinely mixes delimiters (some rows use "," and others ";"), try "Custom / mixed…" with
+        a regex like <code>[,;]</code> — then <a href="#" onclick="reparseLastFile();return false;">re-parse the file</a>.
+      </p>
     </div>
 
     <!-- URL -->
@@ -607,6 +631,23 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <label>Dataset name (optional)</label>
           <input type="text" id="urlName" placeholder="my_data">
         </div>
+        <div class="pred-field">
+          <label>Separator (CSV/TXT only)</label>
+          <select id="urlSep" onchange="document.getElementById('urlSepCustomWrap').style.display = this.value==='custom' ? 'block' : 'none';">
+            <option value="">Auto-detect</option>
+            <option value=",">Comma (,)</option>
+            <option value=";">Semicolon (;)</option>
+            <option value="tab">Tab</option>
+            <option value="|">Pipe (|)</option>
+            <option value=":">Colon (:)</option>
+            <option value="space">Space</option>
+            <option value="custom">Custom / mixed…</option>
+          </select>
+        </div>
+        <div class="pred-field" id="urlSepCustomWrap" style="display:none;">
+          <label>Custom separator (regex)</label>
+          <input type="text" id="urlSepCustom" placeholder="e.g. [,;]">
+        </div>
         <div class="pred-field"><button onclick="uploadUrl()" style="margin-top:13px;">Load URL</button></div>
       </div>
     </div>
@@ -617,7 +658,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="pred-row" style="margin-bottom:8px;">
         <div class="pred-field">
           <label>Separator</label>
-          <select id="pasteSep"><option value=",">Comma (CSV)</option><option value="tab">Tab (TSV)</option><option value=";">Semicolon</option></select>
+          <select id="pasteSep"><option value=",">Comma (CSV)</option><option value="tab">Tab (TSV)</option><option value=";">Semicolon</option><option value="|">Pipe</option><option value=":">Colon</option><option value="space">Space</option></select>
         </div>
         <div class="pred-field">
           <label>Dataset name</label>
@@ -2096,15 +2137,31 @@ dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
 dropzone.addEventListener("drop", e => { e.preventDefault(); dropzone.classList.remove("drag"); if(e.dataTransfer.files.length) handleUpload(e.dataTransfer.files[0]); });
 fileInput.addEventListener("change", e => { if(e.target.files.length) handleUpload(e.target.files[0]); });
 
+let lastUploadedFile = null;
+
 async function handleUpload(file){
+  lastUploadedFile = file;
   $("uploadStatus").innerHTML = `<p class="loading">Uploading ${file.name}</p>`;
   const fd = new FormData(); fd.append("file", file);
+  let sep = $("fileSep") ? $("fileSep").value : "";
+  if(sep === "custom") sep = $("fileSepCustom").value.trim();
+  if(sep) fd.append("separator", sep);
   try{
     const res = await fetch(`${API}/upload`, {method:"POST", body:fd});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Upload failed");
     _onUploaded(data);
+    const isDelimited = /\.(csv|txt|tsv)$/i.test(file.name);
+    const hint = $("fileSepHint");
+    if(hint) hint.style.display = isDelimited ? "block" : "none";
   }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// Re-upload the last chosen file with the currently selected separator —
+// use this when the auto-detected separator produced a wrong/weird-looking table.
+function reparseLastFile(){
+  if(!lastUploadedFile){ alert("Choose a file first."); return; }
+  handleUpload(lastUploadedFile);
 }
 
 // ---------- UPLOAD: URL ----------
@@ -2112,9 +2169,11 @@ async function uploadUrl(){
   const url = $("urlInput").value.trim();
   if(!url){ alert("Please enter a URL."); return; }
   $("uploadStatus").innerHTML = `<p class="loading">Fetching ${url}</p>`;
+  let sep = $("urlSep") ? $("urlSep").value : "";
+  if(sep === "custom") sep = $("urlSepCustom").value.trim();
   try{
     const res = await fetch(`${API}/upload_url`, {method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({url, name:$("urlName").value.trim()})});
+      body:JSON.stringify({url, name:$("urlName").value.trim(), separator: sep || null})});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Failed to load URL");
     _onUploaded(data);
