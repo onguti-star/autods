@@ -7,8 +7,10 @@ pandas operation locally. If a command isn't understood, it explains what
 phrasings are supported instead of guessing.
 """
 import ast
+import json
 import operator
 import re
+import urllib.request
 
 import numpy as np
 import pandas as pd
@@ -127,6 +129,129 @@ def _only_empty_column(df: pd.DataFrame) -> str | None:
 def _default_text_column(df: pd.DataFrame) -> str | None:
     text_cols = df.select_dtypes(include=["object", "string", "category"]).columns.tolist()
     return text_cols[0] if len(text_cols) == 1 else None
+
+
+# ---- currency normalization ----
+# Multi-char prefixes checked before single-char symbols (e.g. "R$" is Brazilian
+# Real, not generic dollar + Real).
+_CURRENCY_PREFIXES = {
+    "R$": "BRL", "C$": "CAD", "A$": "AUD", "HK$": "HKD", "NT$": "TWD",
+    "US$": "USD", "NZ$": "NZD", "S$": "SGD",
+}
+_CURRENCY_SYMBOLS = {
+    "$": "USD", "£": "GBP", "€": "EUR", "¥": "JPY", "₹": "INR", "₦": "NGN",
+    "₩": "KRW", "₽": "RUB", "₺": "TRY", "₴": "UAH", "฿": "THB", "₫": "VND",
+    "₱": "PHP", "₪": "ILS", "₲": "PYG", "₵": "GHS", "₡": "CRC", "₨": "PKR",
+}
+# Spoken/written names a person might use as the *target* currency in a command
+# like "convert price to euros". Includes the bare ISO codes too.
+_CURRENCY_WORDS = {
+    "usd": "USD", "dollar": "USD", "dollars": "USD", "us dollar": "USD", "us dollars": "USD",
+    "eur": "EUR", "euro": "EUR", "euros": "EUR",
+    "gbp": "GBP", "pound": "GBP", "pounds": "GBP", "sterling": "GBP",
+    "cad": "CAD", "canadian dollar": "CAD", "canadian dollars": "CAD",
+    "aud": "AUD", "australian dollar": "AUD", "australian dollars": "AUD",
+    "inr": "INR", "rupee": "INR", "rupees": "INR",
+    "ngn": "NGN", "naira": "NGN",
+    "jpy": "JPY", "yen": "JPY",
+    "zar": "ZAR", "rand": "ZAR",
+    "cny": "CNY", "yuan": "CNY", "rmb": "CNY",
+    "chf": "CHF", "franc": "CHF", "francs": "CHF",
+    "brl": "BRL", "real": "BRL", "reais": "BRL",
+    "mxn": "MXN", "peso": "MXN", "pesos": "MXN",
+    "krw": "KRW", "won": "KRW",
+}
+# Approximate, deliberately-stale fallback rates (units of currency per 1 USD),
+# used only when a live rate lookup isn't available (e.g. no internet access
+# from the server). Good enough to unblock cleaning; not for financial reporting.
+_FALLBACK_RATES_PER_USD = {
+    "USD": 1.0, "EUR": 0.92, "GBP": 0.79, "JPY": 150.0, "CAD": 1.36, "AUD": 1.52,
+    "INR": 83.0, "NGN": 1550.0, "ZAR": 18.5, "CNY": 7.24, "CHF": 0.88, "KRW": 1330.0,
+    "BRL": 5.0, "RUB": 92.0, "TRY": 32.0, "MXN": 17.0, "HKD": 7.8, "TWD": 31.5,
+    "NZD": 1.63, "SGD": 1.34,
+}
+_KNOWN_CODES = set(_FALLBACK_RATES_PER_USD) | set(_CURRENCY_PREFIXES.values()) | set(_CURRENCY_SYMBOLS.values())
+
+
+def _fetch_live_rates() -> tuple[dict, bool]:
+    """Best-effort live FX rates (per 1 USD) from a free, keyless API. Falls
+    back to the static table (merged in for any currency it doesn't cover) if
+    the server has no internet access or the request fails for any reason."""
+    try:
+        with urllib.request.urlopen("https://api.frankfurter.app/latest?from=USD", timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        rates = dict(data.get("rates", {}))
+        rates["USD"] = 1.0
+        for code, rate in _FALLBACK_RATES_PER_USD.items():
+            rates.setdefault(code, rate)
+        return rates, True
+    except Exception:
+        return dict(_FALLBACK_RATES_PER_USD), False
+
+
+def _detect_row_currency_and_amount(raw: str) -> tuple[str | None, float | None]:
+    """Pull (ISO currency code or None, numeric amount) out of one cell, e.g.
+    '$1,200.00' -> ('USD', 1200.0), '₦1550' -> ('NGN', 1550.0), '85.50' -> (None, 85.5)."""
+    s = raw.strip().strip('"\'')
+    if not s:
+        return None, None
+
+    code = None
+    for prefix, c in _CURRENCY_PREFIXES.items():
+        if s.startswith(prefix):
+            code, s = c, s[len(prefix):]
+            break
+    if code is None:
+        for sym, c in _CURRENCY_SYMBOLS.items():
+            if s.startswith(sym) or s.endswith(sym):
+                code = c
+                s = s[len(sym):] if s.startswith(sym) else s[:-len(sym)]
+                break
+    if code is None:
+        m = re.match(r"^([A-Za-z]{3})\b", s) or re.search(r"\b([A-Za-z]{3})$", s)
+        if m and m.group(1).upper() in _KNOWN_CODES:
+            code = m.group(1).upper()
+            s = (s[:m.start()] + s[m.end():]).strip()
+
+    s = s.strip().strip(",")
+    # Thousands-comma, dot-decimal is the default assumption for a column
+    # whose "home" currency is dollars; strip thousands separators only.
+    s = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", s)
+    numeric = pd.to_numeric(s, errors="coerce")
+    if pd.isna(numeric):
+        return code, None
+    return code, float(numeric)
+
+
+def _convert_currency_column(df: pd.DataFrame, col: str, target_code: str, default_source: str = "USD"):
+    """Normalize a money column that mixes currencies into one target currency.
+    Any row without a recognizable symbol/code is assumed to already be in
+    `default_source` (the column's nominal currency)."""
+    rates, is_live = _fetch_live_rates()
+    new_df = df.copy()
+    out, detected, unparsed = [], {}, 0
+
+    for v in df[col]:
+        if pd.isna(v):
+            out.append(np.nan)
+            continue
+        code, amount = _detect_row_currency_and_amount(str(v))
+        if amount is None:
+            out.append(np.nan)
+            unparsed += 1
+            continue
+        code = code or default_source
+        detected[code] = detected.get(code, 0) + 1
+        rate_from = rates.get(code)
+        rate_to = rates.get(target_code)
+        if rate_from is None or rate_to is None:
+            out.append(np.nan)
+            unparsed += 1
+            continue
+        out.append(round((amount / rate_from) * rate_to, 2))
+
+    new_df[col] = out
+    return new_df, detected, unparsed, is_live
 
 
 def _parse_join_separator(raw: str | None) -> str:
@@ -523,6 +648,8 @@ HELP_TEXT = (
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
     "• create column doubled as quantity * 2\n"
+    "• convert price to USD  (normalizes a column mixing currencies — '$1,200', '₦1550', '85 EUR' — into one "
+    "target currency; unmarked values are assumed to already be in the column's usual currency)\n"
     "• combine first_name and last_name into full_name  (joins with a space by default)\n"
     "• merge first_name, middle_name and last_name into full_name with a comma  (any number of columns; "
     "also: concatenate / concat / join; separators: space, comma, dash, underscore, pipe, slash, tab, nothing)\n"
@@ -1129,6 +1256,44 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if skipped:
             msg += f" Skipped: {', '.join(skipped)} (already numeric or no comma-decimals found)."
         return new_df, msg
+
+    # ---- normalize a mixed-currency money column to one target currency ----
+    # e.g. "convert price to USD", "normalize the currency in total_payments to euros".
+    # Only fires when the target word is a recognized currency, so it can't
+    # collide with the generic "rename column X to Y" command below.
+    _currency_m = re.search(
+        r"\b(?:convert|normalize)\s+(?:the\s+)?(?:currency\s+(?:in|of)\s+|amounts?\s+(?:in|of)\s+)?"
+        r"(?:column\s+)?(.+?)\s+(?:column\s+)?(?:to|into)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s*$",
+        q, re.IGNORECASE,
+    )
+    if _currency_m:
+        col_text, target_word = _currency_m.group(1), _currency_m.group(2).strip().lower()
+        target_code = _CURRENCY_WORDS.get(target_word)
+        if target_code:
+            col = _match_col(col_text, columns)
+            if not col:
+                return df, f"I couldn't find a column matching '{col_text.strip()}'. Available columns: {', '.join(columns)}."
+            new_df, detected, unparsed, is_live = _convert_currency_column(df, col, target_code)
+            if not detected:
+                return df, (
+                    f"Couldn't find any parseable money values in '{col}' "
+                    "(expected something like '$1,200', '₦1550', or a plain number)."
+                )
+            detected_str = ", ".join(f"{n} row(s) in {c}" for c, n in sorted(detected.items(), key=lambda x: -x[1]))
+            msg = f"Converted '{col}' to {target_code}: {detected_str}."
+            if unparsed:
+                msg += f" {unparsed} row(s) couldn't be parsed and were left blank."
+            if not is_live:
+                msg += (
+                    " Note: couldn't reach a live exchange-rate service, so this used "
+                    "built-in approximate rates — fine for exploring the data, but re-run "
+                    "this once you have internet access if you need current rates."
+                )
+            else:
+                msg += " Rates came from a live source (frankfurter.app, ECB-based)."
+            return new_df, msg
+        # Target word wasn't a recognized currency -- fall through to other commands
+        # (e.g. this might actually be "rename column X to Y").
 
     # ---- rename column ----
     m = re.search(rf"\b{RENAME_VERB_RE}\s+(?:the\s+)?(?:column\s+)?(.+?)\s+{NAME_JOINER_RE}\s+(.+)", ql) or \
