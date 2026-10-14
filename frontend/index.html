@@ -834,6 +834,34 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
       <div class="pred-field"><button class="sec" id="changeTypeBtn" style="margin-top:13px;">Change type</button></div>
     </div>
+
+    <div class="subhead" style="margin-top:18px;">Split a column by a separator</div>
+    <p class="hint" style="margin-top:0;">Pick a column and a separator to break it into several columns — e.g. an "address" column split on commas, or a "tags" column split on "|".</p>
+    <div class="pred-row">
+      <div class="pred-field"><label>Column</label><select id="splitColSel"></select></div>
+      <div class="pred-field">
+        <label>Separator</label>
+        <select id="splitColSep" onchange="document.getElementById('splitColSepCustomWrap').style.display = this.value==='custom' ? 'block' : 'none';">
+          <option value=",">Comma (,)</option>
+          <option value=";">Semicolon (;)</option>
+          <option value="tab">Tab</option>
+          <option value="|">Pipe (|)</option>
+          <option value=":">Colon (:)</option>
+          <option value="space">Space</option>
+          <option value="custom">Custom / mixed…</option>
+        </select>
+      </div>
+      <div class="pred-field" id="splitColSepCustomWrap" style="display:none;">
+        <label>Custom separator (regex)</label>
+        <input type="text" id="splitColSepCustom" placeholder="e.g. [,;]">
+      </div>
+      <div class="pred-field"><label>New column prefix (optional)</label><input type="text" id="splitColPrefix" placeholder="defaults to column name"></div>
+      <div class="pred-field">
+        <label class="clean-option" style="margin-top:13px;"><input type="checkbox" id="splitColDrop"> Drop original column</label>
+      </div>
+      <div class="pred-field"><button class="sec" id="splitColBtn" style="margin-top:13px;">Split column</button></div>
+    </div>
+
     <div id="cleanPreviewSection" class="hidden" style="margin-top:24px;">
       <div class="subhead">Live data — current state <span id="cleanPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
       <p class="hint" style="margin-top:0;">This table updates after every cleaning operation so you can see exactly what changed.</p>
@@ -1929,7 +1957,7 @@ function clearAnalysisUI(){
   ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName"].forEach(id => {
     if($(id)) $(id).value = "";
   });
-  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2"].forEach(id => {
+  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","splitColSel","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2"].forEach(id => {
     if($(id)) $(id).innerHTML = "";
   });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
@@ -2937,6 +2965,27 @@ $("changeTypeBtn").addEventListener("click", async () => {
   }finally{ $("changeTypeBtn").disabled = false; $("changeTypeBtn").textContent = "Change type"; }
 });
 
+$("splitColBtn").addEventListener("click", async () => {
+  const column = $("splitColSel").value;
+  let separator = $("splitColSep").value;
+  if(separator === "custom") separator = $("splitColSepCustom").value.trim();
+  if(!column || !separator) return;
+  const drop_original = $("splitColDrop").checked;
+  const new_column_prefix = $("splitColPrefix").value.trim();
+  $("splitColBtn").disabled = true; $("splitColBtn").textContent = "Splitting…";
+  hide("cleanNarrative"); hide("dlBarClean");
+  try{
+    const res = await fetch(`${API}/split_column/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({column, separator, drop_original, new_column_prefix})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Split failed");
+    showCleaningResult(data);
+  }catch(err){
+    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div><p style="color:var(--bad)">${err.message}</p>`;
+    show("cleanLog");
+  }finally{ $("splitColBtn").disabled = false; $("splitColBtn").textContent = "Split column"; }
+});
+
 $("goVizBtn").addEventListener("click", () => {
   show("panelViz"); setStep(4); scrollPanel("panelViz"); loadVizSuggestions();
   if(dsState[activeDs]){ dsState[activeDs].panelVizVisible = true; autoSave(); }
@@ -3225,7 +3274,7 @@ $("pvCsvBtn").addEventListener("click", () => {
 // ---------- VISUALISE ----------
 function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
-  ["vizColX","vizColY","targetSelect","typeCol","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  ["vizColX","vizColY","targetSelect","typeCol","splitColSel","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
   if($("vizFilterCol")) $("vizFilterCol").innerHTML = `<option value="">None</option>` + opts;
   resetVizFilterValues();

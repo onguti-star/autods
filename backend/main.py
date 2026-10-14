@@ -1071,6 +1071,78 @@ def change_column_type(session_id: str, req: TypeChangeRequest):
     return profile
 
 
+class SplitColumnRequest(BaseModel):
+    column: str = Field(min_length=1)
+    separator: str = Field(min_length=1, max_length=20)
+    drop_original: bool = False
+    new_column_prefix: str = Field(default="", max_length=60)
+
+
+def _split_column_by_separator(df: pd.DataFrame, column: str, raw_sep: str,
+                                drop_original: bool, prefix: str) -> tuple[pd.DataFrame, str]:
+    """Split one text column into several new columns wherever `raw_sep`
+    appears -- the single-column equivalent of choosing a separator at
+    upload time. Accepts the same separator names/aliases (comma, tab, |, a
+    custom regex like '[,;]', ...) as the upload separator field."""
+    if column not in df.columns:
+        raise HTTPException(400, f"Column '{column}' not found.")
+    sep = _normalize_sep(raw_sep)
+    if not sep:
+        raise HTTPException(400, "Please provide a separator.")
+
+    series = df[column].astype(str)
+    is_regex = len(sep) != 1
+    try:
+        parts = series.str.split(sep, expand=True, regex=True) if is_regex \
+            else series.str.split(sep, expand=True)
+    except Exception as e:
+        raise HTTPException(400, f"Could not split '{column}': {e}")
+
+    n_parts = parts.shape[1]
+    if n_parts < 2:
+        raise HTTPException(400, f"The separator '{raw_sep}' never appears in '{column}' -- nothing to split.")
+
+    base = prefix.strip() or column
+    existing = set(df.columns)
+    new_names = []
+    for i in range(n_parts):
+        candidate = f"{base}_{i + 1}"
+        while candidate in existing or candidate in new_names:
+            candidate += "_"
+        new_names.append(candidate)
+    parts.columns = new_names
+    for c in new_names:
+        parts[c] = parts[c].str.strip()
+    parts = parts.replace({"None": pd.NA, "": pd.NA})
+
+    out = pd.concat([df, parts], axis=1)
+    if drop_original:
+        out = out.drop(columns=[column])
+
+    note = f"Split '{column}' by '{raw_sep}' into {n_parts} new column(s): {', '.join(new_names)}."
+    note += f" Original column '{column}' removed." if drop_original else f" Original column '{column}' kept."
+    return out, note
+
+
+@app.post("/api/split_column/{session_id}")
+def split_column(session_id: str, req: SplitColumnRequest):
+    session = _get_session_or_404(session_id)
+    session.snapshot_before_change()
+    session.df, log_entry = _split_column_by_separator(
+        session.df, req.column, req.separator, req.drop_original, req.new_column_prefix,
+    )
+    session.clear_current_training()
+    session.cleaning_log.append(log_entry)
+    session.save_to_disk()
+
+    profile = eda.profile_dataframe(session.df)
+    profile["cleaning_log"] = session.cleaning_log
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    return profile
+
+
 @app.post("/api/undo/{session_id}")
 def undo_last_change(session_id: str):
     session = _get_session_or_404(session_id)
