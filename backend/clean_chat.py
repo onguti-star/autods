@@ -648,6 +648,8 @@ HELP_TEXT = (
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
     "• create column doubled as quantity * 2\n"
+    "• sort by age  (ascending by default; also: sort by course descending, order by total_payments z-a, "
+    "sort by course then age — numbers sort numerically, text sorts alphabetically, automatically)\n"
     "• convert price to USD  (normalizes a column mixing currencies — '$1,200', '₦1550', '85 EUR' — into one "
     "target currency; unmarked values are assumed to already be in the column's usual currency)\n"
     "• combine first_name and last_name into full_name  (joins with a space by default)\n"
@@ -856,6 +858,52 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             msg += f" Skipped (not numeric): {', '.join(skipped)}."
         return new_df, msg
 
+
+    # ---- sort rows by one or more columns ----
+    # Numbers sort in numeric order (1, 2, 3...) and text sorts alphabetically
+    # (a-z) automatically -- pandas picks the right comparison from the
+    # column's actual data type, so no special-casing is needed here.
+    _SORT_DIR_WORDS = {
+        "asc": "asc", "ascending": "asc", "increasing": "asc", "a-z": "asc",
+        "lowest to highest": "asc", "low to high": "asc", "smallest to largest": "asc", "oldest to newest": "asc",
+        "desc": "desc", "descending": "desc", "decreasing": "desc", "z-a": "desc",
+        "highest to lowest": "desc", "high to low": "desc", "largest to smallest": "desc", "newest to oldest": "desc",
+    }
+    _sort_m = re.search(
+        r"\b(?:sort|order)\s+(?:the\s+(?:data|rows|table)\s+)?(?:by\s+)?(.+?)"
+        r"(?:\s+(asc|ascending|increasing|a-z|lowest to highest|low to high|smallest to largest|oldest to newest|"
+        r"desc|descending|decreasing|z-a|highest to lowest|high to low|largest to smallest|newest to oldest))?\s*$",
+        q, re.IGNORECASE,
+    )
+    if _sort_m:
+        col_text, dir_word = _sort_m.group(1), _sort_m.group(2)
+        tokens = [t.strip(" '\"") for t in re.split(r"\s*,\s*|\s+then\s+|\s+and\s+", col_text) if t.strip(" '\"")]
+        sort_cols, unmatched = [], []
+        for t in tokens:
+            col = _match_col(t, columns)
+            if col:
+                if col not in sort_cols:
+                    sort_cols.append(col)
+            else:
+                unmatched.append(t)
+        if not unmatched and sort_cols:
+            ascending = _SORT_DIR_WORDS.get((dir_word or "").strip().lower(), "asc") == "asc"
+            try:
+                new_df = df.sort_values(by=sort_cols, ascending=ascending, na_position="last", kind="mergesort").reset_index(drop=True)
+            except Exception as e:
+                return df, f"Could not sort by {', '.join(sort_cols)}: {e}"
+            dir_label = "descending" if not ascending else "ascending"
+            return new_df, (
+                f"Sorted by {', '.join(chr(39) + c + chr(39) for c in sort_cols)} ({dir_label}). "
+                "Blank values are placed last."
+            )
+        if unmatched:
+            return df, (
+                f"I couldn't find column(s) matching: {', '.join(unmatched)}. "
+                f"Available columns: {', '.join(columns)}."
+            )
+        # No usable column at all -- fall through rather than hard-failing, in
+        # case "sort"/"order" was part of some other phrasing entirely.
 
     # ---- combine two or more columns into one new column ----
     # Mirrors the split command below but in reverse: "combine first_name and
