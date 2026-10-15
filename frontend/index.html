@@ -584,6 +584,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="src-tab" onclick="switchSrc(this,'srcPaste')">📋 Paste</div>
       <div class="src-tab" onclick="switchSrc(this,'srcDb')">🗄 Database</div>
       <div class="src-tab" onclick="switchSrc(this,'srcMerge')">🔗 Merge</div>
+      <div class="src-tab" onclick="switchSrc(this,'srcSplit')">✂ Split Column</div>
     </div>
 
     <!-- File -->
@@ -607,7 +608,15 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <label>Custom separator (regex)</label>
           <input type="text" id="fileSepCustom" placeholder="e.g. [,;] for comma OR semicolon">
         </div>
+        <div class="pred-field">
+          <label class="clean-option" style="margin-top:13px;"><input type="checkbox" id="fileNoHeader"> No header row</label>
+        </div>
       </div>
+      <p class="hint" id="fileNoHeaderHint" style="margin-top:0;margin-bottom:8px;">
+        Check "No header row" if row 1 doesn't actually use the separator above (e.g. a comma-style header over
+        pipe-separated data) — every line, including row 1, gets split and columns are auto-named Column_1, Column_2, ...
+        so nothing silently gets dropped. You can delete row 1 afterward with "drop row 1" in Clean if it was really a header.
+      </p>
       <div class="dropzone" id="dropzone">
         <div class="big">Drop a file here, or click to browse</div>
         <div class="small">.csv · .xlsx · .json · .tsv · .parquet · .db</div>
@@ -617,6 +626,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         Data looking wrong (everything in one column, or oddly split)? Pick the correct separator above —
         if the file genuinely mixes delimiters (some rows use "," and others ";"), try "Custom / mixed…" with
         a regex like <code>[,;]</code> — then <a href="#" onclick="reparseLastFile();return false;">re-parse the file</a>.
+        Still wrong because the header row uses a different separator than the data? Try "No header row" above.
       </p>
     </div>
 
@@ -648,6 +658,9 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <div class="pred-field" id="urlSepCustomWrap" style="display:none;">
           <label>Custom separator (regex)</label>
           <input type="text" id="urlSepCustom" placeholder="e.g. [,;]">
+        </div>
+        <div class="pred-field">
+          <label class="clean-option" style="margin-top:13px;"><input type="checkbox" id="urlNoHeader"> No header row</label>
         </div>
         <div class="pred-field"><button onclick="uploadUrl()" style="margin-top:13px;">Load URL</button></div>
       </div>
@@ -728,6 +741,36 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
       <p class="hint" id="mergeSuggestHint" style="display:none;"></p>
       <div class="actions"><button onclick="mergeDatasets()">Merge datasets</button></div>
+    </div>
+
+    <!-- Split column -->
+    <div class="src-panel" id="srcSplit">
+      <p class="hint">Pick a column on your currently active dataset and a separator to break it into several columns — e.g. an "address" column split on commas, or a "tags" column split on "|". The new column count is based on the typical (most common) number of fields per row, so a few malformed rows won't balloon it.</p>
+      <div class="pred-row">
+        <div class="pred-field"><label>Column</label><select id="splitColSel"></select></div>
+        <div class="pred-field">
+          <label>Separator</label>
+          <select id="splitColSep" onchange="document.getElementById('splitColSepCustomWrap').style.display = this.value==='custom' ? 'block' : 'none';">
+            <option value=",">Comma (,)</option>
+            <option value=";">Semicolon (;)</option>
+            <option value="tab">Tab</option>
+            <option value="|">Pipe (|)</option>
+            <option value=":">Colon (:)</option>
+            <option value="space">Space</option>
+            <option value="custom">Custom / mixed…</option>
+          </select>
+        </div>
+        <div class="pred-field" id="splitColSepCustomWrap" style="display:none;">
+          <label>Custom separator (regex)</label>
+          <input type="text" id="splitColSepCustom" placeholder="e.g. [,;]">
+        </div>
+        <div class="pred-field"><label>New column prefix (optional)</label><input type="text" id="splitColPrefix" placeholder="defaults to column name"></div>
+        <div class="pred-field">
+          <label class="clean-option" style="margin-top:13px;"><input type="checkbox" id="splitColDrop"> Drop original column</label>
+        </div>
+        <div class="pred-field"><button id="splitColBtn" style="margin-top:13px;">Split column</button></div>
+      </div>
+      <p class="hint" id="splitColStatus" style="display:none;"></p>
     </div>
 
     <div id="uploadStatus"></div>
@@ -833,33 +876,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         </select>
       </div>
       <div class="pred-field"><button class="sec" id="changeTypeBtn" style="margin-top:13px;">Change type</button></div>
-    </div>
-
-    <div class="subhead" style="margin-top:18px;">Split a column by a separator</div>
-    <p class="hint" style="margin-top:0;">Pick a column and a separator to break it into several columns — e.g. an "address" column split on commas, or a "tags" column split on "|".</p>
-    <div class="pred-row">
-      <div class="pred-field"><label>Column</label><select id="splitColSel"></select></div>
-      <div class="pred-field">
-        <label>Separator</label>
-        <select id="splitColSep" onchange="document.getElementById('splitColSepCustomWrap').style.display = this.value==='custom' ? 'block' : 'none';">
-          <option value=",">Comma (,)</option>
-          <option value=";">Semicolon (;)</option>
-          <option value="tab">Tab</option>
-          <option value="|">Pipe (|)</option>
-          <option value=":">Colon (:)</option>
-          <option value="space">Space</option>
-          <option value="custom">Custom / mixed…</option>
-        </select>
-      </div>
-      <div class="pred-field" id="splitColSepCustomWrap" style="display:none;">
-        <label>Custom separator (regex)</label>
-        <input type="text" id="splitColSepCustom" placeholder="e.g. [,;]">
-      </div>
-      <div class="pred-field"><label>New column prefix (optional)</label><input type="text" id="splitColPrefix" placeholder="defaults to column name"></div>
-      <div class="pred-field">
-        <label class="clean-option" style="margin-top:13px;"><input type="checkbox" id="splitColDrop"> Drop original column</label>
-      </div>
-      <div class="pred-field"><button class="sec" id="splitColBtn" style="margin-top:13px;">Split column</button></div>
     </div>
 
     <div id="cleanPreviewSection" class="hidden" style="margin-top:24px;">
@@ -2216,6 +2232,7 @@ async function handleUpload(file){
   let sep = $("fileSep") ? $("fileSep").value : "";
   if(sep === "custom") sep = $("fileSepCustom").value.trim();
   if(sep) fd.append("separator", sep);
+  fd.append("has_header", $("fileNoHeader") && $("fileNoHeader").checked ? "false" : "true");
   try{
     const res = await fetch(`${API}/upload`, {method:"POST", body:fd});
     const data = await res.json();
@@ -2241,9 +2258,10 @@ async function uploadUrl(){
   $("uploadStatus").innerHTML = `<p class="loading">Fetching ${url}</p>`;
   let sep = $("urlSep") ? $("urlSep").value : "";
   if(sep === "custom") sep = $("urlSepCustom").value.trim();
+  const has_header = !($("urlNoHeader") && $("urlNoHeader").checked);
   try{
     const res = await fetch(`${API}/upload_url`, {method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({url, name:$("urlName").value.trim(), separator: sep || null})});
+      body:JSON.stringify({url, name:$("urlName").value.trim(), separator: sep || null, has_header})});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Failed to load URL");
     _onUploaded(data);
@@ -2966,6 +2984,13 @@ $("changeTypeBtn").addEventListener("click", async () => {
 });
 
 $("splitColBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  const status = $("splitColStatus");
+  if(!sid){
+    status.style.color = "var(--bad)"; status.textContent = "Load a dataset first (File / URL / Paste / Database above).";
+    status.style.display = "block";
+    return;
+  }
   const column = $("splitColSel").value;
   let separator = $("splitColSep").value;
   if(separator === "custom") separator = $("splitColSepCustom").value.trim();
@@ -2974,15 +2999,19 @@ $("splitColBtn").addEventListener("click", async () => {
   const new_column_prefix = $("splitColPrefix").value.trim();
   $("splitColBtn").disabled = true; $("splitColBtn").textContent = "Splitting…";
   hide("cleanNarrative"); hide("dlBarClean");
+  status.style.display = "none";
   try{
-    const res = await fetch(`${API}/split_column/${getSid()}`,{method:"POST",headers:{"Content-Type":"application/json"},
+    const res = await fetch(`${API}/split_column/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({column, separator, drop_original, new_column_prefix})});
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Split failed");
     showCleaningResult(data);
+    const lastLogLine = data.cleaning_log?.length ? data.cleaning_log[data.cleaning_log.length - 1] : "Split complete.";
+    status.style.color = "var(--good)"; status.textContent = "✓ " + lastLogLine;
+    status.style.display = "block";
   }catch(err){
-    $("cleanLog").innerHTML = `<div class="nlabel">Cleaning report</div><p style="color:var(--bad)">${err.message}</p>`;
-    show("cleanLog");
+    status.style.color = "var(--bad)"; status.textContent = err.message;
+    status.style.display = "block";
   }finally{ $("splitColBtn").disabled = false; $("splitColBtn").textContent = "Split column"; }
 });
 

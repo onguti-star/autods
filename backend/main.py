@@ -388,7 +388,33 @@ def _read_delimited(contents: bytes, sep: str) -> pd.DataFrame:
     )
 
 
-def _df_from_bytes(contents: bytes, name: str, sep: str | None = None) -> pd.DataFrame:
+def _read_delimited_no_header(contents: bytes, sep: str) -> pd.DataFrame:
+    """Split every line (there is no header row to anchor column count on) by
+    `sep`, auto-naming columns Column_1, Column_2, ... up to the widest row.
+
+    Used instead of pd.read_csv for the "no header" upload option because
+    read_csv's C/python engines both infer the expected column count from a
+    single reference row (the header, or row 1 if header=None) and then
+    either pad or SILENTLY DROP every other row to match -- which badly
+    mangles a file whose header and body don't share the same delimiter
+    (e.g. a comma-separated header over pipe-separated data), turning most of
+    the real fields into a throwaway index. Splitting line-by-line in plain
+    Python sidesteps that entirely and just keeps whatever each row has.
+    """
+    text = contents.decode("utf-8", errors="replace")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    is_regex = len(sep) != 1
+    rows = [re.split(sep, ln) if is_regex else ln.split(sep) for ln in lines]
+    max_cols = max((len(r) for r in rows), default=1)
+    rows = [r + [None] * (max_cols - len(r)) for r in rows]
+    cols = [f"Column_{i + 1}" for i in range(max_cols)]
+    df = pd.DataFrame(rows, columns=cols)
+    for c in cols:
+        df[c] = df[c].apply(lambda v: v.strip() if isinstance(v, str) else v)
+    return df.replace({"": pd.NA})
+
+
+def _df_from_bytes(contents: bytes, name: str, sep: str | None = None, has_header: bool = True) -> pd.DataFrame:
     n = name.lower()
     if n.endswith((".csv", ".txt")):
         # Honor an explicit separator (from the upload form or URL param) over
@@ -396,6 +422,12 @@ def _df_from_bytes(contents: bytes, name: str, sep: str | None = None) -> pd.Dat
         # custom separator with more than one character (e.g. "[,;]") is
         # treated as a regex -- useful for files that genuinely mix delimiters.
         chosen_sep = _normalize_sep(sep) or _detect_separator(contents)
+        if not has_header:
+            # No row is trustworthy as "the header" (e.g. the actual header
+            # uses a different separator than the data rows) -- split every
+            # line positionally instead of letting read_csv infer width from
+            # one row and silently drop/mangle the rest.
+            return _optimize_dtypes(_read_delimited_no_header(contents, chosen_sep))
         try:
             df = _read_delimited(contents, chosen_sep)
             if df.shape[1] > 1 or sep:
@@ -431,6 +463,8 @@ def _df_from_bytes(contents: bytes, name: str, sep: str | None = None) -> pd.Dat
         return _optimize_dtypes(df)
     if n.endswith(".tsv"):
         chosen_sep = _normalize_sep(sep) or "\t"
+        if not has_header:
+            return _optimize_dtypes(_read_delimited_no_header(contents, chosen_sep))
         df = _read_delimited(contents, chosen_sep)
         return _optimize_dtypes(df)
     if n.endswith(".parquet"):
@@ -464,13 +498,13 @@ def _session_response(session, df):
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...), separator: str | None = Form(None)):
+async def upload(file: UploadFile = File(...), separator: str | None = Form(None), has_header: bool = Form(True)):
     name = file.filename or "data.csv"
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, f"File is too large. Maximum upload size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     try:
-        result = _df_from_bytes(contents, name, sep=separator)
+        result = _df_from_bytes(contents, name, sep=separator, has_header=has_header)
         df, raw_geojson = result if isinstance(result, tuple) else (result, None)
     except HTTPException:
         raise
@@ -489,6 +523,7 @@ class UrlUploadRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     name: str = Field(default="", max_length=120)
     separator: str | None = Field(default=None, max_length=8)
+    has_header: bool = True
 
 
 @app.post("/api/upload_url")
@@ -544,7 +579,7 @@ def upload_url(req: UrlUploadRequest):
             )
     
     try:
-        result = _df_from_bytes(contents, name, sep=req.separator)
+        result = _df_from_bytes(contents, name, sep=req.separator, has_header=req.has_header)
         df, raw_geojson = result if isinstance(result, tuple) else (result, None)
     except HTTPException:
         raise
@@ -1083,7 +1118,17 @@ def _split_column_by_separator(df: pd.DataFrame, column: str, raw_sep: str,
     """Split one text column into several new columns wherever `raw_sep`
     appears -- the single-column equivalent of choosing a separator at
     upload time. Accepts the same separator names/aliases (comma, tab, |, a
-    custom regex like '[,;]', ...) as the upload separator field."""
+    custom regex like '[,;]', ...) as the upload separator field.
+
+    The number of new columns is the *typical* (most common) field count
+    across rows, not the maximum. Splitting with no cap lets a handful of
+    malformed rows (e.g. one row with extra stray separators) balloon every
+    row up to that row's width -- an 8-field column could silently become
+    23 columns because of 2 bad rows. Capping at the typical width keeps
+    well-formed rows clean; any row with *more* separators than that just
+    keeps its extra text glued onto the last column instead of spawning new
+    ones, and that's reported back so it's not silently lossy.
+    """
     if column not in df.columns:
         raise HTTPException(400, f"Column '{column}' not found.")
     sep = _normalize_sep(raw_sep)
@@ -1092,16 +1137,31 @@ def _split_column_by_separator(df: pd.DataFrame, column: str, raw_sep: str,
 
     series = df[column].astype(str)
     is_regex = len(sep) != 1
+
     try:
-        parts = series.str.split(sep, expand=True, regex=True) if is_regex \
-            else series.str.split(sep, expand=True)
+        # .str.count()/.str.findall() always treat their pattern as regex, so a
+        # literal single-char separator that happens to be a regex metachar
+        # (e.g. '|', '.', '$') must be escaped here even though it's passed
+        # un-escaped to .str.split() below (which has a real literal mode).
+        count_pat = sep if is_regex else re.escape(sep)
+        field_counts = series.str.findall(count_pat).str.len() + 1
     except Exception as e:
         raise HTTPException(400, f"Could not split '{column}': {e}")
 
-    n_parts = parts.shape[1]
-    if n_parts < 2:
+    mode = field_counts.mode()
+    if mode.empty:
+        raise HTTPException(400, f"The separator '{raw_sep}' never appears in '{column}' -- nothing to split.")
+    expected_parts = int(mode.iloc[0])
+    if expected_parts < 2:
         raise HTTPException(400, f"The separator '{raw_sep}' never appears in '{column}' -- nothing to split.")
 
+    try:
+        parts = series.str.split(sep, n=expected_parts - 1, expand=True, regex=True) if is_regex \
+            else series.str.split(sep, n=expected_parts - 1, expand=True)
+    except Exception as e:
+        raise HTTPException(400, f"Could not split '{column}': {e}")
+
+    n_parts = parts.shape[1]  # == expected_parts, unless every row happens to have fewer fields
     base = prefix.strip() or column
     existing = set(df.columns)
     new_names = []
@@ -1119,8 +1179,15 @@ def _split_column_by_separator(df: pd.DataFrame, column: str, raw_sep: str,
     if drop_original:
         out = out.drop(columns=[column])
 
+    too_many = int((field_counts > expected_parts).sum())
+    too_few = int((field_counts < expected_parts).sum())
     note = f"Split '{column}' by '{raw_sep}' into {n_parts} new column(s): {', '.join(new_names)}."
     note += f" Original column '{column}' removed." if drop_original else f" Original column '{column}' kept."
+    if too_many:
+        note += (f" {too_many:,} row(s) had more '{raw_sep}' than usual -- the extra text was kept in the "
+                 f"last column ('{new_names[-1]}') rather than creating more columns.")
+    if too_few:
+        note += f" {too_few:,} row(s) had fewer '{raw_sep}' than usual -- their trailing column(s) are blank."
     return out, note
 
 
