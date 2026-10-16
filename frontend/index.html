@@ -788,12 +788,14 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <button class="dl" onclick="dlNotebook()">📓 Notebook (.ipynb)</button>
     </div>
     <div style="margin-top:20px;">
-      <div class="subhead">Original data — first 15 rows (unchanged)</div>
+      <div class="subhead">Original data — unchanged <span id="origPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
+      <div id="origRangeControl"></div>
       <div id="previewWrap" style="overflow-x:auto;"></div>
     </div>
     <div class="hidden" id="edaUpdatedSection" style="margin-top:20px;">
       <div class="subhead">Updated data — current state <span id="edaUpdatedBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
       <p class="hint" style="margin-top:0;">Reflects your latest cleaning changes for this dataset. Stays put even if you switch to another dataset tab and come back.</p>
+      <div id="updRangeControl"></div>
       <div id="edaUpdatedPreviewWrap" style="overflow-x:auto;"></div>
     </div>
     <div class="stat-row" id="edaStats"></div>
@@ -881,6 +883,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <div id="cleanPreviewSection" class="hidden" style="margin-top:24px;">
       <div class="subhead">Live data — current state <span id="cleanPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
       <p class="hint" style="margin-top:0;">This table updates after every cleaning operation so you can see exactly what changed.</p>
+      <div id="cleanRangeControl"></div>
       <div id="cleanPreviewWrap" style="overflow-x:auto;"></div>
     </div>
     <div class="subhead">Group &amp; Aggregate</div>
@@ -2448,6 +2451,10 @@ function renderEDA(profile, datasetId){
   // Only render the original preview once — it must stay frozen as the "raw data" reference
   if(!$("previewWrap").innerHTML){
     renderPreview(profile.columns, profile.preview, "previewWrap");
+    const badge = $("origPreviewBadge");
+    // profile.shape.rows is the original row count here since this only runs
+    // once, on the very first profile render before any cleaning happens.
+    if(badge) badge.textContent = `rows 1–${profile.preview.length} of ${profile.shape.rows.toLocaleString()}`;
   }
 }
 
@@ -2602,7 +2609,7 @@ function downloadTextFile(text, filename, mimeType){
   URL.revokeObjectURL(url);
 }
 
-function renderPreview(columns, rows, targetId = "previewWrap"){
+function renderPreview(columns, rows, targetId = "previewWrap", startRowNum = 1){
   const wrap = $(targetId);
   if(!wrap) return;
   if(!rows || !rows.length){ if(targetId === "previewWrap") hide("previewWrap"); return; }
@@ -2612,7 +2619,7 @@ function renderPreview(columns, rows, targetId = "previewWrap"){
     columns.map(c => `<th><span class="col-name">${c.name}</span><span class="col-type" style="color:${typeColor(c.dtype)}">${c.dtype}</span></th>`).join("") +
     `</tr></thead><tbody>`;
   rows.forEach((row, i) => {
-    html += `<tr><td style="color:var(--ink-dim);text-align:center;">${i+1}</td>` +
+    html += `<tr><td style="color:var(--ink-dim);text-align:center;">${startRowNum + i}</td>` +
       columns.map(c => {
         const v = row[c.name];
         return v === null || v === undefined
@@ -2622,6 +2629,78 @@ function renderPreview(columns, rows, targetId = "previewWrap"){
   });
   html += "</tbody></table>";
   wrap.innerHTML = html;
+}
+
+// Small reusable "rows X to Y" control used above the original/updated/clean
+// preview tables, so any of them can show more than the default first 15 rows
+// -- or jump straight to e.g. row 20-30 -- without re-running EDA or cleaning.
+function rowRangeControlHtml(idPrefix){
+  return `<div class="pred-row" style="margin:6px 0 8px;align-items:flex-end;">
+    <div class="pred-field" style="max-width:110px;"><label>From row</label><input type="number" min="1" id="${idPrefix}RangeStart" value="1"></div>
+    <div class="pred-field" style="max-width:110px;"><label>To row</label><input type="number" min="1" id="${idPrefix}RangeEnd" placeholder="e.g. 30"></div>
+    <div class="pred-field" style="max-width:110px;"><label># of rows</label><input type="number" min="1" id="${idPrefix}RangeN" placeholder="e.g. 15"></div>
+    <div class="pred-field"><button class="sec" style="padding:6px 12px;" onclick="applyPreviewRange('${idPrefix}')">Go</button></div>
+    <div class="pred-field"><button class="sec" style="padding:6px 12px;" onclick="resetPreviewRange('${idPrefix}')">Reset to first 15</button></div>
+  </div>
+  <p class="hint" id="${idPrefix}RangeStatus" style="margin:0 0 6px;"></p>`;
+}
+
+// idPrefix -> {wrapId, which (current/original data), badgeId (title-row badge, separate from the status hint below the control)}
+const PREVIEW_RANGE_CONFIG = {
+  orig:  { wrapId: "previewWrap",            which: "original", badgeId: "origPreviewBadge" },
+  upd:   { wrapId: "edaUpdatedPreviewWrap",  which: "current",  badgeId: "edaUpdatedBadge"   },
+  clean: { wrapId: "cleanPreviewWrap",       which: "current",  badgeId: "cleanPreviewBadge" },
+};
+{
+  const rangeContainerIds = {orig: "origRangeControl", upd: "updRangeControl", clean: "cleanRangeControl"};
+  Object.keys(rangeContainerIds).forEach(p => {
+    const el = $(rangeContainerIds[p]);
+    if(el) el.innerHTML = rowRangeControlHtml(p);
+  });
+}
+
+async function applyPreviewRange(idPrefix){
+  const sid = getSid();
+  const cfg = PREVIEW_RANGE_CONFIG[idPrefix];
+  const status = $(`${idPrefix}RangeStatus`);
+  if(!sid || !cfg) return;
+  const start = parseInt($(`${idPrefix}RangeStart`).value, 10) || 1;
+  const endVal = $(`${idPrefix}RangeEnd`).value.trim();
+  const nVal = $(`${idPrefix}RangeN`).value.trim();
+  const params = new URLSearchParams({which: cfg.which, start});
+  if(endVal) params.set("end", endVal);
+  else if(nVal) params.set("n", nVal);
+  try{
+    const res = await fetch(`${API}/preview/${sid}?${params.toString()}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not load that row range.");
+    // NOTE: dsState[ds].allColumns is just an array of column-name strings
+    // (see renderEDA) -- renderPreview needs the full {name, dtype} objects,
+    // which live on lastProfile.columns instead.
+    const cols = (getState().lastProfile?.columns) || [];
+    renderPreview(cols, data.preview, cfg.wrapId, data.start);
+    status.style.color = "var(--ink-dim)";
+    status.textContent = data.returned
+      ? `Showing rows ${data.start}–${data.end} of ${data.total_rows.toLocaleString()}.`
+      : `No rows at that range (dataset has ${data.total_rows.toLocaleString()} rows).`;
+    const badge = $(cfg.badgeId);
+    if(badge){
+      badge.textContent = data.returned
+        ? `rows ${data.start}–${data.end} of ${data.total_rows.toLocaleString()}`
+        : `0 rows (of ${data.total_rows.toLocaleString()})`;
+    }
+  }catch(err){
+    status.style.color = "var(--bad)";
+    status.textContent = err.message;
+  }
+}
+
+function resetPreviewRange(idPrefix){
+  $(`${idPrefix}RangeStart`).value = 1;
+  $(`${idPrefix}RangeEnd`).value = "";
+  $(`${idPrefix}RangeN`).value = "";
+  $(`${idPrefix}RangeStatus`).textContent = "";
+  applyPreviewRange(idPrefix);
 }
 
 function drawCorrelation(corr){

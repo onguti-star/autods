@@ -62,9 +62,10 @@ def _safe_json(val):
     return val
 
 
-def safe_preview(df: pd.DataFrame, n: int = 10) -> list:
-    """df.head(n) as JSON-safe records (NaN/NaT -> None)."""
-    records = df.head(n).to_dict(orient="records")
+def safe_preview(df: pd.DataFrame, n: int = 10, start: int = 0) -> list:
+    """df.iloc[start:start+n] as JSON-safe records (NaN/NaT -> None).
+    start=0 + default n reproduces the old df.head(n) behavior."""
+    records = df.iloc[start:start + n].to_dict(orient="records")
     return [{k: _safe_json(v) for k, v in row.items()} for row in records]
 
 

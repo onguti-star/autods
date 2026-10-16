@@ -1693,6 +1693,45 @@ def get_geojson(session_id: str):
     return session.geojson
 
 
+@app.get("/api/preview/{session_id}")
+def get_preview_range(
+    session_id: str,
+    which: Literal["current", "original"] = "current",
+    start: int = 1,
+    end: int | None = None,
+    n: int | None = None,
+):
+    """Preview any slice of rows -- like df.head(n), but with a start row and
+    either a count (n) or an explicit end row, e.g. rows 20 through 30.
+    `start`/`end` are 1-indexed and inclusive, matching the '# Row' column
+    shown in the UI. `which` picks the current (possibly cleaned) data or the
+    frozen original upload."""
+    session = _get_session_or_404(session_id)
+    df = session.df if which == "current" else session.original_df
+    total = len(df)
+
+    start = max(1, start)
+    if end is not None:
+        if end < start:
+            raise HTTPException(400, "The end row must be greater than or equal to the start row.")
+        count = end - start + 1
+    else:
+        count = max(1, n or 15)
+    count = min(count, 5000)  # sane cap so a typo'd range can't return the whole dataset as one payload
+
+    start_idx = start - 1
+    records = eda.safe_preview(df, n=count, start=start_idx) if start_idx < total else []
+    actual_end = start_idx + len(records)  # last row actually returned (1-indexed, inclusive)
+
+    return {
+        "preview": records,
+        "start": start,
+        "end": actual_end,
+        "total_rows": total,
+        "returned": len(records),
+    }
+
+
 @app.get("/api/download_data/{session_id}")
 def download_data(session_id: str, fmt: str = "csv"):
     session = _get_session_or_404(session_id)
