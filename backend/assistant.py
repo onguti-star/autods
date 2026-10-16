@@ -81,6 +81,35 @@ _NAME_OR_VALUE_MARKERS = {
     "into", "as", "called", "named", "is", "was", "equals", "equal", "to", "where", "from",
 }
 
+# "replace X with Y [in COL]" and its synonyms ("change X to Y in COL",
+# "swap X and Y in COL", "set/make X to Y in COL") hold two user-chosen
+# values (X, Y) that are being searched for / written into the data — not
+# command keywords. A value word can still land close to a keyword by edit
+# distance purely by coincidence (e.g. "analytics" vs "analysis"), so these
+# spans are protected outright, the same way a single word after "into" or
+# "called" is protected. Mirrors the value-extracting regexes in
+# clean_chat.py's replace-value-in-column handler.
+_REPLACE_VALUE_SPAN_PATTERNS = [
+    re.compile(r"\breplace\s+(.+?)\s+with\s*(.+?)(?=\s+in\s|\s*$)", re.IGNORECASE),
+    re.compile(r"\breplace\s+(?:the\s+)?(.+?)\s+(?:to|into)\s*(.+?)(?=\s+in\s|\s*$)", re.IGNORECASE),
+    re.compile(r"\bchange\s+(.+?)\s+(?:to|into)\s+(.+?)(?=\s+in\s|\s*$)", re.IGNORECASE),
+    re.compile(r"\bswap\s+(.+?)\s+(?:and|for)\s+(.+?)(?=\s+in\s|\s*$)", re.IGNORECASE),
+    re.compile(r"\b(?:set|make)\s+(.+?)\s+(?:to|as|equal\s+to)\s+(.+?)(?=\s+in\s|\s*$)", re.IGNORECASE),
+]
+
+
+def _protected_value_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for pattern in _REPLACE_VALUE_SPAN_PATTERNS:
+        for m in pattern.finditer(text):
+            spans.append(m.span(1))
+            spans.append(m.span(2))
+    return spans
+
+
+def _in_protected_span(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
 
 def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tuple[str, str]]]:
     """Correct likely misspelled command words while leaving column/value text alone.
@@ -97,6 +126,7 @@ def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tup
     seen: set[tuple[str, str]] = set()
     prev_word: list[str] = [""]
     protected_streak: list[bool] = [False]  # protection carried across "and"
+    protected_spans = _protected_value_spans(text)
 
     def replace(match: re.Match) -> str:
         word = match.group(0)
@@ -107,8 +137,10 @@ def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tup
         if lower == "and" and protected_streak[0]:
             return word  # keep the streak alive without touching "and" itself
 
-        is_protected = guard_word in _NAME_OR_VALUE_MARKERS or (
-            guard_word == "and" and protected_streak[0]
+        is_protected = (
+            guard_word in _NAME_OR_VALUE_MARKERS
+            or (guard_word == "and" and protected_streak[0])
+            or _in_protected_span(match.start(), protected_spans)
         )
         protected_streak[0] = is_protected
 
