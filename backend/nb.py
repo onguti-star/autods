@@ -4,8 +4,6 @@ session. The export intentionally avoids dumping every AutoDS helper function;
 it includes only the successful user-facing results recorded on the session.
 """
 from __future__ import annotations  # makes list|None work on Python < 3.10 (fixes VS Code squiggles)
-import base64
-import io
 import json
 from datetime import datetime
 from typing import Any
@@ -427,21 +425,45 @@ def _add_notes_cell(cells: list[dict], session):
     cells.append(_markdown_cell(f"## Notes\n\n{notes}"))
 
 
-def _add_data_cell(cells: list[dict], session):
-    csv_buf = io.StringIO()
-    session.df.to_csv(csv_buf, index=False)
-    csv_data_b64 = base64.b64encode(csv_buf.getvalue().encode("utf-8")).decode("ascii")
-    cells.append(_code_cell(
-        "import base64\n"
-        "import io\n"
-        "import json\n"
-        "import numpy as np\n"
-        "import pandas as pd\n\n"
-        f"CSV_DATA_B64 = {json.dumps(csv_data_b64)}\n\n"
-        "df = pd.read_csv(io.BytesIO(base64.b64decode(CSV_DATA_B64)))\n"
-        "print(f'Loaded final AutoDS data: {len(df):,} rows x {len(df.columns)} columns')\n"
-        "df.head()"
-    ))
+def _add_data_cell(cells: list[dict], session) -> bool:
+    """Add the data-loading cell(s). Reads from plain CSV files shipped
+    alongside the notebook (same folder, no setup/upload/"connect a dataset"
+    step needed) rather than embedding the data as base64 inside the .ipynb
+    JSON -- base64-embedding bloats the file badly and gets slow to open once
+    the dataset is more than a few thousand rows, so this way works the same
+    regardless of size. Always includes the original, uncleaned data (not
+    just the final cleaned result) so the notebook is useful for exploring
+    from scratch, not only for re-running what AutoDS already did.
+
+    Returns whether cleaning actually changed anything, i.e. whether a
+    second, separate cleaned_data.csv needs to be bundled alongside
+    original_data.csv (the caller writes both files; see build_notebook).
+    """
+    original_differs = not session.df.equals(session.original_df)
+    lines = [
+        "import pandas as pd\n\n",
+        "# The original data exactly as uploaded, before any AutoDS cleaning.\n",
+        "# Place this notebook in the same folder as the CSV file(s) it downloaded with.\n",
+        "df_original = pd.read_csv('original_data.csv')\n",
+    ]
+    if original_differs:
+        lines += [
+            "\n# The cleaned/current data, after every cleaning step done in AutoDS.\n",
+            "df = pd.read_csv('cleaned_data.csv')\n\n",
+            "print(f'Original data: {len(df_original):,} rows x {len(df_original.columns)} columns')\n",
+            "print(f'Cleaned data:  {len(df):,} rows x {len(df.columns)} columns')\n",
+            "df.head()",
+        ]
+    else:
+        lines += [
+            "\n# No cleaning has been applied yet, so this is the same as the original data --\n",
+            "# df is just a convenience alias so the rest of this notebook has something to work with.\n",
+            "df = df_original\n\n",
+            "print(f'Loaded data: {len(df):,} rows x {len(df.columns)} columns')\n",
+            "df.head()",
+        ]
+    cells.append(_code_cell("".join(lines)))
+    return original_differs
 
 
 def _add_cleaning_cells(cells: list[dict], session):
@@ -459,10 +481,10 @@ def _add_cleaning_cells(cells: list[dict], session):
     cells.append(_markdown_cell("## Cleaning Done"))
     cells.append(_code_cell(
         _comment_lines(lines) + "\n\n"
-        "# The exported dataframe above is already the cleaned final result.\n"
-        "cleaned_df = df.copy()\n"
-        "cleaned_df.to_csv('autods_cleaned_data.csv', index=False)\n"
-        "print(cleaned_df.shape)\n"
+        "# df (loaded above from cleaned_data.csv) is already this cleaned result --\n"
+        "# df_original (from original_data.csv) still has every row/column as uploaded,\n"
+        "# in case you want to start over or compare before/after.\n"
+        "df.shape\n"
     ))
 
 
@@ -726,11 +748,19 @@ def _add_unsupervised_cells(cells: list[dict], session):
     ))
 
 
-def build_notebook(session, charts: list | None = None) -> str:
+def build_notebook(session, charts: list | None = None) -> tuple[str, bool]:
     """Build a compact .ipynb JSON string for completed session work.
     `charts` is the frontend's full chart history for this dataset (same list
     used by the HTML report) so every visualization gets its own cell, not
-    just the most recently created one."""
+    just the most recently created one.
+
+    Returns (notebook_json, needs_cleaned_csv). The notebook reads its data
+    from plain 'original_data.csv' (always) and 'cleaned_data.csv' (only
+    when needs_cleaned_csv is True, i.e. cleaning actually changed
+    something) rather than embedding data in the .ipynb itself -- see
+    _add_data_cell for why. The caller is responsible for writing those CSV
+    file(s) and shipping them alongside the notebook (download_data already
+    has the CSV-writing logic; see the /api/download_notebook* endpoints)."""
     name = session.filename.rsplit(".", 1)[0]
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     title = "AutoDS - Completed Work Notebook" if _has_completed_work(session, charts) else "AutoDS - Data Notebook"
@@ -741,11 +771,13 @@ def build_notebook(session, charts: list | None = None) -> str:
             f"**Dataset:** {session.filename}  \n"
             f"**Generated:** {generated_at}  \n"
             f"**Rows:** {len(session.df):,}  **Columns:** {len(session.df.columns)}\n\n"
-            "This notebook keeps the export focused on the Python code and results from this session."
+            "This notebook keeps the export focused on the Python code and results from this session.\n\n"
+            "**Setup:** unzip this alongside the CSV file(s) it downloaded with (same folder) and run "
+            "the cells from top to bottom -- no other setup needed."
         )
     ]
 
-    _add_data_cell(cells, session)
+    needs_cleaned_csv = _add_data_cell(cells, session)
     _add_notes_cell(cells, session)
     _add_cleaning_cells(cells, session)
     _add_visualization_cells(cells, session, charts)
@@ -756,7 +788,7 @@ def build_notebook(session, charts: list | None = None) -> str:
     if len(cells) == 2:
         cells.append(_code_cell(
             "# No cleaning, training, prediction, visualization, or unsupervised actions were recorded yet.\n"
-            "# The cell above contains your current dataset, ready for your own Python analysis.\n"
+            "# df_original/df above are ready for your own Python analysis.\n"
             "df.describe(include='all')"
         ))
 
@@ -776,4 +808,4 @@ def build_notebook(session, charts: list | None = None) -> str:
         },
         "cells": cells,
     }
-    return json.dumps(notebook, indent=1, ensure_ascii=False)
+    return json.dumps(notebook, indent=1, ensure_ascii=False), needs_cleaned_csv

@@ -24,6 +24,7 @@ from typing import Literal
 
 import pandas as pd
 import numpy as np
+import xlsxwriter
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
@@ -1732,6 +1733,61 @@ def get_preview_range(
     }
 
 
+def _write_xlsx(df: pd.DataFrame) -> io.BytesIO:
+    """Write a DataFrame to .xlsx by hand with xlsxwriter's constant_memory
+    mode, which streams rows straight to disk instead of buffering the whole
+    workbook as Python objects (what pandas.to_excel()/openpyxl do) -- this
+    keeps memory flat no matter how large the export is.
+
+    We can't use pandas.to_excel() with this mode: pandas writes cells
+    through xlsxwriter in a way that breaks constant_memory's "writes must
+    stay in strict left-to-right row order" requirement as soon as a row has
+    more than one cell format (e.g. any text column next to any numeric
+    column) -- every column after the first silently comes back blank for
+    every row. Writing cell-by-cell here, in guaranteed row order, gets both
+    correctness and the memory benefit, for small and large exports alike.
+    """
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"constant_memory": True})
+    ws = wb.add_worksheet("Sheet1")
+    date_fmt = wb.add_format({"num_format": "yyyy-mm-dd"})
+    datetime_fmt = wb.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"})
+
+    columns = list(df.columns)
+    ws.write_row(0, 0, [str(c) for c in columns])
+
+    is_datetime_col = [pd.api.types.is_datetime64_any_dtype(df[c]) for c in columns]
+    col_has_time = []
+    for i, c in enumerate(columns):
+        if not is_datetime_col[i]:
+            col_has_time.append(False)
+            continue
+        s = df[c]
+        col_has_time.append(bool(((s.dt.hour != 0) | (s.dt.minute != 0) | (s.dt.second != 0)).any()))
+
+    for row_idx, row in enumerate(df.itertuples(index=False, name=None), start=1):
+        for col_idx, v in enumerate(row):
+            if v is None or v is pd.NaT or (isinstance(v, float) and pd.isna(v)):
+                ws.write_blank(row_idx, col_idx, None)
+            elif is_datetime_col[col_idx]:
+                dt = v.to_pydatetime() if hasattr(v, "to_pydatetime") else v
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)  # xlsxwriter dates must be timezone-naive
+                ws.write_datetime(row_idx, col_idx, dt, datetime_fmt if col_has_time[col_idx] else date_fmt)
+            elif isinstance(v, (bool, np.bool_)):
+                ws.write_boolean(row_idx, col_idx, bool(v))
+            elif isinstance(v, (int, np.integer)):
+                ws.write_number(row_idx, col_idx, int(v))
+            elif isinstance(v, (float, np.floating)):
+                ws.write_number(row_idx, col_idx, float(v))
+            else:
+                ws.write_string(row_idx, col_idx, str(v))
+
+    wb.close()
+    buf.seek(0)
+    return buf
+
+
 @app.get("/api/download_data/{session_id}")
 def download_data(session_id: str, fmt: str = "csv"):
     session = _get_session_or_404(session_id)
@@ -1751,14 +1807,7 @@ def download_data(session_id: str, fmt: str = "csv"):
                 f"limit of {EXCEL_ROW_LIMIT:,} rows per sheet. Please download as "
                 "CSV instead, or filter/split the dataset into a smaller subset first.",
             )
-        buf = io.BytesIO()
-        # xlsxwriter's constant_memory mode streams rows to the output as it
-        # writes instead of building the whole workbook as Python objects in
-        # RAM first (which is what the default openpyxl engine does) — this
-        # is the main fix for large exports using up all available memory.
-        with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={"options": {"constant_memory": True}}) as writer:
-            df.to_excel(writer, index=False, sheet_name="Sheet1")
-        buf.seek(0)
+        buf = _write_xlsx(df)
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2753,21 +2802,43 @@ def unsupervised_association(session_id: str, req: dict):
 
 # ---------- Download Jupyter Notebook ----------
 
+def _build_notebook_bundle_zip(session, charts: list | None) -> tuple[io.BytesIO, str]:
+    """Zip the notebook together with the plain CSV file(s) it reads from
+    (original_data.csv always, cleaned_data.csv too if cleaning changed
+    anything) so the download is immediately runnable after unzipping --
+    no separate "connect the dataset" step, and no base64-bloated .ipynb,
+    regardless of how large the dataset is. Same bundle shape every time,
+    small dataset or large."""
+    import zipfile
+
+    notebook_json, needs_cleaned_csv = nb_module.build_notebook(session, charts=charts)
+    name = session.filename.rsplit(".", 1)[0]
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{name}_autods_notebook.ipynb", notebook_json)
+        zf.writestr("original_data.csv", session.original_df.to_csv(index=False))
+        if needs_cleaned_csv:
+            zf.writestr("cleaned_data.csv", session.df.to_csv(index=False))
+    zip_buf.seek(0)
+    return zip_buf, f"{name}_autods_notebook_bundle.zip"
+
+
 @app.get("/api/download_notebook/{session_id}")
 def download_notebook(session_id: str):
-    """Download a fully self-contained .ipynb with all AutoDS functions plus
-    the current session data embedded as CSV. Includes the full chart
-    history if it was staged first via /api/stage_charts (falls back to
-    just the most recent chart, session.last_visualization, otherwise)."""
+    """Download a .ipynb notebook together with the CSV file(s) it reads
+    from (original uncleaned data always, plus the cleaned result if any
+    cleaning was done), zipped together so it runs immediately after
+    unzipping with no setup step. Includes the full chart history if it was
+    staged first via /api/stage_charts (falls back to just the most recent
+    chart, session.last_visualization, otherwise)."""
     session = _get_session_or_404(session_id)
-    notebook_json = nb_module.build_notebook(session, charts=session.staged_charts)
-    buf = io.BytesIO(notebook_json.encode("utf-8"))
-    name = session.filename.rsplit(".", 1)[0]
+    buf, filename = _build_notebook_bundle_zip(session, charts=session.staged_charts)
     return StreamingResponse(
         buf,
-        media_type="application/x-ipynb+json",
+        media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )
@@ -2779,14 +2850,12 @@ def download_notebook_with_charts(session_id: str, req: ReportChartsRequest):
     (customChartSpecs) so every visualization the user built gets its own
     cell in the notebook, not just the last one."""
     session = _get_session_or_404(session_id)
-    notebook_json = nb_module.build_notebook(session, charts=req.charts)
-    buf = io.BytesIO(notebook_json.encode("utf-8"))
-    name = session.filename.rsplit(".", 1)[0]
+    buf, filename = _build_notebook_bundle_zip(session, charts=req.charts)
     return StreamingResponse(
         buf,
-        media_type="application/x-ipynb+json",
+        media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )
@@ -2798,14 +2867,12 @@ def download_notebook_form(session_id: str, charts_json: str = Form("[]")):
     download_html_form's docstring for why this exists instead of the old
     stage-then-redirect-a-blank-tab approach."""
     session = _get_session_or_404(session_id)
-    notebook_json = nb_module.build_notebook(session, charts=_parse_form_charts(charts_json))
-    buf = io.BytesIO(notebook_json.encode("utf-8"))
-    name = session.filename.rsplit(".", 1)[0]
+    buf, filename = _build_notebook_bundle_zip(session, charts=_parse_form_charts(charts_json))
     return StreamingResponse(
         buf,
-        media_type="application/x-ipynb+json",
+        media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )
@@ -2816,14 +2883,12 @@ def download_notebook_form_get(session_id: str, charts_json: str = "[]"):
     """GET counterpart at the same URL, for the same reason as
     download_html_form_get — see its docstring."""
     session = _get_session_or_404(session_id)
-    notebook_json = nb_module.build_notebook(session, charts=_parse_form_charts(charts_json))
-    buf = io.BytesIO(notebook_json.encode("utf-8"))
-    name = session.filename.rsplit(".", 1)[0]
+    buf, filename = _build_notebook_bundle_zip(session, charts=_parse_form_charts(charts_json))
     return StreamingResponse(
         buf,
-        media_type="application/x-ipynb+json",
+        media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{name}_autods_notebook.ipynb"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )

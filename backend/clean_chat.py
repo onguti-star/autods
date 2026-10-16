@@ -648,6 +648,9 @@ HELP_TEXT = (
     "• add new column tax as price * 0.15\n"
     "• new column profit = revenue - cost\n"
     "• create column doubled as quantity * 2\n"
+    "• add $ to the front of price  (also: to the end of / after price — a suffix; also: insert, prepend, append)\n"
+    "• add _ after the letter e in course  (inserts after every matching letter/character in each value)\n"
+    "• add $ to the front of row 2 in price  (scope any of the above to just one row, 1-based like the '# Row' column)\n"
     "• sort by age  (ascending by default; also: sort by course descending, order by total_payments z-a, "
     "sort by course then age — numbers sort numerically, text sorts alphabetically, automatically)\n"
     "• convert price to USD  (normalizes a column mixing currencies — '$1,200', '₦1550', '85 EUR' — into one "
@@ -904,6 +907,75 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             )
         # No usable column at all -- fall through rather than hard-failing, in
         # case "sort"/"order" was part of some other phrasing entirely.
+
+    # ---- add/insert a character or short text into a column's values ----
+    # Three positions: front (prefix), end (suffix), or right after every
+    # occurrence of a given letter/character inside the value. Optionally
+    # scoped to just one row (1-based, matching the '# Row' column) instead
+    # of the whole column.
+    _row_opt = r"(?:row\s+(\d+)\s+(?:in|of)\s+)?"
+
+    _add_after_letter_m = re.search(
+        rf"\b(?:add|insert)\s+(.+?)\s+after\s+(?:the\s+)?letter\s+(\S)\s+(?:in|of)\s+{_row_opt}(.+?)\s*$",
+        q, re.IGNORECASE,
+    )
+    _add_front_m = None if _add_after_letter_m else re.search(
+        rf"\b(?:add|insert|prepend)\s+(.+?)\s+(?:to|at)\s+(?:the\s+)?(?:front|beginning|start)\s+of\s+{_row_opt}(.+?)\s*$",
+        q, re.IGNORECASE,
+    )
+    _add_end_m = None if (_add_after_letter_m or _add_front_m) else re.search(
+        rf"\b(?:add|insert|append)\s+(.+?)\s+(?:(?:to|at)\s+(?:the\s+)?(?:end|back)\s+of|after)\s+{_row_opt}(.+?)\s*$",
+        q, re.IGNORECASE,
+    )
+    if _add_after_letter_m or _add_front_m or _add_end_m:
+        if _add_after_letter_m:
+            insert_text, target_letter, row_num_str, col_text = (
+                _add_after_letter_m.group(1), _add_after_letter_m.group(2),
+                _add_after_letter_m.group(3), _add_after_letter_m.group(4),
+            )
+            position = "after_letter"
+        elif _add_front_m:
+            insert_text, row_num_str, col_text = _add_front_m.group(1), _add_front_m.group(2), _add_front_m.group(3)
+            position, target_letter = "front", None
+        else:
+            insert_text, row_num_str, col_text = _add_end_m.group(1), _add_end_m.group(2), _add_end_m.group(3)
+            position, target_letter = "end", None
+
+        insert_text = insert_text.strip(" '\"")
+        if not insert_text:
+            return df, "Tell me what to add, e.g. add $ to the front of price."
+        col = _match_col(col_text, columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{col_text.strip()}'. Available columns: {', '.join(columns)}."
+
+        def _insert(v):
+            if pd.isna(v):
+                return v
+            s = str(v)
+            if position == "front":
+                return insert_text + s
+            if position == "end":
+                return s + insert_text
+            return s.replace(target_letter, target_letter + insert_text) if target_letter in s else s
+
+        new_df = df.copy()
+        # Inserting text can turn a numeric column's values into strings
+        # (e.g. 200 -> "$200"), which pandas' newer strict dtype checks
+        # reject when assigned back into an int/float column -- cast to
+        # object first so either an untouched number or a new string can
+        # live in the column without raising.
+        new_df[col] = new_df[col].astype(object)
+        pos_label = {"front": "the front", "end": "the end", "after_letter": f"after every '{target_letter}'"}[position]
+        if row_num_str:
+            row_idx = int(row_num_str) - 1
+            if row_idx < 0 or row_idx >= len(df):
+                return df, f"Row {row_num_str} doesn't exist — '{col}' only has {len(df):,} row(s)."
+            new_df.iloc[row_idx, new_df.columns.get_loc(col)] = _insert(df.iloc[row_idx][col])
+            scope = f"row {row_num_str} only"
+        else:
+            new_df[col] = new_df[col].apply(_insert)
+            scope = "every row"
+        return new_df, f"Added '{insert_text}' to {pos_label} of '{col}' ({scope})."
 
     # ---- combine two or more columns into one new column ----
     # Mirrors the split command below but in reverse: "combine first_name and
@@ -1374,14 +1446,22 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             return _apply_math_expression_to_column(df, target_col, expr, "Filled column")
 
     # ---- fill missing ----
+    # Column-first phrasing: "fill [missing/na/null/empty values] [in] COLUMN with VALUE"
     m = re.search(r"\bfill\s+(?:missing|na|null|empty)\s*(?:values?)?\s*(?:in\s+)?(.+?)\s+with\s+(.+)", ql) or \
         re.search(r"fill\s+(.+?)\s+(?:missing|na|null|empty)\s*values?\s*with\s+(.+)", ql) or \
         re.search(r"(?:impute|populate|replace\s+missing)\s*(?:values?\s*)?(?:in\s+)?(.+?)\s+with\s+(.+)", ql)
     if m:
-        col = _match_col(m.group(1), columns)
-        strategy_raw = m.group(2).strip(" '\"?.,:;-")
+        col_text, strategy_raw = m.group(1), m.group(2).strip(" '\"?.,:;-")
+    else:
+        # Value-first phrasing: "fill [missing/na/null/empty values] with VALUE in COLUMN"
+        # -- the same request, just with "with VALUE" and "in COLUMN" swapped.
+        m = re.search(r"\bfill\s+(?:missing|na|null|empty)\s*(?:values?)?\s*with\s+(.+?)\s+in\s+(?:the\s+)?(?:column\s+)?(.+)", ql)
+        col_text, strategy_raw = (m.group(2), m.group(1).strip(" '\"?.,:;-")) if m else (None, None)
+
+    if col_text is not None:
+        col = _match_col(col_text, columns)
         if not col:
-            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+            return df, f"I couldn't find a column matching '{col_text.strip()}'. Available columns: {', '.join(columns)}."
         n_missing = int(df[col].isna().sum())
         if n_missing == 0:
             return df, f"'{col}' has no missing values — nothing to fill."
