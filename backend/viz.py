@@ -77,6 +77,16 @@ def _bar_data(s: pd.Series, top_n: int = None):
     return {"labels": [str(i) for i in counts.index], "values": [int(v) for v in counts.values]}
 
 
+def _bar_sum_data(df: pd.DataFrame, x: str, y: str, top_n: int = None):
+    """Bar heights = sum of ``y`` within each ``x`` category (e.g. total_payment
+    by course), matching what a pivot table's "sum of y" grouped by x shows —
+    as opposed to _bar_data, which counts rows per category."""
+    agg = df.groupby(x, dropna=True)[y].sum().sort_values(ascending=False)
+    if top_n is not None:
+        agg = agg.head(top_n)
+    return {"labels": [str(i) for i in agg.index], "values": [float(v) for v in agg.values]}
+
+
 def _stacked_bar_data(df: pd.DataFrame, x: str, group: str, top_n: int = None, max_series: int = 8):
     """Crosstab of x-category vs group-category counts, shaped for a
     Chart.js stacked bar: one label per x-category, one dataset (series)
@@ -472,8 +482,22 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
 
     if chart_type == "bar":
         top_n = min(max(int(bar_limit), 1), 1000) if bar_limit is not None else None
-        bar = _bar_data(s, top_n=top_n)
         total_categories = s.nunique(dropna=True)
+
+        if y and y in df.columns:
+            if not pd.api.types.is_numeric_dtype(df[y]):
+                raise ValueError(f"'{y}' must be numeric to sum per '{x}' bar — try leaving Y blank for a count instead.")
+            bar = _bar_sum_data(df, x, y, top_n=top_n)
+            caption = f"Sum of '{y}' per '{x}', largest first."
+            if top_n is not None and total_categories > len(bar["labels"]):
+                caption += f" Showing top {len(bar['labels'])} of {total_categories:,} distinct values."
+            return {
+                "type": "bar", "x": x, "y": y, "bar_limit": top_n,
+                "x_label": x, "y_label": y, "caption": caption,
+                **bar,
+            }
+
+        bar = _bar_data(s, top_n=top_n)
         caption = f"How often each value of '{x}' occurs, most frequent first."
         if top_n is not None and total_categories > len(bar["labels"]):
             caption += f" Showing top {len(bar['labels'])} of {total_categories:,} distinct values."

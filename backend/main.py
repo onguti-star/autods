@@ -1889,6 +1889,12 @@ def download_html(session_id: str):
 @app.post("/api/download_html/{session_id}")
 def download_html_with_custom_charts(session_id: str, req: ReportChartsRequest):
     session = _get_session_or_404(session_id)
+    if req.charts:
+        # Remember the real dashboard so a later request that can't carry
+        # its own charts (e.g. a reloaded/reopened tab re-issuing this as a
+        # plain GET) can still fall back to it instead of generic
+        # auto-suggestions — see _build_html_report's fallback chain.
+        session.staged_charts = req.charts
     report = _build_html_report(session, extra_charts=req.charts).encode("utf-8")
     buf = io.BytesIO(report)
     name = session.filename.rsplit(".", 1)[0]
@@ -1929,7 +1935,13 @@ def download_html_form(session_id: str, charts_json: str = Form("[]")):
     and no separate staging round-trip needed either.
     """
     session = _get_session_or_404(session_id)
-    report = _build_html_report(session, extra_charts=_parse_form_charts(charts_json)).encode("utf-8")
+    parsed_charts = _parse_form_charts(charts_json)
+    if parsed_charts:
+        # Same reasoning as download_html_with_custom_charts above: persist
+        # the real dashboard so a later GET on this same URL (reload,
+        # history reopen, pasted link) has something real to fall back to.
+        session.staged_charts = parsed_charts
+    report = _build_html_report(session, extra_charts=parsed_charts).encode("utf-8")
     buf = io.BytesIO(report)
     name = session.filename.rsplit(".", 1)[0]
     return StreamingResponse(
@@ -2850,6 +2862,8 @@ def download_notebook_with_charts(session_id: str, req: ReportChartsRequest):
     (customChartSpecs) so every visualization the user built gets its own
     cell in the notebook, not just the last one."""
     session = _get_session_or_404(session_id)
+    if req.charts:
+        session.staged_charts = req.charts
     buf, filename = _build_notebook_bundle_zip(session, charts=req.charts)
     return StreamingResponse(
         buf,
@@ -2867,7 +2881,10 @@ def download_notebook_form(session_id: str, charts_json: str = Form("[]")):
     download_html_form's docstring for why this exists instead of the old
     stage-then-redirect-a-blank-tab approach."""
     session = _get_session_or_404(session_id)
-    buf, filename = _build_notebook_bundle_zip(session, charts=_parse_form_charts(charts_json))
+    parsed_charts = _parse_form_charts(charts_json)
+    if parsed_charts:
+        session.staged_charts = parsed_charts
+    buf, filename = _build_notebook_bundle_zip(session, charts=parsed_charts)
     return StreamingResponse(
         buf,
         media_type="application/zip",

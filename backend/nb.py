@@ -490,9 +490,15 @@ def _add_cleaning_cells(cells: list[dict], session):
 
 def _add_visualization_cells(cells: list[dict], session, charts: list | None = None):
     # Prefer the full chart history sent from the frontend (customChartSpecs —
-    # every visualization the user built for this dataset). Fall back to just
-    # the most recent one if no history was passed in (e.g. old GET calls).
-    all_charts = charts if charts else ([getattr(session, "last_visualization", None)] if getattr(session, "last_visualization", None) else [])
+    # every visualization the user built for this dataset). If this
+    # particular request didn't carry it (e.g. a reloaded/reopened tab
+    # re-issuing a plain GET that can't replay the original POST body — see
+    # download_notebook_form_get's docstring), fall back to the full
+    # dashboard last staged for this session rather than dropping straight
+    # to a single chart or generic suggestions.
+    all_charts = charts if charts else list(getattr(session, "staged_charts", None) or [])
+    if not all_charts and getattr(session, "last_visualization", None):
+        all_charts = [session.last_visualization]
     all_charts = [c for c in all_charts if c]
     if not all_charts:
         # Nothing was ever viewed/staged for this session. If other real

@@ -1108,7 +1108,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="bi-field-label">Visual type</div>
           <div class="chart-type-grid" id="chartTypeGrid">
       <div class="ct-btn selected" data-type="histogram" onclick="selectChartType(this)"><div class="ct-name">Histogram</div><div class="ct-desc">Distribution of a numeric column</div></div>
-      <div class="ct-btn" data-type="bar" onclick="selectChartType(this)"><div class="ct-name">Bar chart</div><div class="ct-desc">Value counts for a category column</div></div>
+      <div class="ct-btn" data-type="bar" onclick="selectChartType(this)"><div class="ct-name">Bar chart</div><div class="ct-desc">Value counts for a category column — or sum of Y per category, if you pick a Y column</div></div>
       <div class="ct-btn" data-type="pie" onclick="selectChartType(this)"><div class="ct-name">Pie / Donut</div><div class="ct-desc">Proportion of each category</div></div>
       <div class="ct-btn" data-type="boxplot" onclick="selectChartType(this)"><div class="ct-name">Box plot</div><div class="ct-desc">Median, quartiles and outliers</div></div>
       <div class="ct-btn" data-type="scatter" onclick="selectChartType(this)"><div class="ct-name">Scatter</div><div class="ct-desc">Relationship between two numeric columns</div></div>
@@ -3635,7 +3635,7 @@ function updateVizFieldVisibility(){
   // Y entirely, which forced people to put longitude into the Group field
   // (mislabeled "Group by") and then hit "Scatter map needs latitude and
   // longitude columns" with no Y field visible to fix it.
-  $("yWrap").style.display = ["scatter","line","bubble","area"].includes(t) || isMap ? "" : "none";
+  $("yWrap").style.display = ["scatter","line","bubble","area","bar"].includes(t) || isMap ? "" : "none";
   $("groupWrap").style.display = t === "choropleth" ? "none" : "";   // group by works with most chart types
   $("histMinWrap").style.display = t === "histogram" ? "" : "none";
   $("histMaxWrap").style.display = t === "histogram" ? "" : "none";
@@ -3645,7 +3645,7 @@ function updateVizFieldVisibility(){
   $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : isMap ? "Latitude" : "Column (X)";
-  $("yLabel").textContent = isMap ? "Longitude" : "Column (Y)";
+  $("yLabel").textContent = isMap ? "Longitude" : t === "bar" ? "Column (Y) — optional, sums it per bar" : "Column (Y)";
   $("groupLabel").textContent = t === "bubble" ? "Size column" : isMap ? "Size / color column (optional)" : (t === "boxplot" || t === "stacked_bar") ? "Group by (required)" : "Group by (optional)";
 
 }
@@ -3815,7 +3815,7 @@ $("vizBtn").addEventListener("click", async () => {
   }
 
   let url = `${API}/visualize/${getSid()}?x=${encodeURIComponent(x)}&chart_type=${t}`;
-  if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t)) url += `&y=${encodeURIComponent(y)}`;
+  if(["scatter","line","bubble","area","scatter_map","heatmap_map"].includes(t) || (t === "bar" && y)) url += `&y=${encodeURIComponent(y)}`;
   if(["boxplot","bubble","scatter_map","heatmap_map","stacked_bar"].includes(t)) url += `&group=${encodeURIComponent(g)}`;
 
   // Power BI-style compare/slicer filter: only send it when a column is
@@ -3871,7 +3871,7 @@ function chartTitle(ch){
   if(ch.type === "area") return `${ch.y} over ${ch.x} (area)`;
   if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
   if(ch.type === "histogram") return `Histogram of ${ch.x}`;
-  if(ch.type === "bar") return `Bar chart of ${ch.x}`;
+  if(ch.type === "bar") return ch.y ? `Sum of ${ch.y} by ${ch.x}` : `Bar chart of ${ch.x}`;
   if(ch.type === "stacked_bar") return `${ch.x} by ${ch.group} (stacked)`;
   if(ch.type === "pie") return `Share of ${ch.x}`;
   if(ch.type === "heatmap") return `Correlation heatmap`;

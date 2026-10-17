@@ -320,12 +320,20 @@ def _build_html_report(session, extra_charts=None) -> str:
     quality_flags = _quality_flags(profile)
     charts = list(extra_charts or [])
     if not charts:
-        # If the person downloads the report without ever opening the
-        # Visuals tab, customChartSpecs on the frontend is still empty and
-        # nothing gets POSTed here — which used to mean a report with zero
-        # charts and no indication why. Fall back to the same
-        # auto-suggestion logic the Visuals tab itself uses, so the
-        # downloaded report always has something to look at.
+        # Nothing was POSTed with this particular request. That legitimately
+        # happens for a first-ever download before the person has opened the
+        # Visuals tab — but it also happens if a request that *should* carry
+        # the real dashboard loses it in transit (e.g. the tab this was
+        # downloaded into gets reloaded/reopened from history, which re-issues
+        # a plain GET and can't replay the original POST body — see
+        # download_html_form_get's docstring in main.py). In that second case
+        # falling straight to generic auto-suggestions silently throws away
+        # the dashboard and notes the person actually built. So first fall
+        # back to whatever was last staged for this session (the full
+        # dashboard from the most recent successful download), and only drop
+        # to auto-suggestions if nothing has ever been staged at all.
+        charts = list(getattr(session, "staged_charts", None) or [])
+    if not charts:
         try:
             charts = viz.suggest_visuals(session.df, has_geojson=bool(getattr(session, "geojson", None)))
             for c in charts:
