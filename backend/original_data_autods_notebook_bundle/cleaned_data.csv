@@ -1,0 +1,128 @@
+student_id,first_name,second_name,age,gender,course,enrollment_date,total_payment
+101.0,Ethan,Miller,22.0,M,Data Science,2022-05-15 00:00:00,1200.0
+501.0,John,Smith,22.0,M,Data Science,2022-05-15 00:00:00,1200.0
+102.0,Emily,Johnson,24.0,F,Machine Learning,2022-03-18 00:00:00,1400.0
+502.0,Olivia,Johnson,24.0,F,Machine Learning,2022-03-18 00:00:00,1400.0
+503.0,Olivia,Rayay,24.0,F,Machine Learning,2022-03-18 00:00:00,1400.0
+103.0,Michael,Williams,21.0,M,Data Science,2022-06-25 00:00:00,900.0
+504.0,Noah,Williams,21.0,M,Data Science,2022-06-25 00:00:00,900.0
+505.0,Noah,Rock,21.0,M,Data Science,2022-06-25 00:00:00,900.0
+104.0,Emma,Brown,23.0,F,Data Science,NA,1100.0
+506.0,Sarah,Brown,23.0,F,Data Science,NA,1100.0
+105.0,David,Davis,20.0,M,Web Developmen,2021-09-10 00:00:00,950.0
+507.0,Liam,Davis,20.0,M,Web Development,2021-09-10 00:00:00,950.0
+106.0,Ava,Miller,25.0,F,Machine Learning,2022-04-22 00:00:00,1300.0
+508.0,Jessica,Miller,25.0,F,Machine Learning,2022-04-22 00:00:00,1300.0
+107.0,Brian,Wilson,19.0,M,Data Science,2022-07-02 00:00:00,1000.0
+509.0,William,Wilson,19.0,M,Data Science,2022-07-02 00:00:00,1000.0
+108.0,Amanda,Taylor,22.0,F,Machine Learning,2022-08-15 00:00:00,1200.0
+510.0,Sophia,Taylor,22.0,F,Machine Learning,2022-08-15 00:00:00,1200.0
+109.0,James,Anderson,24.0,M,Data Science,2022-01-10 00:00:00,950.0
+511.0,William,Anderson,24.0,M,Data Science,2022-01-10 00:00:00,950.0
+110.0,Isabella,Martinez,26.0,F,Data Science,2023-02-28 00:00:00,1150.0
+512.0,Olivia,Martinez,26.0,F,Data Science,2023-02-28 00:00:00,1150.0
+111.0,May,Thompson,20.0,M,Web Development,2022-11-14 00:00:00,1050.0
+513.0,Williams,Smith,22.0,M,Data Science,2022-05-15 00:00:00,1200.0
+112.0,Emily,Emodi,24.0,F,Machine Learning,2022-03-18 00:00:00,1400.0
+514.0,Mia,Hernandez,23.0,F,Machine Learning,2022-09-20 00:00:00,1350.0
+113.0,Alexander,Davis,21.0,M,Data Science,2022-07-05 00:00:00,920.0
+515.0,Esther,Adams,21.0,M,Data Science,2022-06-25 00:00:00,900.0
+114.0,Harper,Rodriguez,22.0,F,Data Science,NA,1120.0
+516.0,Sarah,Brown,23.0,F,Data Science,NA,1100.0
+115.0,Daniel,White,24.0,M,Web Development,2021-10-30 00:00:00,970.0
+517.0,David,Davis,20.0,M,Web Development,2021-09-10 00:00:00,950.0
+144.0,Ethe,Miller,22.0,M,Data Science,2022-05-15 00:00:00,1200.0
+145.0,Olivian,Johnson,24.0,F,Machine Learning,2022-03-18 00:00:00,1400.0
+146.0,Noah,Ray,21.0,M,Data Science,2022-06-25 00:00:00,900.0
+147.0,Emma,Brown,23.0,F,Data Science,,1100.0
+148.0,Liam,Davis,20.0,M,Web Development,2021-09-10 00:00:00,950.0
+149.0,Ava,Miller,25.0,F,Machine Learning,2022-04-22 00:00:00,1300.0
+155.0,Benjamin,Thompson,20.0,M,Web Development,2022-11-14 00:00:00,1050.0
+156.0,Mia,Hernandez,23.0,F,Machine Learning,2022-09-20 00:00:00,1350.0
+157.0,Alexander,Davis,21.0,M,Data Science,2022-07-05 00:00:00,920.0
+159.0,Emily,Murphy,21.0,F,Machine Learning,2023-08-02 00:00:00,1270.0
+217.0,Chukwudi,,22.0,M,Data Science,2022-05-15 00:00:00,1200.0
+218.0,Ngozi,Eze,24.0,F,Machine Learning,2022-03-18 00:00:00,1400.0
+219.0,Ifeoluwa,Adewale,21.0,M,Data Science,2022-06-25 00:00:00,900.0
+220.0,Ada,Adeleke,23.0,F,Data Science,NA,1100.0
+221.0,Kehinde,Bakare,20.0,M,Web Development,2021-09-10 00:00:00,950.0
+222.0,Amara,Okonkwo,25.0,F,Machine Learning,2022-04-22 00:00:00,1300.0
+223.0,Uche,Adebayo,19.0,M,Data Science,2022-07-02 00:00:00,1000.0
+224.0,Nneka,Nwachukwu,22.0,F,Machine Learning,2022-08-15 00:00:00,1200.0
+225.0,Emeka,Okafor,24.0,M,Data Science,2022-01-10 00:00:00,950.0
+226.0,Chinyere,Nwosu,26.0,F,Data Science,2023-02-28 00:00:00,1150.0
+227.0,Obinna,Onyekachi,20.0,M,Web Development,2022-11-14 00:00:00,1050.0
+228.0,Chinwe,Okoye,23.0,F,Machine Learning,2022-09-20 00:00:00,1350.0
+229.0,Ugochukwu,Okafor,21.0,M,Data Science,2022-07-05 00:00:00,920.0
+230.0,Ijeoma,Uzoma,22.0,F,Data Science,NA,1120.0
+231.0,Obi,Okonkwo,24.0,M,Web Development,2021-10-30 00:00:00,970.0
+232.0,Amina,Adekunle,21.0,F,Machine Learning,2022-08-12 00:00:00,1270.0
+234.0,Ibrahim,Okafor,22.0,M,Data Science,2022-02-03 00:00:00,950.0
+235.0,Zainab,Abiodun,23.0,F,Web Development,2022-07-21 00:00:00,1050.0
+236.0,Nasiru,Adebayo,24.0,M,Data Science,2022-05-09 00:00:00,1120.0
+237.0,Aisha,Okonkwo,25.0,F,Machine Learning,2023-01-15 00:00:00,1300.0
+500.0,Emily,Murphy,21.0,F,Machine Learning,2023-08-02 00:00:00,1270.0
+518.0,Jackson,Murphy,21.0,M,Web Development,2023-06-05 00:00:00,1050.0
+519.0,Okafor,Chike,23.0,M,Data Analysis,11-Jul-20,1296.87
+520.0,Abdul,Nasiru,21.0,f,Cyber Security,01-Jul-23,3363.75
+521.0,Adaobi,Ekeinde,23.0,M,Data Analysis,09-Jul-23,1726.14
+522.0,=,Davis,19.0,M,Cyber Security,06-Aug-22,5124.74
+523.0,Adeniran,Omoshola,22.0,F,Data Analysis,01-Jul-21,5124.74
+524.0,Adeola,Okoro,23.0,M,Web Develpment,12-Jul-23,5124.74
+525.0,Ahmed,Mohammed,23.0,F,Web Development,19-Jul-21,885.78
+526.0,Amaka,Azikiwe,23.0,M,Cyber Security,28-Jul-23,2088.62
+527.0,Amina,Osagie,33.0,M,Data Analysis,01-Aug-05,4477.15
+528.0,Anita,West,24.0,F,4,05-01-20,300.0
+529.0,Ayodele,Davis,18.0,F,Machine Learning,08-09-23,374.4
+530.0,Ayodele,Osagie,22.0,F,Machine Learning,30-Jan-21,5124.74
+531.0,Binta,Sanni,22.0,F,Web Development,01-Jul-21,974.36
+532.0,Chibuzo,Mohammed,21.0,M,Data Analysis,01-Sep-20,5124.74
+533.0,Chika,Nwosu,23.0,F,Data Analysis,09-Aug-21,1426.56
+534.0,Chinonso,Uche,23.0,M,Data Analysis,28-Jul-23,4924.87
+535.0,Chinyere,Adeyemi,23.0,M,Data Science,07-Oct-22,5124.74
+536.0,Chioma,Adebayo,22.0,F,Cyber Security,01-Jul-22,2527.24
+537.0,Chiwendu,Ekpo,21.0,M,Machine Learning,30-Jan-20,5124.74
+538.0,Chukwu,Ike,22.0,M,Web Development,01-Jul-22,1071.79
+539.0,Chukwudi,Ekeinde,19.0,M,Cyber Security,28-Aug-22,5124.74
+540.0,Davis,Brown,25.0,M,Data Analytics,05-09-23,200.0
+541.0,Emeka,Anikulapo,19.0,M,Data Analysis,19-Jul-24,5124.74
+542.0,Esther,Naomi,21.0,F,Machine Learning,08-01-22,200.0
+543.0,Eze,Chinedu,22.0,M,Data Analysis,01-Jul-23,1569.21
+544.0,Faramotu,Ismail,23.0,M,Data Analysis,16-Jul-20,605.0
+545.0,Fatima,Azikiwe,22.0,F,Data Analysis,01-Jul-21,5124.74
+546.0,Femi,Abdullahi,22.0,M,Data Analysis,01-Jul-23,5124.74
+547.0,Folorunsho,Dada,22.0,M,Web Development,01-Jul-22,732.05
+548.0,Hadiza,Ogundipe,18.0,M,Data Analysis,06-Aug-22,5124.74
+549.0,Halima,Bakare,23.0,M,Data Analysis,17-Jul-22,5124.74
+550.0,Idris,Ibrahim,23.0,M,Web Develpment,31-Aug-24,5124.74
+551.0,Ifarele,Adeola,23.0,M,Data Analysis,30-Aug-22,665.5
+552.0,Ifeanyi,Ekpo,22.0,F,Cyber Security,01-Jul-22,2779.96
+553.0,Ifeoluwa,Anikulapo,23.0,M,Cyber Security,31-Aug-23,5124.74
+554.0,Ikechukwu,Victor,22.0,M,Web Development,01-Jul-24,805.26
+555.0,Iwueze,Olaoluwa,23.0,M,Data Analysis,10-Jul-20,550.0
+556.0,Jide,Bakare,18.0,M,Cyber Security,02-Sep-23,5124.74
+557.0,Joseph,Williams,24.0,F,Machine Learning,08-01-23,200.0
+558.0,Kemi,Uche,23.0,M,Cyber Security,06-Jul-22,5124.74
+559.0,Kylian,Eden,24.0,M,Machine Learning,08-01-24,200.0
+560.0,Lay,Martin,25.0,M,Web Developmet,08-01-24,200.0
+561.0,Ngozi,Abubakar,26.0,f,Cyber Security,01-Jul-24,3057.95
+562.0,Nkem,Adebayo,27.0,M,Web Develpment,21-Jul-24,5124.74
+563.0,Nneka,Nwachukwu,28.0,M,Web Develpment,01-Aug-23,5124.74
+564.0,Obinna,Onwuka,29.0,F,Data Analysis,09-Jul-23,4070.14
+565.0,Ola,Enioluwa,30.0,F,Machine Learning,01-Jan-21,1178.97
+566.0,Olawale,Akintola,31.0,M,Web Developmet,05-08-21,300.0
+567.0,Oluchi,Iwuoha,32.0,F,Machine Learning,31-Jan-21,5124.74
+568.0,Onyeka,Okonkwo,33.0,f,Cyber Security,16-Jul-16,2297.49
+569.0,Rock,Shy,33.0,M,Data Analytics,02-05-99,0.0
+570.0,Suleiman,Mohammed,33.0,M,Cyber Security,25-Sep-20,5124.74
+571.0,Umar,Abdullahi,33.0,M,Web Develpment,01-Jul-24,5124.74
+572.0,Wike,Akintola,33.0,M,Data Science,06-05-22,360.0
+573.0,Yusuf,Ibrahim,33.0,M,Cyber Security,01-Aug-05,1898.75
+574.0,Zainab,Adeyemi,33.0,f,Cyber Security,01-Jul-22,3700.12
+575.0,Alexander,Davis,33.0,M,Data Science,2022-07-05 00:00:00,920.0
+576.0,Ben,Thompson,33.0,M,Web Development,2022-11-14 00:00:00,1050.0
+577.0,Mia,Hernandez,33.0,F,Machine Learning,2022-09-20 00:00:00,1350.0
+578.0,0,Leke,33.0,M,Data Science,07-09-23,400.0
+579.0,0,Davis,33.0,M,Data Science,09-09-22,374.88
+600.0,0,Davis,33.0,F,Data Science,10-09-21,374.976
+517.5,Emily,Davis,23.0,M,Data Science,11-09-21,0.0

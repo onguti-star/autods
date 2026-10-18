@@ -354,404 +354,344 @@ def _build_html_report(session, extra_charts=None) -> str:
     <title>AutoDS Detailed HTML Report</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
+        :root {
+            --pbi-teal: #01B8AA;
+            --pbi-teal-dark: #018C82;
+            --pbi-gold: #F2C80F;
+            --pbi-dark: #252423;
+            --pbi-gray: #605E5C;
+            --pbi-border: #E1DFDD;
+            --pbi-canvas: #F3F2F1;
+            --pbi-card: #FFFFFF;
+            --pbi-shadow: 0 1.6px 3.6px rgba(0,0,0,0.11), 0 0.3px 0.9px rgba(0,0,0,0.07);
+            --pbi-shadow-hover: 0 3.2px 7.2px rgba(0,0,0,0.13), 0 0.6px 1.8px rgba(0,0,0,0.08);
+        }
+        * { box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
+            background-color: var(--pbi-canvas);
             padding: 0;
             line-height: 1.6;
             margin: 0;
+            color: var(--pbi-dark);
         }
         .container {
             max-width: 95vw;
-            width: 1400px;
-            background-color: white;
-            padding: 50px;
+            width: 1500px;
+            margin: 0 auto;
+            background-color: var(--pbi-canvas);
+            padding: 0 0 50px;
             min-height: 100vh;
-            box-shadow: 0 0 20px rgba(0,0,0,0.1);
         }
         @media (max-width: 1600px) {
-            .container {
-                width: 95vw;
-                max-width: none;
-                padding: 40px;
-            }
-        }
-        @media (max-width: 768px) {
-            .container {
-                padding: 20px;
-            }
+            .container { width: 95vw; max-width: none; }
         }
         .report-header {
-            border-bottom: 4px solid #0d6efd;
-            padding-bottom: 20px;
-            margin-bottom: 30px;
+            background: linear-gradient(135deg, var(--pbi-dark) 0%, #3A3836 100%);
+            color: #fff;
+            padding: 22px 36px;
+            margin-bottom: 24px;
             display: flex;
             justify-content: space-between;
-            align-items: flex-start;
+            align-items: center;
             flex-wrap: wrap;
             gap: 20px;
+            border-bottom: 3px solid var(--pbi-teal);
         }
         .report-title {
-            font-size: 2.5em;
-            font-weight: 700;
-            color: #0d6efd;
-            margin-bottom: 10px;
-            flex: 1;
+            font-size: 1.7em;
+            font-weight: 600;
+            color: #fff;
+            margin: 0 0 6px;
         }
         .report-meta {
-            color: #6c757d;
-            font-size: 0.95em;
+            color: #C8C6C4;
+            font-size: 0.88em;
         }
-        .action-buttons {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
+        .report-header .report-meta strong { color: #E8E6E4; }
+        .action-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
         .btn-action {
-            padding: 8px 16px;
-            border-radius: 6px;
-            border: none;
+            padding: 9px 18px;
+            border-radius: 2px;
+            border: 1px solid transparent;
             cursor: pointer;
-            font-size: 0.9em;
+            font-size: 0.88em;
             font-weight: 600;
-            transition: all 0.2s;
+            transition: all 0.15s;
             text-decoration: none;
             display: inline-flex;
             align-items: center;
             gap: 6px;
         }
-        .btn-primary-action {
-            background-color: #0d6efd;
-            color: white;
+        .btn-primary-action { background-color: var(--pbi-teal); color: #fff; }
+        .btn-primary-action:hover { background-color: var(--pbi-teal-dark); color: #fff; }
+        .btn-secondary-action { background-color: transparent; color: #fff; border-color: #6c6a68; }
+        .btn-secondary-action:hover { background-color: rgba(255,255,255,0.1); color: #fff; }
+
+        /* Report shell: sticky left "Pages" rail + scrolling canvas, Power BI-report style */
+        .report-shell {
+            display: flex;
+            align-items: flex-start;
+            gap: 24px;
+            padding: 0 24px;
         }
-        .btn-primary-action:hover {
-            background-color: #0a58ca;
-            color: white;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(13,110,253,0.3);
+        .report-main { flex: 1 1 auto; min-width: 0; }
+        .toc {
+            flex: 0 0 240px;
+            position: sticky;
+            top: 20px;
+            background-color: var(--pbi-card);
+            padding: 18px 16px;
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
+            border: 1px solid var(--pbi-border);
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
         }
-        .btn-secondary-action {
-            background-color: #6c757d;
-            color: white;
+        .toc h3 {
+            color: var(--pbi-gray);
+            margin: 0 0 12px;
+            font-size: 0.78em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
         }
-        .btn-secondary-action:hover {
-            background-color: #5a6268;
-            color: white;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(108,117,125,0.3);
+        .toc ul { list-style: none; padding-left: 0; margin: 0; }
+        .toc li { margin: 1px 0; }
+        .toc a {
+            display: block;
+            color: var(--pbi-dark);
+            text-decoration: none;
+            font-size: 0.9em;
+            padding: 7px 10px;
+            border-radius: 4px;
+            border-left: 3px solid transparent;
+            transition: all 0.15s;
+        }
+        .toc a:hover {
+            background-color: rgba(1,184,170,0.09);
+            border-left-color: var(--pbi-teal);
+            color: var(--pbi-teal-dark);
         }
         .section-title {
-            font-size: 1.8em;
+            font-size: 1.35em;
             font-weight: 600;
-            color: #0d6efd;
-            margin-top: 40px;
-            margin-bottom: 20px;
+            color: var(--pbi-dark);
+            margin-top: 36px;
+            margin-bottom: 16px;
             padding-bottom: 10px;
-            border-bottom: 2px solid #e9ecef;
+            border-bottom: 1px solid var(--pbi-border);
             page-break-after: avoid;
         }
+        .section-title::before {
+            content: "";
+            display: inline-block;
+            width: 4px;
+            height: 1em;
+            background: var(--pbi-teal);
+            margin-right: 10px;
+            vertical-align: -0.1em;
+            border-radius: 2px;
+        }
         .subsection-title {
-            font-size: 1.3em;
+            font-size: 1.1em;
             font-weight: 600;
-            color: #495057;
-            margin-top: 25px;
-            margin-bottom: 15px;
+            color: var(--pbi-gray);
+            margin-top: 22px;
+            margin-bottom: 12px;
         }
-        .stat-box {
-            background-color: #f8f9fa;
-            border-left: 4px solid #0d6efd;
-            padding: 15px;
-            margin: 10px 0;
-            border-radius: 4px;
-        }
+
+        /* KPI "card" visuals */
         .summary-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
             gap: 14px;
-            margin: 15px 0 25px;
+            margin: 4px 0 25px;
         }
-        .stat-value {
-            font-size: 1.4em;
-            font-weight: 700;
-            color: #0d6efd;
+        .stat-box {
+            background-color: var(--pbi-card);
+            border-top: 3px solid var(--pbi-teal);
+            padding: 16px 14px;
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
+            transition: box-shadow 0.15s, transform 0.15s;
         }
-        .stat-label {
-            color: #6c757d;
-            font-size: 0.9em;
+        .stat-box:hover { box-shadow: var(--pbi-shadow-hover); transform: translateY(-1px); }
+        .stat-value { font-size: 1.7em; font-weight: 700; color: var(--pbi-dark); line-height: 1.2; }
+        .stat-label { color: var(--pbi-gray); font-size: 0.82em; margin-top: 2px; }
+
+        /* Cards used throughout the report (reports/analysis panels, Power BI "card" look) */
+        .card-panel {
+            background-color: var(--pbi-card);
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
+            border: 1px solid var(--pbi-border);
+            padding: 20px 24px;
+            margin-bottom: 20px;
         }
+
         table {
             width: 100%;
             border-collapse: collapse;
             margin: 15px 0;
+            background-color: var(--pbi-card);
+            box-shadow: var(--pbi-shadow);
+            border-radius: 6px;
+            overflow: hidden;
         }
-        table thead {
-            background-color: #0d6efd;
-            color: white;
-        }
-        table th {
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-        }
-        table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #e9ecef;
-        }
-        table tbody tr:hover {
-            background-color: #f8f9fa;
-        }
-        .toc {
-            background-color: #f8f9fa;
-            padding: 20px;
-            border-radius: 4px;
-            margin-bottom: 30px;
-            border-left: 4px solid #0d6efd;
-        }
-        .toc h3 {
-            color: #0d6efd;
-            margin-bottom: 15px;
-            font-size: 1.2em;
-        }
-        .toc ul {
-            list-style: none;
-            padding-left: 0;
-        }
-        .toc li {
-            margin: 8px 0;
-        }
-        .toc a {
-            color: #0d6efd;
-            text-decoration: none;
-            transition: color 0.2s;
-        }
-        .toc a:hover {
-            color: #0a58ca;
-            text-decoration: underline;
-        }
+        table thead { background-color: var(--pbi-dark); color: #fff; }
+        table th { padding: 11px 12px; text-align: left; font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
+        table td { padding: 9px 12px; border-bottom: 1px solid var(--pbi-border); font-size: 0.92em; }
+        table tbody tr:hover { background-color: rgba(1,184,170,0.06); }
+        table tbody tr:last-child td { border-bottom: none; }
+
         .correlation-item {
             display: flex;
             justify-content: space-between;
-            padding: 10px;
-            background-color: #f8f9fa;
+            padding: 10px 14px;
+            background-color: var(--pbi-card);
             margin: 8px 0;
-            border-radius: 4px;
-            border-left: 3px solid #0d6efd;
+            border-radius: 6px;
+            border-left: 3px solid var(--pbi-teal);
+            box-shadow: var(--pbi-shadow);
         }
-        .correlation-value {
-            font-weight: 700;
-            color: #0d6efd;
-            font-family: 'Courier New', monospace;
-        }
+        .correlation-value { font-weight: 700; color: var(--pbi-teal-dark); font-family: 'Consolas', 'Courier New', monospace; }
         .cleaning-item {
-            padding: 10px;
+            padding: 10px 14px;
             margin: 8px 0;
-            background-color: #d4edda;
-            border-left: 3px solid #198754;
-            border-radius: 4px;
+            background-color: var(--pbi-card);
+            border-left: 3px solid #107C10;
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
         }
         .cleaning-type {
             display: inline-block;
             margin-bottom: 5px;
-            padding: 2px 7px;
+            padding: 2px 8px;
             border-radius: 3px;
-            background-color: rgba(25,135,84,0.14);
-            color: #146c43;
+            background-color: rgba(16,124,16,0.12);
+            color: #107C10;
             font-size: 0.78em;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.02em;
         }
         .quality-item {
-            padding: 12px 14px;
+            padding: 12px 16px;
             margin: 10px 0;
-            background-color: #fff8e1;
-            border-left: 4px solid #ffc107;
-            border-radius: 4px;
+            background-color: var(--pbi-card);
+            border-left: 4px solid var(--pbi-gold);
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
         }
-        .quality-meta {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-top: 3px;
-        }
+        .quality-meta { color: var(--pbi-gray); font-size: 0.9em; margin-top: 3px; }
         .prediction-item {
             padding: 14px 16px;
             margin: 12px 0;
-            background-color: #fff8e1;
-            border-left: 4px solid #ffc107;
-            border-radius: 4px;
+            background-color: var(--pbi-card);
+            border-left: 4px solid var(--pbi-gold);
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
         }
-        .prediction-output {
-            font-size: 1.1em;
-            font-weight: 700;
-            color: #198754;
-            margin-bottom: 6px;
-        }
-        .prediction-meta,
-        .prediction-inputs {
-            color: #6c757d;
-            font-size: 0.9em;
-        }
-        .prediction-inputs {
-            margin-top: 6px;
-            overflow-wrap: anywhere;
-        }
+        .prediction-output { font-size: 1.05em; font-weight: 700; color: #107C10; margin-bottom: 6px; }
+        .prediction-meta, .prediction-inputs { color: var(--pbi-gray); font-size: 0.9em; }
+        .prediction-inputs { margin-top: 6px; overflow-wrap: anywhere; }
         .analysis-item {
             padding: 14px 16px;
             margin: 12px 0;
-            background-color: #eef8ff;
-            border-left: 4px solid #0dcaf0;
-            border-radius: 4px;
+            background-color: var(--pbi-card);
+            border-left: 4px solid #8AD4EB;
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
         }
-        .analysis-meta {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-top: 4px;
-        }
+        .analysis-meta { color: var(--pbi-gray); font-size: 0.9em; margin-top: 4px; }
         .metric-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 12px;
             margin: 15px 0;
         }
-        .importance-bar {
-            height: 10px;
-            background-color: #e9ecef;
-            border-radius: 4px;
-            overflow: hidden;
-            min-width: 120px;
-        }
-        .importance-fill {
-            height: 100%;
-            background-color: #ffc107;
-        }
-        .narrative-text {
-            color: #495057;
-            line-height: 1.8;
-            margin: 15px 0;
-        }
-        .data-preview {
-            font-size: 0.85em;
-            overflow-x: auto;
-        }
+        .importance-bar { height: 10px; background-color: var(--pbi-border); border-radius: 4px; overflow: hidden; min-width: 120px; }
+        .importance-fill { height: 100%; background-color: var(--pbi-gold); }
+        .narrative-text { color: var(--pbi-gray); line-height: 1.8; margin: 15px 0; }
+        .data-preview { font-size: 0.85em; overflow-x: auto; }
+
+        /* Chart tiles laid out as a dashboard grid, not a single stacked column */
         .chart-row {
-            display: flex;
-            flex-direction: column;
-            gap: 40px;
-            margin-bottom: 50px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+            gap: 22px;
+            margin-bottom: 30px;
+            align-items: stretch;
         }
         .chart-card {
-            background-color: #f8f9fa;
-            border-radius: 12px;
-            padding: 30px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-            border: 1px solid #e9ecef;
+            background-color: var(--pbi-card);
+            border-radius: 8px;
+            padding: 20px 22px 22px;
+            box-shadow: var(--pbi-shadow);
+            border-top: 3px solid var(--pbi-teal);
             position: relative;
-        }
-        .chart-canvas-wrap {
-            position: relative;
-            width: 100%;
-            height: 800px;
-            min-height: 600px;
-        }
-        .chart-actions {
-            position: absolute;
-            top: 10px;
-            right: 10px;
+            transition: box-shadow 0.15s;
             display: flex;
-            gap: 8px;
+            flex-direction: column;
         }
+        .chart-card:hover { box-shadow: var(--pbi-shadow-hover); }
+        .chart-canvas-wrap { position: relative; width: 100%; height: 360px; min-height: 300px; }
+        .chart-actions { position: absolute; top: 14px; right: 16px; display: flex; gap: 8px; }
         .chart-btn {
-            padding: 6px 12px;
+            padding: 5px 10px;
             border-radius: 4px;
-            border: 1px solid #dee2e6;
-            background-color: white;
+            border: 1px solid var(--pbi-border);
+            background-color: var(--pbi-card);
             cursor: pointer;
-            font-size: 0.85em;
+            font-size: 0.8em;
             font-weight: 600;
-            transition: all 0.2s;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+            transition: all 0.15s;
         }
-        .chart-btn:hover {
-            background-color: #0d6efd;
-            color: white;
-            border-color: #0d6efd;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(13,110,253,0.3);
-        }
-        .chart-canvas-wrap canvas {
-            width: 100% !important;
-            height: 100% !important;
-        }
-        .chart-title {
-            margin-bottom: 12px;
-            color: #0d6efd;
-            font-size: 1.15em;
-            font-weight: 700;
-        }
-        .chart-notice {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-bottom: 12px;
-        }
+        .chart-btn:hover { background-color: var(--pbi-teal); color: #fff; border-color: var(--pbi-teal); }
+        .chart-canvas-wrap canvas { width: 100% !important; height: 100% !important; }
+        .chart-title { margin-bottom: 4px; color: var(--pbi-dark); font-size: 1.02em; font-weight: 700; padding-right: 90px; }
+        .chart-notice { color: var(--pbi-gray); font-size: 0.85em; margin-bottom: 10px; }
         .chart-user-note {
-            background: #fff8e6;
-            border-left: 3px solid #f5a623;
-            padding: 10px 12px;
-            margin-top: 12px;
+            background: #FEF9E7;
+            border-left: 3px solid var(--pbi-gold);
+            padding: 9px 11px;
+            margin-top: 10px;
             border-radius: 4px;
-            font-size: 0.92em;
-            color: #4a3b00;
+            font-size: 0.88em;
+            color: #6B5900;
             white-space: pre-wrap;
         }
         .chart-user-note .label {
             display: block;
-            font-size: 0.75em;
+            font-size: 0.72em;
             font-weight: 700;
             letter-spacing: 0.04em;
             text-transform: uppercase;
-            color: #b17a00;
+            color: #96800A;
             margin-bottom: 4px;
         }
         @media (max-width: 992px) {
-            .chart-row {
-                grid-template-columns: 1fr;
-            }
+            .chart-row { grid-template-columns: 1fr; }
+            .report-shell { flex-direction: column; }
+            .toc { position: static; width: 100%; max-height: none; }
         }
         @media (max-width: 768px) {
-            .container {
-                padding: 20px;
-            }
-            .report-title {
-                font-size: 1.8em;
-            }
-            .section-title {
-                font-size: 1.4em;
-            }
+            .report-shell { padding: 0 14px; }
+            .report-header { padding: 16px 20px; }
+            .report-title { font-size: 1.4em; }
+            .section-title { font-size: 1.15em; }
         }
         @media print {
-            body {
-                background-color: white;
-                padding: 0;
-                margin: 0;
-            }
-            .container {
-                box-shadow: none;
-                padding: 20px;
-                max-width: 100%;
-                width: 100%;
-            }
-            .action-buttons {
-                display: none !important;
-            }
-            .section-title {
-                page-break-after: avoid;
-            }
-            table {
-                page-break-inside: avoid;
-            }
-            .chart-card {
-                page-break-inside: avoid;
-            }
+            body { background-color: white; padding: 0; margin: 0; }
+            .report-header { background: var(--pbi-dark) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .toc { display: none; }
+            .report-shell { padding: 0 20px; }
+            .action-buttons { display: none !important; }
+            .section-title { page-break-after: avoid; }
+            table { page-break-inside: avoid; box-shadow: none; }
+            .chart-card { page-break-inside: avoid; box-shadow: none; border: 1px solid var(--pbi-border); }
+            .chart-row { grid-template-columns: 1fr 1fr; }
         }
     </style>
 </head>
@@ -773,9 +713,10 @@ def _build_html_report(session, extra_charts=None) -> str:
             </div>
         </div>""")
     
-    # Table of Contents
+    # Report shell: sticky left nav rail (Power BI-style "pages" panel) + main canvas.
+    html_parts.append('        <div class="report-shell">')
     html_parts.append("""        <div class="toc">
-            <h3>📋 Table of Contents</h3>
+            <h3>📋 Pages</h3>
             <ul>
                 <li><a href="#dataset">Dataset Overview</a></li>
                 <li><a href="#original-preview">Original Data (First 15 Rows)</a></li>
@@ -803,6 +744,7 @@ def _build_html_report(session, extra_charts=None) -> str:
     
     html_parts.append("""            </ul>
         </div>""")
+    html_parts.append('        <div class="report-main">')
     
     # Dataset Overview Section
     html_parts.append(f"""        <h2 class="section-title" id="dataset">📈 Dataset Overview</h2>
@@ -1307,7 +1249,9 @@ def _build_html_report(session, extra_charts=None) -> str:
                 html_parts.append("            </tbody></table>")
             html_parts.append("        </div>")
     
-    html_parts.append("""    </div>
+    html_parts.append("""        </div>
+        </div>
+    </div>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         function copyReportLink() {
@@ -1519,6 +1463,13 @@ def _build_html_report(session, extra_charts=None) -> str:
                         const stats = chart.groups && chart.groups[label];
                         if (!stats) return `${ctx.dataset.label || chart.x || 'Value'}: ${fmtShort(ctx.parsed.y)}`;
                         const current = ctx.dataset.label || 'Value';
+                        // Normal box plot mode: just the sum (matches a pivot table) —
+                        // no quartile/median/outlier language.
+                        if (chart._boxplotMode === 'simple') {
+                            return stats.count != null
+                                ? [`Sum: ${fmtShort(ctx.parsed.y)}`, `Rows: ${stats.count}`]
+                                : `Sum: ${fmtShort(ctx.parsed.y)}`;
+                        }
                         const iqr = Number(stats.q3) - Number(stats.q1);
                         return [
                             `${current}: ${fmtShort(ctx.parsed.y)}`,
@@ -1737,7 +1688,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                     const isSimple = chart._boxplotMode === 'simple';
                     const bpLabels = groupEntries.map(([g]) => g);
                     const bpDatasets = isSimple
-                        ? [{ label: chart.x || 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: vividBar }]
+                        ? [{ label: 'Sum', data: groupEntries.map(([, s]) => (s && s.sum) || 0), backgroundColor: vividBar }]
                         : [
                             { label: 'Q1',     data: groupEntries.map(([, s]) => (s && s.q1)     || 0), backgroundColor: vividBar },
                             { label: 'Median', data: groupEntries.map(([, s]) => (s && s.median) || 0), backgroundColor: vividAmber  },

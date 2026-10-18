@@ -3869,7 +3869,10 @@ function chartTitle(ch){
   if(ch.type === "scatter" || ch.type === "bubble") return `${ch.y} vs ${ch.x}`;
   if(ch.type === "line") return `${ch.y} over ${ch.x}`;
   if(ch.type === "area") return `${ch.y} over ${ch.x} (area)`;
-  if(ch.type === "boxplot") return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
+  if(ch.type === "boxplot"){
+    if(ch._boxplotMode === "simple") return ch.group ? `Sum of ${ch.x} by ${ch.group}` : `Sum of ${ch.x}`;
+    return ch.group ? `${ch.x} by ${ch.group}` : `Box plot of ${ch.x}`;
+  }
   if(ch.type === "histogram") return `Histogram of ${ch.x}`;
   if(ch.type === "bar") return ch.y ? `Sum of ${ch.y} by ${ch.x}` : `Bar chart of ${ch.x}`;
   if(ch.type === "stacked_bar") return `${ch.x} by ${ch.group} (stacked)`;
@@ -3907,7 +3910,13 @@ function boxplotTooltipOptions(ch){
         const current = ctx.dataset.label || "Value";
         const value = fmtShort(ctx.parsed.y);
         const iqr = Number(stats.q3) - Number(stats.q1);
-        
+
+        // Normal box plot mode: just the sum and how many rows it came from
+        // — no quartile/median language, so this reads like a pivot table.
+        if(current === "Sum"){
+          return stats.count != null ? [`Sum: ${value}`, `Rows: ${stats.count.toLocaleString()}`] : `Sum: ${value}`;
+        }
+
         // Show relevant stats based on what's being hovered
         if(current === "Median"){
           return [
@@ -3974,6 +3983,19 @@ function explainChart(ch){
     const groups = Object.entries(ch.groups).filter(([,s]) => s);
     if(groups.length){
       const entries = groups.map(([name, s]) => ({name, ...s}));
+      // Normal box plot mode: describe it the way a pivot table would —
+      // sums only, nothing about quartiles/median/outliers.
+      if(ch._boxplotMode === "simple"){
+        if(!ch.group || entries.length === 1){
+          const s = entries[0];
+          return `Sum of ${ch.x}${ch.group ? ` for ${s.name}` : ""}: ${fmtShort(s.sum)} across ${s.count.toLocaleString()} row(s).`;
+        }
+        const highestSum = entries.reduce((best, item) => item.sum > best.sum ? item : best, entries[0]);
+        const lowestSum  = entries.reduce((best, item) => item.sum < best.sum ? item : best, entries[0]);
+        const total = entries.reduce((a, item) => a + Number(item.sum || 0), 0);
+        const share = total ? (Number(highestSum.sum) / total * 100).toFixed(1) : "0.0";
+        return `${highestSum.name} has the highest total ${ch.x} (${fmtShort(highestSum.sum)}, ${share}% of the ${fmtShort(total)} shown), while ${lowestSum.name} has the lowest (${fmtShort(lowestSum.sum)}).`;
+      }
       const highest = entries.reduce((best, item) => item.median > best.median ? item : best, entries[0]);
       const lowest  = entries.reduce((best, item) => item.median < best.median ? item : best, entries[0]);
       const hasOutliers = entries.some(e => e.outliers?.length > 0);
@@ -4342,13 +4364,15 @@ function drawChart(canvasId, ch){
     if(!groups.length) return;
     const labels = groups.map(([g]) => g);
     // Use the mode stored on the chart object (set at plot time)
-    // "simple" = normal box plot (median only), "full" = statistical (Q1/Median/Q3)
+    // "simple" = normal box plot (sum per group, same numbers a pivot table
+    // would show — no quartiles/median), "full" = statistical (Q1/Median/Q3)
     const simpleMode = ch._boxplotMode === "simple";
     if(simpleMode){
-      // Normal box plot: one bar per group — median value only, clean and uncluttered
-      const medians = groups.map(([,s]) => s?.median ?? 0);
+      // Normal box plot: one bar per group — sum of the values in that
+      // group, so this matches a "sum of <column>" pivot table exactly.
+      const sums = groups.map(([,s]) => s?.sum ?? 0);
       makeChart(canvasId,{type:"bar",
-        data:{labels, datasets:[{label:"Median",data:medians,backgroundColor:vizFill(ch.color||vizPaletteAt(0), "bb")}]},
+        data:{labels, datasets:[{label:"Sum",data:sums,backgroundColor:vizFill(ch.color||vizPaletteAt(0), "bb")}]},
         options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{display:false},tooltip:boxplotTooltipOptions(ch)},
           scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{color:vizGridColor()}},
                   y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});

@@ -144,7 +144,12 @@ def _boxplot_data(df: pd.DataFrame, x: str, group_col: str = None):
         lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
         outliers = [float(v) for v in s[(s < lo) | (s > hi)]]
         return {"min": float(s[s >= lo].min()), "q1": q1, "median": med,
-                "q3": q3, "max": float(s[s <= hi].max()), "outliers": outliers[:50]}
+                "q3": q3, "max": float(s[s <= hi].max()), "outliers": outliers[:50],
+                # Sum (and count) of every value in the group, not just the
+                # non-outlier ones used for min/max above -- this is what
+                # "Normal box plot" mode plots, so its bars match a pivot
+                # table's "sum of <column>" grouped by the same category.
+                "sum": float(s.sum()), "count": int(s.shape[0])}
 
     if group_col and group_col in df.columns:
         groups = df[group_col].dropna().unique()[:12]
