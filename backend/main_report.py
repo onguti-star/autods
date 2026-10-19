@@ -312,6 +312,97 @@ def _render_data_preview_table_html(df, title: str, anchor_id: str, icon: str = 
     return "\n".join(parts)
 
 
+_FILTER_RECOMPUTABLE_CHART_TYPES = {
+    "bar", "pie", "stacked_bar", "histogram", "scatter", "bubble", "boxplot",
+}
+
+
+def _json_safe_cell(value, numeric: bool):
+    """Converts one dataframe cell to something json.dumps can handle, for
+    the client-side filter payload embedded in the HTML report."""
+    try:
+        is_na = pd.isna(value)
+    except (TypeError, ValueError):
+        is_na = False
+    if is_na:
+        return None
+    if numeric:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return str(value)
+
+
+def _build_report_filter_payload(df: pd.DataFrame, profile: dict, charts: list,
+                                   max_filters: int = 12, max_rows: int = 20000) -> dict | None:
+    """Builds the data the downloaded report's \"Filters\" bar (a Power BI
+    style slicer) needs to run entirely client-side, with no server round
+    trip: a small set of low-cardinality categorical columns to filter by,
+    plus a capped row sample covering every column any filterable chart
+    (bar/pie/stacked_bar) is built from, so those charts can be
+    re-aggregated in the browser as filters change. Returns None if the
+    dataset has nothing worth offering as a filter, so the report falls
+    back to today's behaviour with no filter bar at all.
+    """
+    col_profiles = {c.get("name"): c for c in profile.get("columns", []) if c.get("name")}
+
+    eligible = [
+        c for c in profile.get("columns", [])
+        if c.get("type") == "categorical" and 2 <= int(c.get("unique", 0) or 0) <= 50
+        and c.get("name") in df.columns
+    ]
+    eligible.sort(key=lambda c: int(c.get("unique", 0) or 0))
+    filter_cols = [c["name"] for c in eligible[:max_filters]]
+    if not filter_cols:
+        return None
+
+    # Columns a filterable chart needs in order to re-aggregate itself from
+    # raw rows, even if that particular column isn't offered as a filter
+    # (e.g. a high-cardinality x-axis, or a numeric y being summed).
+    chart_cols: list[str] = []
+    for chart in charts:
+        if chart.get("type") not in _FILTER_RECOMPUTABLE_CHART_TYPES:
+            continue
+        # "size" covers the bubble chart's size column, which chart_data()
+        # stores under that key (its value is still just a column name —
+        # the "group" parameter used to build it).
+        for key in ("x", "y", "group", "size"):
+            col = chart.get(key)
+            if col and col in df.columns and col not in chart_cols:
+                chart_cols.append(col)
+
+    needed_cols = list(dict.fromkeys(filter_cols + chart_cols))
+
+    total_rows = len(df)
+    sub = df[needed_cols]
+    sampled = total_rows > max_rows
+    if sampled:
+        sub = sub.sample(max_rows, random_state=42)
+
+    numeric_cols = {c for c in needed_cols if col_profiles.get(c, {}).get("type") == "numeric"}
+
+    rows = []
+    for _, r in sub.iterrows():
+        rows.append({c: _json_safe_cell(r[c], c in numeric_cols) for c in needed_cols})
+
+    columns_meta = []
+    for c in filter_cols:
+        values = sorted({str(v) for v in df[c].dropna().unique()})
+        if values:
+            columns_meta.append({"name": c, "values": values})
+    if not columns_meta:
+        return None
+
+    return {
+        "columns": columns_meta,
+        "rows": rows,
+        "sampled": sampled,
+        "sample_size": len(rows),
+        "total_rows": total_rows,
+    }
+
+
 def _build_html_report(session, extra_charts=None) -> str:
     """Build a styled HTML presentation report."""
     profile = eda.profile_dataframe(session.df)
@@ -348,6 +439,14 @@ def _build_html_report(session, extra_charts=None) -> str:
             charts = []
         chart_source = "auto_suggested"
     chart_data_json = json.dumps(charts)
+    # Best-effort: the "Filters" bar is an additive feature, so anything odd
+    # about this particular dataset should just mean no filter bar — never
+    # a broken report.
+    try:
+        filter_payload = _build_report_filter_payload(session.df, profile, charts)
+    except Exception:
+        filter_payload = None
+    filter_payload_json = json.dumps(filter_payload) if filter_payload else "null"
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     pca_result = _report_pca_result(session)
     
@@ -690,6 +789,77 @@ def _build_html_report(session, extra_charts=None) -> str:
             color: #96800A;
             margin-bottom: 4px;
         }
+        /* Filters bar (Power BI-style slicers) */
+        .filter-bar {
+            background-color: var(--pbi-card);
+            border: 1px solid var(--pbi-border);
+            border-radius: 6px;
+            box-shadow: var(--pbi-shadow);
+            margin: 0 24px 22px;
+            padding: 14px 18px;
+        }
+        .filter-bar-head {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .filter-bar-title { font-weight: 700; color: var(--pbi-dark); }
+        .filter-bar-status { color: var(--pbi-gray); font-size: 0.88em; flex: 1 1 auto; }
+        .filter-sample-note { color: var(--pbi-gray); font-style: italic; }
+        .filter-bar-controls { display: flex; flex-wrap: wrap; gap: 10px; }
+        .filter-dropdown {
+            border: 1px solid var(--pbi-border);
+            border-radius: 6px;
+            background-color: var(--pbi-canvas);
+            min-width: 160px;
+        }
+        .filter-dropdown summary {
+            cursor: pointer;
+            padding: 8px 12px;
+            font-weight: 600;
+            font-size: 0.9em;
+            color: var(--pbi-dark);
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .filter-dropdown summary::-webkit-details-marker { display: none; }
+        .filter-dropdown summary::before { content: "▸"; color: var(--pbi-teal-dark); }
+        .filter-dropdown[open] summary::before { content: "▾"; }
+        .filter-badge {
+            background-color: var(--pbi-border);
+            color: var(--pbi-gray);
+            border-radius: 10px;
+            padding: 0 7px;
+            font-size: 0.78em;
+            font-weight: 700;
+        }
+        .filter-options {
+            max-height: 220px;
+            overflow-y: auto;
+            padding: 6px 12px 10px;
+            border-top: 1px solid var(--pbi-border);
+        }
+        .filter-option { display: block; font-size: 0.86em; padding: 3px 0; color: var(--pbi-dark); cursor: pointer; }
+        .filter-option input { margin-right: 6px; }
+        .filter-option-actions { display: flex; gap: 8px; margin: 6px 0 8px; }
+        .filter-mini-btn {
+            border: 1px solid var(--pbi-border);
+            background-color: var(--pbi-card);
+            border-radius: 4px;
+            font-size: 0.76em;
+            font-weight: 700;
+            padding: 2px 8px;
+            cursor: pointer;
+        }
+        .filter-mini-btn:hover { background-color: var(--pbi-teal); color: #fff; border-color: var(--pbi-teal); }
+        @media print {
+            .filter-bar { display: none; }
+        }
+
         @media (max-width: 992px) {
             .chart-row { grid-template-columns: 1fr; }
             .report-shell { flex-direction: column; }
@@ -731,7 +901,46 @@ def _build_html_report(session, extra_charts=None) -> str:
                 </button>
             </div>
         </div>""")
-    
+
+    # Filters bar (Power BI-style slicers): only rendered when the dataset
+    # actually has low-cardinality categorical columns worth filtering by.
+    # Entirely client-side — see the reportFilterData script block near the
+    # end of this file for how it re-aggregates the bar/pie/stacked_bar
+    # charts below as filters change.
+    if filter_payload:
+        filter_sections = []
+        for i, col_meta in enumerate(filter_payload["columns"]):
+            name_esc = html.escape(str(col_meta["name"]))
+            options_html = "".join(
+                f'<label class="filter-option"><input type="checkbox" value="{html.escape(str(v), quote=True)}" checked> '
+                f'{html.escape(str(v))}</label>'
+                for v in col_meta["values"]
+            )
+            filter_sections.append(f"""                <details class="filter-dropdown" data-filter-index="{i}">
+                    <summary>{name_esc} <span class="filter-badge">{len(col_meta['values'])}</span></summary>
+                    <div class="filter-options" data-filter-index="{i}">
+                        <div class="filter-option-actions">
+                            <button type="button" class="filter-mini-btn" data-action="all">All</button>
+                            <button type="button" class="filter-mini-btn" data-action="none">None</button>
+                        </div>
+                        {options_html}
+                    </div>
+                </details>""")
+        sample_note = ""
+        if filter_payload["sampled"]:
+            sample_note = (f' <span class="filter-sample-note">(filters run against a sample of '
+                            f'{filter_payload["sample_size"]:,} of {filter_payload["total_rows"]:,} rows)</span>')
+        html_parts.append(f"""        <div class="filter-bar" id="filterBar">
+            <div class="filter-bar-head">
+                <span class="filter-bar-title">🔎 Filters</span>
+                <span class="filter-bar-status" id="filterStatus">Showing all rows{sample_note}</span>
+                <button type="button" class="chart-btn" id="filterResetBtn">Reset filters</button>
+            </div>
+            <div class="filter-bar-controls">
+{chr(10).join(filter_sections)}
+            </div>
+        </div>""")
+
     # Report shell: sticky left nav rail (Power BI-style "pages" panel) + main canvas.
     html_parts.append('        <div class="report-shell">')
     html_parts.append("""        <div class="toc">
@@ -1448,6 +1657,11 @@ def _build_html_report(session, extra_charts=None) -> str:
     </script>
     <script>
         const reportCharts = """ + chart_data_json + """;
+        const reportFilterData = """ + filter_payload_json + """;
+        // Chart.js instances, keyed by chart index, filled in below as each
+        // chart is first drawn — the filter bar script (near the end of the
+        // page) reuses these to redraw a chart in place when filters change.
+        window.__autodsChartInstances = window.__autodsChartInstances || [];
 
         const chartOptions = {
             responsive: true,
@@ -1707,6 +1921,27 @@ def _build_html_report(session, extra_charts=None) -> str:
                             }
                         }
                     };
+                case 'bubble':
+                    if (!chart.points || !chart.points.length) return null;
+                    return {
+                        type: 'bubble',
+                        data: {
+                            datasets: [{
+                                label: chart.title || `${chart.x} vs ${chart.y} (size: ${chart.size || ''})`,
+                                data: chart.points,
+                                backgroundColor: (chart.color || vividBar) + '99',
+                                borderColor: chart.color || vividBar,
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            ...chartOptions,
+                            scales: {
+                                x: { type: 'linear', title: { display: true, text: chart.x } },
+                                y: { title: { display: true, text: chart.y } }
+                            }
+                        }
+                    };
                 case 'boxplot': {
                     if (!chart.groups) return null;
                     const groupEntries = Object.entries(chart.groups);
@@ -1938,7 +2173,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                     }
                     return;
                 }
-                new Chart(canvas, config);
+                window.__autodsChartInstances[index] = new Chart(canvas, config);
             } catch (err) {
                 console.error('Chart render failed for', chart && chart.title, err);
                 const canvas = document.getElementById(`chart_${index}`);
@@ -1951,6 +2186,331 @@ def _build_html_report(session, extra_charts=None) -> str:
                 }
             }
         });
+    </script>
+    <script>
+        // Filters bar: a Power BI-style slicer that re-aggregates the
+        // bar/pie/stacked_bar charts above from an embedded row sample as
+        // the person checks/unchecks category values. Entirely additive —
+        // if reportFilterData is null (no suitable columns were found) this
+        // whole block is a no-op and nothing else on the page changes.
+        (function () {
+            if (!reportFilterData) return;
+            const rows = reportFilterData.rows || [];
+            const filterCols = reportFilterData.columns || [];
+            const recomputableTypes = new Set(['bar', 'pie', 'stacked_bar', 'histogram', 'scatter', 'bubble', 'boxplot']);
+            let isFiltering = false;
+
+            function shuffled(arr) {
+                const a = arr.slice();
+                for (let i = a.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [a[i], a[j]] = [a[j], a[i]];
+                }
+                return a;
+            }
+
+            function valueCounts(data, col) {
+                const counts = new Map();
+                for (const r of data) {
+                    const v = r[col];
+                    if (v === null || v === undefined) continue;
+                    counts.set(v, (counts.get(v) || 0) + 1);
+                }
+                return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+            }
+
+            function recomputeBar(chart, data) {
+                let entries;
+                if (chart.y) {
+                    const sums = new Map();
+                    for (const r of data) {
+                        const k = r[chart.x], yv = r[chart.y];
+                        if (k === null || k === undefined || yv === null || yv === undefined) continue;
+                        sums.set(k, (sums.get(k) || 0) + Number(yv));
+                    }
+                    entries = Array.from(sums.entries()).sort((a, b) => b[1] - a[1]);
+                } else {
+                    entries = valueCounts(data, chart.x);
+                }
+                if (chart.bar_limit) entries = entries.slice(0, chart.bar_limit);
+                return Object.assign({}, chart, {
+                    labels: entries.map(e => String(e[0])),
+                    values: entries.map(e => e[1]),
+                });
+            }
+
+            function recomputePie(chart, data) {
+                const entries = valueCounts(data, chart.x);
+                const topN = 10;
+                const top = entries.slice(0, topN);
+                const restSum = entries.slice(topN).reduce((a, e) => a + e[1], 0);
+                const labels = top.map(e => String(e[0]));
+                const values = top.map(e => e[1]);
+                if (restSum > 0) { labels.push('Other'); values.push(restSum); }
+                return Object.assign({}, chart, { labels, values });
+            }
+
+            function recomputeStackedBar(chart, data) {
+                const topN = chart.bar_limit || 15;
+                const maxSeries = 8;
+                const xTotals = new Map();
+                const cross = new Map();
+                for (const r of data) {
+                    const xv = r[chart.x], gv = r[chart.group];
+                    if (xv === null || xv === undefined || gv === null || gv === undefined) continue;
+                    xTotals.set(xv, (xTotals.get(xv) || 0) + 1);
+                    if (!cross.has(xv)) cross.set(xv, new Map());
+                    const gm = cross.get(xv);
+                    gm.set(gv, (gm.get(gv) || 0) + 1);
+                }
+                const xOrder = Array.from(xTotals.entries()).sort((a, b) => b[1] - a[1]).slice(0, topN).map(e => e[0]);
+                const groupTotals = new Map();
+                for (const xv of xOrder) {
+                    for (const [g, c] of (cross.get(xv) || new Map()).entries()) {
+                        groupTotals.set(g, (groupTotals.get(g) || 0) + c);
+                    }
+                }
+                const groupEntries = Array.from(groupTotals.entries()).sort((a, b) => b[1] - a[1]);
+                const hasOther = groupEntries.length > maxSeries;
+                const keepN = hasOther ? maxSeries - 1 : maxSeries;
+                const keepGroups = groupEntries.slice(0, keepN).map(e => e[0]);
+                const series = keepGroups.map(g => ({
+                    label: String(g),
+                    values: xOrder.map(xv => (cross.get(xv) || new Map()).get(g) || 0),
+                }));
+                if (hasOther) {
+                    const otherGroups = groupEntries.slice(keepGroups.length).map(e => e[0]);
+                    series.push({
+                        label: 'Other',
+                        values: xOrder.map(xv => {
+                            const gm = cross.get(xv) || new Map();
+                            let s = 0;
+                            for (const og of otherGroups) s += gm.get(og) || 0;
+                            return s;
+                        }),
+                    });
+                }
+                return Object.assign({}, chart, { labels: xOrder.map(String), series });
+            }
+
+            function histogramCounts(values, edges) {
+                const n = edges.length - 1;
+                const counts = new Array(n).fill(0);
+                for (const v of values) {
+                    if (v < edges[0] || v > edges[n]) continue;
+                    let idx = n - 1;
+                    for (let i = 0; i < n; i++) {
+                        if (v >= edges[i] && (v < edges[i + 1] || i === n - 1)) { idx = i; break; }
+                    }
+                    counts[idx]++;
+                }
+                return counts;
+            }
+
+            function recomputeHistogram(chart, data) {
+                let values = data.map(r => r[chart.x]).filter(v => v !== null && v !== undefined && isFinite(v));
+                if (chart.x_min !== null && chart.x_min !== undefined) values = values.filter(v => v >= chart.x_min);
+                if (chart.x_max !== null && chart.x_max !== undefined) values = values.filter(v => v <= chart.x_max);
+                if (!values.length) return Object.assign({}, chart, { labels: [], values: [] });
+                let edges;
+                if (chart.bin_width) {
+                    const start = (chart.x_min !== null && chart.x_min !== undefined) ? chart.x_min : Math.min(...values);
+                    let end = (chart.x_max !== null && chart.x_max !== undefined) ? chart.x_max : Math.max(...values);
+                    if (start === end) end = start + chart.bin_width;
+                    const edgeCount = Math.ceil((end - start) / chart.bin_width) + 1;
+                    edges = Array.from({ length: edgeCount }, (_, i) => start + i * chart.bin_width);
+                    if (edges[edges.length - 1] < end) edges.push(edges[edges.length - 1] + chart.bin_width);
+                } else {
+                    const uniqueCount = new Set(values).size;
+                    const nBins = Math.min(12, Math.max(1, uniqueCount));
+                    let min = Math.min(...values), max = Math.max(...values);
+                    if (min === max) max = min + 1;
+                    const step = (max - min) / nBins;
+                    edges = Array.from({ length: nBins + 1 }, (_, i) => min + i * step);
+                }
+                const counts = histogramCounts(values, edges);
+                const labels = [];
+                for (let i = 0; i < edges.length - 1; i++) labels.push(`${edges[i].toFixed(2)}–${edges[i + 1].toFixed(2)}`);
+                return Object.assign({}, chart, { labels, values: counts });
+            }
+
+            function recomputeScatter(chart, data) {
+                let pts = data
+                    .map(r => ({ x: r[chart.x], y: r[chart.y] }))
+                    .filter(p => p.x !== null && p.x !== undefined && p.y !== null && p.y !== undefined);
+                if (pts.length > 600) pts = shuffled(pts).slice(0, 600);
+                return Object.assign({}, chart, { points: pts });
+            }
+
+            function recomputeBubble(chart, data) {
+                const sizeCol = chart.size;
+                let sub = data.filter(r =>
+                    r[chart.x] !== null && r[chart.x] !== undefined &&
+                    r[chart.y] !== null && r[chart.y] !== undefined &&
+                    r[sizeCol] !== null && r[sizeCol] !== undefined);
+                if (sub.length > 400) sub = shuffled(sub).slice(0, 400);
+                if (!sub.length) return Object.assign({}, chart, { points: [] });
+                const sizes = sub.map(r => r[sizeCol]);
+                const minS = Math.min(...sizes), maxS = Math.max(...sizes);
+                const points = sub.map(r => ({
+                    x: r[chart.x], y: r[chart.y],
+                    r: 3 + 27 * (r[sizeCol] - minS) / (maxS - minS + 1e-9),
+                }));
+                return Object.assign({}, chart, { points });
+            }
+
+            function quantile(sortedArr, q) {
+                const pos = (sortedArr.length - 1) * q;
+                const base = Math.floor(pos);
+                const rest = pos - base;
+                return sortedArr[base + 1] !== undefined
+                    ? sortedArr[base] + rest * (sortedArr[base + 1] - sortedArr[base])
+                    : sortedArr[base];
+            }
+
+            function boxStats(values) {
+                const v = values.filter(x => x !== null && x !== undefined && isFinite(x)).sort((a, b) => a - b);
+                if (!v.length) return null;
+                const q1 = quantile(v, 0.25), med = quantile(v, 0.5), q3 = quantile(v, 0.75);
+                const iqr = q3 - q1;
+                const lo = q1 - 1.5 * iqr, hi = q3 + 1.5 * iqr;
+                const within = v.filter(x => x >= lo && x <= hi);
+                const outliers = v.filter(x => x < lo || x > hi);
+                return {
+                    min: within.length ? within[0] : v[0],
+                    q1, median: med, q3,
+                    max: within.length ? within[within.length - 1] : v[v.length - 1],
+                    outliers: outliers.slice(0, 50),
+                    sum: v.reduce((a, b) => a + b, 0),
+                    count: v.length,
+                };
+            }
+
+            function recomputeBoxplot(chart, data) {
+                const groups = {};
+                if (chart.group) {
+                    const byGroup = new Map();
+                    for (const r of data) {
+                        const g = r[chart.group], xv = r[chart.x];
+                        if (g === null || g === undefined || xv === null || xv === undefined) continue;
+                        if (!byGroup.has(g)) byGroup.set(g, []);
+                        byGroup.get(g).push(xv);
+                    }
+                    let i = 0;
+                    for (const [g, vals] of byGroup.entries()) {
+                        if (i >= 12) break;
+                        const st = boxStats(vals);
+                        if (st) groups[String(g)] = st;
+                        i++;
+                    }
+                } else {
+                    const st = boxStats(data.map(r => r[chart.x]));
+                    if (st) groups.all = st;
+                }
+                return Object.assign({}, chart, { groups });
+            }
+
+            function currentSelections() {
+                const sel = {};
+                filterCols.forEach((f, i) => {
+                    const boxes = Array.from(document.querySelectorAll(
+                        `.filter-options[data-filter-index="${i}"] input[type=checkbox]`));
+                    const checked = boxes.filter(b => b.checked).map(b => b.value);
+                    sel[f.name] = (checked.length === boxes.length) ? null : new Set(checked);
+                });
+                return sel;
+            }
+
+            function rowMatches(row, sel) {
+                for (const col in sel) {
+                    const set = sel[col];
+                    if (set === null) continue;
+                    const v = row[col];
+                    if (v === null || v === undefined || !set.has(String(v))) return false;
+                }
+                return true;
+            }
+
+            function allRowsStatusText() {
+                return 'Showing all rows' + (reportFilterData.sampled
+                    ? ` (filters run against a sample of ${reportFilterData.sample_size.toLocaleString()} of ${reportFilterData.total_rows.toLocaleString()} rows)`
+                    : '');
+            }
+
+            function applyFilters() {
+                const sel = currentSelections();
+                const restricted = Object.values(sel).some(v => v !== null);
+                const statusEl = document.getElementById('filterStatus');
+
+                if (!restricted) {
+                    if (statusEl) statusEl.textContent = allRowsStatusText();
+                    if (!isFiltering) return; // nothing was filtered yet — charts are already correct, skip the rebuild
+                    reportCharts.forEach((chart, index) => {
+                        if (!recomputableTypes.has(chart.type)) return;
+                        redrawChart(index, chart);
+                    });
+                    isFiltering = false;
+                    return;
+                }
+
+                const filteredRows = rows.filter(r => rowMatches(r, sel));
+                if (statusEl) {
+                    const sampleTxt = reportFilterData.sampled ? ' (sampled)' : '';
+                    statusEl.textContent =
+                        `Matching rows: ${filteredRows.length.toLocaleString()} of ${rows.length.toLocaleString()}${sampleTxt}`;
+                }
+                reportCharts.forEach((chart, index) => {
+                    if (!recomputableTypes.has(chart.type)) return;
+                    let recomputed;
+                    if (chart.type === 'bar') recomputed = recomputeBar(chart, filteredRows);
+                    else if (chart.type === 'pie') recomputed = recomputePie(chart, filteredRows);
+                    else if (chart.type === 'stacked_bar') recomputed = recomputeStackedBar(chart, filteredRows);
+                    else if (chart.type === 'histogram') recomputed = recomputeHistogram(chart, filteredRows);
+                    else if (chart.type === 'scatter') recomputed = recomputeScatter(chart, filteredRows);
+                    else if (chart.type === 'bubble') recomputed = recomputeBubble(chart, filteredRows);
+                    else if (chart.type === 'boxplot') recomputed = recomputeBoxplot(chart, filteredRows);
+                    else return;
+                    redrawChart(index, recomputed);
+                });
+                isFiltering = true;
+            }
+
+            function redrawChart(index, chartLike) {
+                try {
+                    const canvas = document.getElementById(`chart_${index}`);
+                    if (!canvas || !canvas.isConnected) return;
+                    const config = buildChartConfig(chartLike);
+                    if (!config) return;
+                    if (window.__autodsChartInstances[index]) {
+                        window.__autodsChartInstances[index].destroy();
+                    }
+                    window.__autodsChartInstances[index] = new Chart(canvas, config);
+                } catch (err) {
+                    console.error('Filter redraw failed for chart', index, err);
+                }
+            }
+
+            document.querySelectorAll('.filter-options input[type=checkbox]').forEach(cb => {
+                cb.addEventListener('change', applyFilters);
+            });
+            document.querySelectorAll('.filter-mini-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const dropdown = btn.closest('.filter-dropdown');
+                    const idx = dropdown.getAttribute('data-filter-index');
+                    const checkedState = btn.getAttribute('data-action') === 'all';
+                    document.querySelectorAll(`.filter-options[data-filter-index="${idx}"] input[type=checkbox]`)
+                        .forEach(cb => { cb.checked = checkedState; });
+                    applyFilters();
+                });
+            });
+            const resetBtn = document.getElementById('filterResetBtn');
+            if (resetBtn) {
+                resetBtn.addEventListener('click', () => {
+                    document.querySelectorAll('.filter-options input[type=checkbox]').forEach(cb => { cb.checked = true; });
+                    applyFilters();
+                });
+            }
+        })();
     </script>
 </body>
 </html>""")
