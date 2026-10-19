@@ -2153,52 +2153,81 @@ function dlData(fmt){
   window.open(`${API}/download_data/${sid}?fmt=${fmt}`, "_blank");
 }
 
-// Build and submit a real, invisible HTML form as a genuine top-level
-// navigation. This is the mechanism dlPresentation()/dlNotebook() below use
-// instead of the old "open a blank tab, POST elsewhere, then redirect the
-// tab" trick: a form submit triggered synchronously inside the click
-// handler carries no async gap, so there's no window where a browser's user
-// -activation timeout can silently swallow the navigation and leave a blank
-// tab behind. It also carries the full chart-history JSON as the POST body
-// directly, so no separate /api/stage_charts round-trip is needed either.
-function _submitDownloadForm(action, chartsJson){
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = action;
-  form.target = "_blank";
-  form.style.display = "none";
-  const input = document.createElement("input");
-  input.type = "hidden";
-  input.name = "charts_json";
-  input.value = chartsJson;
-  form.appendChild(input);
-  document.body.appendChild(form);
-  form.submit();
-  form.remove();
+// Fetch the file as a blob and save it via a same-document <a download>
+// click — no new window or tab is ever opened. This matters specifically
+// because the chart-carrying downloads (HTML report, notebook) need to send
+// a POST body (the chart history), and the previous approaches both had a
+// real way to lose that body in some environment:
+//   - fetch-into-a-new-tab: the window.open() needed to show the result had
+//     to happen synchronously in the click handler, or strict browsers
+//     (mobile Safari) would silently block it once the fetch's await had
+//     passed — so slow requests left a blank tab with no error.
+//   - <form target="_blank"> POST: reliable in an ordinary browser tab, but
+//     a target="_blank" submission is a request to open a *new window*, and
+//     any shell that intercepts new-window navigations to route them
+//     elsewhere (an Electron desktop app's window-open handler, for one)
+//     can easily end up re-issuing that navigation as a plain GET with no
+//     body at all — the server never sees the POST data, and silently
+//     falls back to a generic report with none of the real charts, with no
+//     error anywhere to explain why.
+// A blob download triggers the browser's native save mechanism directly in
+// the current page, with no new window/tab/navigation involved at all, so
+// there's nothing for an embedding shell to intercept and nothing to expire
+// -- the fetch can take as long as it needs.
+async function _downloadViaBlob(url, options, fallbackFilename){
+  const res = await fetch(url, options);
+  if(!res.ok){
+    let detail = "";
+    try{ detail = (await res.json()).detail || ""; }catch(e){ /* non-JSON error body */ }
+    throw new Error(detail || `Download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  let filename = fallbackFilename;
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+  if(match) filename = match[1];
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
 }
 
-function dlPresentation(){
+async function dlPresentation(){
   const sid = getState().sessionId;
   if(!sid) return;
-  _submitDownloadForm(`${API}/download_html_form/${sid}`, JSON.stringify(customChartSpecs));
+  try{
+    await _downloadViaBlob(
+      `${API}/download_html/${sid}`,
+      {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({charts: customChartSpecs})},
+      "autods_report.html"
+    );
+  }catch(err){ alert(`Couldn't download the report: ${err.message}`); }
 }
 
 function dlWork(){
   const sid = getState().sessionId;
   if(!sid) return;
-  // window.open (not a hidden-anchor .click()) is the same proven pattern
-  // dlData() uses for CSV/Excel downloads below — it's a direct, synchronous
-  // response to the click, so it isn't subject to popup/download blocking
-  // the way a dynamically-built anchor can be.
+  // No chart data rides along with this one (just the session's files), so
+  // there's no POST body to lose — the simpler window.open download dlData()
+  // uses below is fine here too.
   window.open(`${API}/download_work/${sid}`, "_blank");
 }
 
-function dlNotebook(){
+async function dlNotebook(){
   const sid = getState().sessionId;
   if(!sid) return;
-  // Same fix as dlPresentation() above: a real form submission instead of
-  // fetching a blob into a new tab.
-  _submitDownloadForm(`${API}/download_notebook_form/${sid}`, JSON.stringify(customChartSpecs));
+  try{
+    await _downloadViaBlob(
+      `${API}/download_notebook/${sid}`,
+      {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({charts: customChartSpecs})},
+      "autods_notebook.zip"
+    );
+  }catch(err){ alert(`Couldn't download the notebook: ${err.message}`); }
 }
 
 // ---------- UPLOAD HELPERS ----------
@@ -3680,7 +3709,7 @@ function renderVizSuggestions(charts){
     card._spec = reportSpec;
     customChartSpecs.push(reportSpec);
     const noteId = "vizNote_" + id;
-    card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="vc-reason">${ch.reason}</div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div><div class="chart-note-wrap"><label for="${noteId}">Your notes <span class="chart-note-saved">saved ✓</span></label><textarea id="${noteId}" placeholder="Write what this chart actually means to you — this is yours, not auto-generated. Included in the downloaded HTML report and notebook.">${escapeHtml(reportSpec.user_note || "")}</textarea></div>`;
+    card.innerHTML = `<div class="viz-card-head"><div class="vc-title">${ch.title}</div><button class="icon-btn close" title="Close chart">×</button></div><div class="chart-box" style="height:65vh;min-height:320px;"><canvas id="${id}"></canvas></div><div class="chart-note-wrap"><label for="${noteId}">Your notes <span class="chart-note-saved">saved ✓</span></label><textarea id="${noteId}" placeholder="Write what this chart actually means to you — this is yours, not auto-generated. Included in the downloaded HTML report and notebook.">${escapeHtml(reportSpec.user_note || "")}</textarea></div>`;
     const noteEl = card.querySelector(`#${CSS.escape(noteId)}`);
     const savedIndicator = card.querySelector(".chart-note-saved");
     let noteSaveTimer = null;
@@ -4044,9 +4073,11 @@ function explainChart(ch){
 }
 
 function addCustomChart(ch){
-  // Attach title/reason so the downloaded report can show a sensible label,
-  // and keep this spec around so the detailed HTML report can include it.
-  const reportSpec = {...ch, title: chartTitle(ch), reason: explainChart(ch), _reportSource: "custom"};
+  // Attach a title so the downloaded report can show a sensible label, and
+  // keep this spec around so the detailed HTML report can include it.
+  // (No auto-generated explanation text is attached — only "Your notes",
+  // which the person writes themselves, appears alongside the chart.)
+  const reportSpec = {...ch, title: chartTitle(ch), reason: "", _reportSource: "custom"};
   customChartSpecs.push(reportSpec);
   if(dsState[activeDs]) dsState[activeDs].customChartSpecs = [...customChartSpecs];
   _renderCustomChartCard(reportSpec);
@@ -4065,7 +4096,7 @@ function _renderCustomChartCard(spec){
     ? `<div class="chart-filter-note">Comparing ${escapeHtml(spec.filter_col)}: ${spec.filter_values.map(escapeHtml).join(", ")}</div>`
     : "";
   const noteId = "vizNote_" + id;
-  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div>${compareNote}<div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-explain">${spec.reason || explainChart(spec)}</div><div class="chart-note-wrap"><label for="${noteId}">Your notes <span class="chart-note-saved">saved ✓</span></label><textarea id="${noteId}" placeholder="Write what this chart actually means to you — this is yours, not auto-generated. Included in the downloaded HTML report and notebook.">${escapeHtml(spec.user_note || "")}</textarea></div>`;
+  panel.innerHTML = `<div class="chart-panel-head"><div class="chart-panel-title">${chartTitle(spec)}</div><div class="chart-panel-actions"><button class="icon-btn download" title="Download chart">⬇</button><button class="icon-btn close" title="Close chart">×</button></div></div>${compareNote}<div class="chart-box" style="height:75vh;min-height:400px;"><canvas id="${id}"></canvas></div><div class="chart-note-wrap"><label for="${noteId}">Your notes <span class="chart-note-saved">saved ✓</span></label><textarea id="${noteId}" placeholder="Write what this chart actually means to you — this is yours, not auto-generated. Included in the downloaded HTML report and notebook.">${escapeHtml(spec.user_note || "")}</textarea></div>`;
   panel.querySelector(".download").addEventListener("click", () => downloadChart(id, chartTitle(spec)));
   const noteEl = panel.querySelector(`#${CSS.escape(noteId)}`);
   const savedIndicator = panel.querySelector(".chart-note-saved");

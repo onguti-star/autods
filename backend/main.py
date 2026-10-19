@@ -84,6 +84,12 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Without this, a cross-origin fetch() (e.g. the desktop app's webview
+    # calling a separately-hosted API) can't read Content-Disposition on the
+    # response at all -- response.headers.get(...) silently returns null, so
+    # downloads fall back to a generic filename. Browsers never expose
+    # response headers cross-origin unless the server explicitly allows it.
+    expose_headers=["Content-Disposition"],
 )
 
 _session_cleanup_task: "asyncio.Task | None" = None

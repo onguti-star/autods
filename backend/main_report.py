@@ -319,6 +319,11 @@ def _build_html_report(session, extra_charts=None) -> str:
     type_counts = _column_type_counts(profile)
     quality_flags = _quality_flags(profile)
     charts = list(extra_charts or [])
+    # Which of the three tiers below actually supplied the chart list —
+    # shown as a banner in the report itself so it's never a silent guess
+    # whether "missing" charts are a bug or just charts that never reached
+    # this particular request in the first place.
+    chart_source = "posted"
     if not charts:
         # Nothing was POSTed with this particular request. That legitimately
         # happens for a first-ever download before the person has opened the
@@ -333,6 +338,7 @@ def _build_html_report(session, extra_charts=None) -> str:
         # dashboard from the most recent successful download), and only drop
         # to auto-suggestions if nothing has ever been staged at all.
         charts = list(getattr(session, "staged_charts", None) or [])
+        chart_source = "stale_staged" if charts else "none"
     if not charts:
         try:
             charts = viz.suggest_visuals(session.df, has_geojson=bool(getattr(session, "geojson", None)))
@@ -340,6 +346,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                 c["reason"] = c.get("reason", "") or "Automatically suggested based on this dataset."
         except Exception:
             charts = []
+        chart_source = "auto_suggested"
     chart_data_json = json.dumps(charts)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     pca_result = _report_pca_result(session)
@@ -615,6 +622,18 @@ def _build_html_report(session, extra_charts=None) -> str:
         .importance-fill { height: 100%; background-color: var(--pbi-gold); }
         .narrative-text { color: var(--pbi-gray); line-height: 1.8; margin: 15px 0; }
         .data-preview { font-size: 0.85em; overflow-x: auto; }
+
+        .chart-source-banner {
+            background-color: #FEF3E8;
+            border: 1px solid #F2C80F;
+            border-left: 4px solid #D97706;
+            color: #6B4A00;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 18px;
+            font-size: 0.92em;
+            line-height: 1.5;
+        }
 
         /* Chart tiles laid out as a dashboard grid, not a single stacked column */
         .chart-row {
@@ -973,12 +992,20 @@ def _build_html_report(session, extra_charts=None) -> str:
         </div>""")
 
     if charts:
-        html_parts.append("""        <h2 class="section-title" id="visualizations">📊 Visualizations Created</h2>
-        <div class="chart-row">""")
+        # The chart count is shown right in the heading so it's obvious at a
+        # glance whether this file has everything you built — if you add
+        # more charts after downloading, this number won't update on its
+        # own (the file is a static snapshot from the moment you clicked
+        # Download); re-download to get a fresh one with the new count.
+        html_parts.append(f"""        <h2 class="section-title" id="visualizations">📊 Visualizations Created ({len(charts)})</h2>""")
+        if chart_source == "stale_staged":
+            html_parts.append("""        <div class="chart-source-banner">⚠️ These are the charts from your <strong>last successful download</strong> of this dataset, not whatever is on your dashboard right now — this download didn't receive your current chart list. Make sure the charts you want are visible on your dashboard, then click "Download HTML Report" again.</div>""")
+        elif chart_source == "auto_suggested":
+            html_parts.append("""        <div class="chart-source-banner">⚠️ No chart list was received with this download, and nothing was on file from a previous one — these are AutoDS's own auto-suggested charts, <strong>not</strong> anything built on the Visualize tab. If you built charts, make sure they're visible on your dashboard, then click "Download HTML Report" again.</div>""")
+        html_parts.append("""        <div class="chart-row">""")
         for index, chart in enumerate(charts):
             canvas_id = f"chart_{index}"
             chart_title = html.escape(str(chart.get("title") or "Visualization"))
-            chart_note = html.escape(str(chart.get("reason") or ""))
             user_note = str(chart.get("user_note") or "").strip()
             user_note_html = (
                 f'<div class="chart-user-note"><span class="label">Your notes</span>{html.escape(user_note)}</div>'
@@ -986,7 +1013,6 @@ def _build_html_report(session, extra_charts=None) -> str:
             )
             html_parts.append(f"""            <div class="chart-card">
                 <div class="chart-title">{chart_title}</div>
-                <div class="chart-notice">{chart_note}</div>
                 <div class="chart-actions">
                     <button class="chart-btn" onclick="copyChart({index})">📋 Copy Image</button>
                 </div>
@@ -1885,28 +1911,45 @@ def _build_html_report(session, extra_charts=None) -> str:
         }
 
         reportCharts.forEach((chart, index) => {
-            const canvas = document.getElementById(`chart_${index}`);
-            if (!canvas) return;
-            if (chart.type === 'heatmap') {
-                if (renderHeatmap(canvas, chart)) return;
-            }
-            const config = buildChartConfig(chart);
-            if (!config) {
-                // Some chart types (wordcloud, scatter_map) already remove the
-                // canvas themselves inside buildChartConfig. Only insert the
-                // fallback notice if the canvas is still attached — otherwise
-                // canvas.parentElement is null here and this throws, which
-                // would abort the whole forEach and skip every later chart.
-                if (canvas.isConnected) {
+            // Every chart renders independently: if building or drawing THIS
+            // one throws (bad/edge-case data for its type), that must never
+            // take the rest of the array down with it — forEach doesn't
+            // recover from an uncaught error, it just stops, silently
+            // dropping every chart after the one that failed. Each chart
+            // gets its own try/catch so one bad chart just shows a notice
+            // instead of making every later chart vanish too.
+            try {
+                const canvas = document.getElementById(`chart_${index}`);
+                if (!canvas) return;
+                if (chart.type === 'heatmap') {
+                    if (renderHeatmap(canvas, chart)) return;
+                }
+                const config = buildChartConfig(chart);
+                if (!config) {
+                    // Some chart types (wordcloud, scatter_map) already remove the
+                    // canvas themselves inside buildChartConfig. Only insert the
+                    // fallback notice if the canvas is still attached.
+                    if (canvas.isConnected) {
+                        const notice = document.createElement('div');
+                        notice.className = 'chart-notice';
+                        notice.textContent = 'This visualization is not rendered as an interactive chart in the downloaded report.';
+                        canvas.parentElement.insertBefore(notice, canvas);
+                        canvas.remove();
+                    }
+                    return;
+                }
+                new Chart(canvas, config);
+            } catch (err) {
+                console.error('Chart render failed for', chart && chart.title, err);
+                const canvas = document.getElementById(`chart_${index}`);
+                if (canvas && canvas.isConnected) {
                     const notice = document.createElement('div');
                     notice.className = 'chart-notice';
-                    notice.textContent = 'This visualization is not rendered as an interactive chart in the downloaded report.';
+                    notice.textContent = 'This visualization could not be rendered (see browser console for details).';
                     canvas.parentElement.insertBefore(notice, canvas);
                     canvas.remove();
                 }
-                return;
             }
-            new Chart(canvas, config);
         });
     </script>
 </body>
