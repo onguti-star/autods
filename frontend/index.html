@@ -442,9 +442,13 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .bi-pane .ct-btn[data-type="wordcloud"]::before{content:"☁";}
 
 .bi-canvas{min-width:0;}
-.bi-active-filter{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:var(--bi-gap);padding:7px 10px;border:1px solid var(--cyan);border-radius:4px;background:rgba(95,212,214,0.07);font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);}
+.bi-active-filter{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:var(--bi-gap);padding:7px 10px;border:1px solid var(--cyan);border-radius:4px;background:rgba(95,212,214,0.07);font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);position:sticky;top:0;z-index:5;}
 .bi-active-filter b{color:var(--cyan);font-weight:600;}
-.bi-active-filter button{margin-left:auto;padding:3px 9px;font-size:10px;}
+.bi-active-filter button{padding:3px 9px;font-size:10px;}
+.bi-active-filter #biClearAllFilters{margin-left:auto;}
+.bi-filter-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 6px;border:1px solid rgba(95,212,214,0.4);border-radius:3px;background:rgba(95,212,214,0.05);}
+.bi-filter-chip .chip-x{background:transparent;color:var(--ink-dim);border:none;padding:0 2px;font-size:12px;line-height:1;cursor:pointer;margin:0;}
+.bi-filter-chip .chip-x:hover{color:var(--bad);filter:none;}
 .bi-tiles{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--bi-gap);grid-auto-flow:row dense;}
 .bi-tiles>.viz-grid,.bi-tiles>.chart-gallery{display:contents!important;margin:0!important;}
 .bi-tiles>.viz-grid>:not(.bi-tile),.bi-tiles>.chart-gallery>:not(.bi-tile){grid-column:1/-1;}
@@ -1087,10 +1091,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
             <div id="vizFilterValues" class="filter-value-list"><p class="hint" style="margin:4px 0;">Pick a column to see its values.</p></div>
           </div>
           <div class="bi-pane-actions">
-            <button type="button" id="biApplyFilter">Apply to all visuals</button>
-            <button type="button" class="sec" id="biResetFilter">Reset</button>
+            <button type="button" id="biApplyFilter">Add / update filter</button>
+            <button type="button" class="sec" id="biResetFilter">Clear all filters</button>
           </div>
-          <div class="bi-status" id="biFilterStatus">Tip: click a bar or pie slice to cross-filter the other visuals. Ticked values here also apply to the next visual you build.</div>
+          <div class="bi-status" id="biFilterStatus">Tip: pick any column, tick its values, then "Add / update filter" — repeat for another column to stack filters. Click a bar or pie slice to cross-filter. Ticked values here also apply to the next visual you build.</div>
         </div>
       </aside>
 
@@ -1950,6 +1954,10 @@ function clearAnalysisUI(){
   currentCorrelation = null;
   allColumns = [];
   customChartSpecs.length = 0;
+  // A new/different dataset won't have the same columns, so any active
+  // cross-filters (which reference specific column names) no longer apply.
+  if(typeof filts !== "undefined"){ filts = []; gen++; }
+  if($("biActiveFilter")){ $("biActiveFilter").classList.add("hidden"); $("biActiveFilter").innerHTML = ""; }
 
   [
     "edaStats","colList","describeWrap","previewWrap","cleanPreviewWrap","edaUpdatedPreviewWrap",
@@ -3786,9 +3794,16 @@ async function loadVizFilterValues(col){
     }
     // All values start checked — an unfiltered chart — so the user only
     // narrows things down when they actively want to compare a subset.
-    wrap.innerHTML = data.values.map((v, i) =>
-      `<label><input type="checkbox" value="${escapeHtml(String(v))}" checked data-idx="${i}"> ${escapeHtml(String(v))}</label>`
-    ).join("") + (data.truncated ? `<div class="fv-truncated">Showing top ${data.values.length} of ${data.total_unique.toLocaleString()} values.</div>` : "");
+    // If this column already has an active filter (from a previous "Apply
+    // to all visuals" or a chart click), reflect its current selection
+    // instead of resetting back to "everything".
+    const existing = (typeof filts !== "undefined") ? filts.find(f => f.col === col) : null;
+    const existingSet = existing ? new Set(existing.values.map(String)) : null;
+    wrap.innerHTML = data.values.map((v, i) => {
+      const vs = String(v);
+      const checked = existingSet ? existingSet.has(vs) : true;
+      return `<label><input type="checkbox" value="${escapeHtml(vs)}" ${checked ? "checked" : ""} data-idx="${i}"> ${escapeHtml(vs)}</label>`;
+    }).join("") + (data.truncated ? `<div class="fv-truncated">Showing top ${data.values.length} of ${data.total_unique.toLocaleString()} values.</div>` : "");
   }catch(err){
     wrap.innerHTML = `<p class="hint" style="margin:4px 0;color:var(--bad,#e05d5d);">${escapeHtml(err.message)}</p>`;
   }
@@ -8728,8 +8743,8 @@ function renderKpis(){
 /* ---------- filtering: slicer + click-to-cross-filter ---------- */
 const FILTERABLE = new Set(["histogram","bar","pie","boxplot","scatter","line","bubble","area","violin","density"]);
 const WIDE = new Set(["choropleth","heatmap","treemap","scatter_map","heatmap_map","radar"]);
-let filt = null;        // {col, values:[], source: tile|null}
-let gen = 0;            // bumps every time the filter changes so stale responses are dropped
+let filts = [];         // active filters: [{col, values:[], source: tile|null}, ...] — one entry per column
+let gen = 0;            // bumps every time the filter set changes so stale responses are dropped
 const shortVals = v => v.length <= 3 ? v.join(", ") : v.slice(0, 2).join(", ") + ` +${v.length - 2}`;
 
 function setChip(tile, text, kind){
@@ -8750,16 +8765,28 @@ function statusMsg(text, warn){
 }
 function updateFilterBar(){
   const bar = el("biActiveFilter");
-  if(!filt){ bar.classList.add("hidden"); bar.innerHTML = ""; return; }
+  if(!filts.length){ bar.classList.add("hidden"); bar.innerHTML = ""; return; }
   bar.classList.remove("hidden");
-  bar.innerHTML = `<span>⚲ Filtering all visuals</span><b>${esc(filt.col)}</b><span>=</span><span>${esc(filt.values.join(", "))}</span><button type="button" class="sec">Clear filter</button>`;
-  bar.querySelector("button").addEventListener("click", resetFilter);
+  bar.innerHTML = `<span>⚲ Filtering all visuals</span>` +
+    filts.map(f => `<span class="bi-filter-chip"><b>${esc(f.col)}</b> = ${esc(f.values.join(", "))}` +
+      `<button type="button" class="chip-x" data-col="${esc(f.col)}" title="Remove this filter">×</button></span>`).join("") +
+    (filts.length > 1 ? `<button type="button" class="sec" id="biClearAllFilters">Clear all</button>` : "");
+  bar.querySelectorAll(".chip-x").forEach(btn => btn.addEventListener("click", () => removeFilterColumn(btn.dataset.col)));
+  const clearAll = el("biClearAllFilters");
+  if(clearAll) clearAll.addEventListener("click", () => resetFilter());
+  // With a single active filter, its own chip already removes it — no
+  // separate "Clear all" needed, so fall back to the chip's × for that case.
+  if(filts.length === 1) bar.querySelector(".chip-x")?.setAttribute("title", "Clear filter");
 }
-function specUrl(spec, f){
+function specUrl(spec, activeFilters){
   let u = `${API}/visualize/${getSid()}?x=${enc(spec.x)}&chart_type=${spec.type}`;
   if(["scatter","line","bubble","area"].includes(spec.type) && spec.y) u += `&y=${enc(spec.y)}`;
   if(["boxplot","bubble","violin"].includes(spec.type) && spec.group) u += `&group=${enc(spec.group)}`;
-  return u + `&filter_col=${enc(f.col)}&filter_values=${enc(f.values.join(","))}`;
+  if(activeFilters.length){
+    const payload = activeFilters.map(f => ({col: f.col, values: f.values}));
+    u += `&filters=${enc(JSON.stringify(payload))}`;
+  }
+  return u;
 }
 function restoreTile(tile){
   if(tile._filtered){
@@ -8770,14 +8797,22 @@ function restoreTile(tile){
   }
   setChip(tile, "");
 }
-async function refilterTile(tile, f, myGen){
+async function refilterTile(tile, myGen){
   const spec = tile._spec, cv = tile.querySelector("canvas");
-  if(tile === f.source){ restoreTile(tile); setChip(tile, "selected: " + shortVals(f.values), ""); return "source"; }
+  // A chart doesn't filter itself down to the exact slice it was clicked
+  // from — but it does still respond to every OTHER active filter.
+  const ownFilters = filts.filter(f => f.source === tile);
+  const applicable = filts.filter(f => f.source !== tile);
   if(!spec || !cv || spec.x === undefined || !FILTERABLE.has(spec.type)){ setChip(tile, "not filterable", "skip"); return "skip"; }
-  if(spec.filter_col){ setChip(tile, "has its own filter", "skip"); return "skip"; }
+  if(spec.filter_col || (spec.filters && spec.filters.length)){ setChip(tile, "has its own filter", "skip"); return "skip"; }
+  if(!applicable.length){
+    restoreTile(tile);
+    if(ownFilters.length) setChip(tile, "selected: " + ownFilters.map(f => shortVals(f.values)).join(" · "), "");
+    return ownFilters.length ? "source" : "none";
+  }
   setChip(tile, "updating…", "load");
   try{
-    const res = await fetch(specUrl(spec, f));
+    const res = await fetch(specUrl(spec, applicable));
     const data = await res.json();
     if(myGen !== gen) return "stale";
     if(!res.ok) throw new Error(data.detail || "Could not filter");
@@ -8788,7 +8823,9 @@ async function refilterTile(tile, f, myGen){
     drawChart(cv.id, merged);
     tile._filtered = true;
     tile._lastFilteredData = merged;
-    setChip(tile, f.col + ": " + shortVals(f.values), "");
+    const chipText = applicable.map(f => f.col + ": " + shortVals(f.values)).join(" · ") +
+      (ownFilters.length ? " · selected: " + ownFilters.map(f => shortVals(f.values)).join(" · ") : "");
+    setChip(tile, chipText, "");
     return "ok";
   }catch(err){
     if(myGen !== gen) return "stale";
@@ -8796,22 +8833,47 @@ async function refilterTile(tile, f, myGen){
     return "err";
   }
 }
-async function applyFilter(f){
-  filt = f; const myGen = ++gen; updateFilterBar();
+async function refreshAllTiles(){
+  const myGen = gen;
+  updateFilterBar();
   statusMsg("Updating visuals…", false);
   const tiles = Array.from(tilesEl.querySelectorAll(".bi-tile"));
-  const results = await Promise.all(tiles.map(t => refilterTile(t, f, myGen)));
+  const results = await Promise.all(tiles.map(t => refilterTile(t, myGen)));
   if(myGen !== gen) return;
-  const n = results.filter(r => r === "ok").length;
+  const n = results.filter(r => r === "ok" || r === "source").length;
   const skipped = results.filter(r => r === "skip").length;
   const errs = results.filter(r => r === "err").length;
-  statusMsg(`${n} visual${n === 1 ? "" : "s"} filtered` + (skipped ? ` · ${skipped} can't be filtered (maps, heatmaps…)` : "") + (errs ? ` · ${errs} had no matching rows` : ""), errs > 0);
+  const fc = filts.length;
+  statusMsg(`${fc} filter${fc === 1 ? "" : "s"} active · ${n} visual${n === 1 ? "" : "s"} updated` +
+    (skipped ? ` · ${skipped} can't be filtered (maps, heatmaps…)` : "") +
+    (errs ? ` · ${errs} had no matching rows` : ""), errs > 0);
+}
+// Adds a filter on f.col, replacing any existing filter already on that
+// same column — this is what lets several filters (one per column) be
+// active at once, each independently added, replaced, or removed.
+function upsertFilter(f){
+  filts = filts.filter(existing => existing.col !== f.col);
+  filts.push(f);
+  gen++;
+  refreshAllTiles();
+}
+function removeFilterColumn(col){
+  if(!filts.some(f => f.col === col)) return;
+  filts = filts.filter(f => f.col !== col);
+  gen++;
+  if(!filts.length){
+    tilesEl.querySelectorAll(".bi-tile").forEach(restoreTile);
+    updateFilterBar();
+    statusMsg("Filter cleared. Tip: click a bar or pie slice to cross-filter the other visuals.", false);
+  } else {
+    refreshAllTiles();
+  }
 }
 function resetFilter(quiet){
-  filt = null; gen++;
+  filts = []; gen++;
   tilesEl.querySelectorAll(".bi-tile").forEach(restoreTile);
   updateFilterBar();
-  if(quiet !== true) statusMsg("Filter cleared. Tip: click a bar or pie slice to cross-filter the other visuals.", false);
+  if(quiet !== true) statusMsg("All filters cleared. Tip: click a bar or pie slice to cross-filter the other visuals.", false);
 }
 el("biApplyFilter").addEventListener("click", () => {
   const col = el("vizFilterCol").value;
@@ -8819,20 +8881,21 @@ el("biApplyFilter").addEventListener("click", () => {
   const checked = getCheckedFilterValues();
   const total = (vizFilterValuesCache && vizFilterValuesCache.col === col) ? vizFilterValuesCache.values.length : 0;
   if(!checked.length){ statusMsg("Tick at least one value.", true); return; }
-  if(total && checked.length === total){ resetFilter(); return; }   // "everything ticked" == no filter
-  applyFilter({col, values: checked, source: null});
+  if(total && checked.length === total){ removeFilterColumn(col); return; }   // "everything ticked" == no filter on this column
+  upsertFilter({col, values: checked, source: null});
 });
 el("biResetFilter").addEventListener("click", () => resetFilter());
 
 async function crossFilter(tile, label){
   const spec = tile._spec, col = spec.x, val = String(label);
-  if(filt && filt.source === tile && filt.col === col && filt.values.length === 1 && filt.values[0] === val){ resetFilter(); return; }
+  const existing = filts.find(f => f.source === tile && f.col === col);
+  if(existing && existing.values.length === 1 && existing.values[0] === val){ removeFilterColumn(col); return; }
   const sel = el("vizFilterCol");
   try{
     if(sel.value !== col){ sel.value = col; if(sel.value === col) await loadVizFilterValues(col); }
     if(sel.value === col) el("vizFilterValues").querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = (cb.value === val); });
   }catch(e){ /* the slicer UI is a convenience; the filter itself doesn't depend on it */ }
-  applyFilter({col, values: [val], source: tile});
+  upsertFilter({col, values: [val], source: tile});
 }
 
 /* ---------- tile chrome: drag handle, focus, resize ---------- */
@@ -8955,7 +9018,7 @@ function decorate(tile){
     const cb = colorButtonFor(tile);
     if(cb) head.append(cb);
   }
-  if(filt) refilterTile(tile, filt, gen);      // a new visual inherits the active filter
+  if(filts.length) refilterTile(tile, gen);    // a new visual inherits the active filters
   if(Date.now() - plotAt < 15000 && tile.parentNode && tile.parentNode.id === "vizResult"){
     plotAt = 0; setTimeout(() => tile.scrollIntoView({block: "nearest", behavior: "smooth"}), 60);
   }

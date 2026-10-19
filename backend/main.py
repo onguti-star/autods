@@ -1292,6 +1292,39 @@ def column_values(session_id: str, col: str):
     return {"col": col, "values": values, "truncated": truncated, "total_unique": int(len(counts))}
 
 
+def _apply_multi_filters(df: pd.DataFrame, filters_json: str | None) -> pd.DataFrame:
+    """Restricts df to rows matching every condition in filters_json — a
+    JSON-encoded list of {"col": ..., "values": [...]} objects, ANDed
+    together. This is the multi-column sibling of _apply_compare_filter
+    (which only ever supports one column); the frontend's "Filters" panel
+    uses this once the person has more than one slicer active at once.
+    Returns df unchanged if no filters were supplied.
+    """
+    if not filters_json:
+        return df
+    try:
+        conditions = json.loads(filters_json)
+    except (TypeError, ValueError):
+        raise ValueError("Could not read the filter list — try reapplying your filters.")
+    if not isinstance(conditions, list):
+        raise ValueError("Could not read the filter list — try reapplying your filters.")
+    result = df
+    for cond in conditions:
+        if not isinstance(cond, dict):
+            continue
+        col = cond.get("col")
+        values = cond.get("values")
+        if not col or not values:
+            continue
+        if col not in df.columns:
+            raise ValueError(f"Filter column '{col}' not found.")
+        wanted = [str(v) for v in values]
+        result = result[result[col].astype(str).isin(wanted)]
+    if result.empty:
+        raise ValueError("No rows match the selected filters — try unchecking one of them.")
+    return result
+
+
 def _apply_compare_filter(df: pd.DataFrame, filter_col: str | None, filter_values: str | None) -> pd.DataFrame:
     """Restrict df to the rows whose filter_col matches one of the selected
     filter_values (comma-separated). Mirrors a Power BI slicer: picking two
@@ -1322,10 +1355,12 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
                      y: str | None = None, group: str | None = None,
                      x_min: float | None = None, x_max: float | None = None,
                      bar_limit: int | None = None, bin_width: float | None = None,
-                     filter_col: str | None = None, filter_values: str | None = None):
+                     filter_col: str | None = None, filter_values: str | None = None,
+                     filters: str | None = None):
     session = _get_session_or_404(session_id)
     try:
         df = _apply_compare_filter(session.df, filter_col, filter_values)
+        df = _apply_multi_filters(df, filters)
 
         if chart_type == "choropleth":
             _ensure_named_geojson(session)
@@ -1391,6 +1426,11 @@ def visualize_custom(session_id: str, x: str, chart_type: str,
         if filter_col:
             chart["filter_col"] = filter_col
             chart["filter_values"] = [v for v in (filter_values or "").split(",") if v != ""]
+        if filters:
+            try:
+                chart["filters"] = json.loads(filters)
+            except (TypeError, ValueError):
+                pass
         insight = narrate.explain_chart(chart_type, x, df, y=y, group=group)
         if insight:
             chart["insight"] = insight

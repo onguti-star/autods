@@ -335,27 +335,42 @@ def _json_safe_cell(value, numeric: bool):
 
 
 def _build_report_filter_payload(df: pd.DataFrame, profile: dict, charts: list,
-                                   max_filters: int = 12, max_rows: int = 20000) -> dict | None:
+                                   max_filters: int = 20, max_rows: int = 20000,
+                                   max_values_per_filter: int = 50) -> dict | None:
     """Builds the data the downloaded report's \"Filters\" bar (a Power BI
     style slicer) needs to run entirely client-side, with no server round
-    trip: a small set of low-cardinality categorical columns to filter by,
-    plus a capped row sample covering every column any filterable chart
-    (bar/pie/stacked_bar) is built from, so those charts can be
+    trip: any categorical or numeric column to filter by — categorical as a
+    checked value list (top values by frequency, same ordering the app's
+    own slicer uses), numeric as a min/max range — plus a capped row sample
+    covering every column any filterable chart (bar/pie/stacked_bar/
+    histogram/scatter/bubble/boxplot) is built from, so those charts can be
     re-aggregated in the browser as filters change. Returns None if the
     dataset has nothing worth offering as a filter, so the report falls
     back to today's behaviour with no filter bar at all.
     """
     col_profiles = {c.get("name"): c for c in profile.get("columns", []) if c.get("name")}
 
-    eligible = [
+    # Any column can be a filter — categorical columns (regardless of how
+    # many distinct values they have) as a checklist, numeric columns as a
+    # range. Low-cardinality categoricals are offered first since they're
+    # the most immediately useful slicers (e.g. gender, department); wide
+    # datasets are capped at max_filters so the bar stays usable.
+    categorical_candidates = [
         c for c in profile.get("columns", [])
-        if c.get("type") == "categorical" and 2 <= int(c.get("unique", 0) or 0) <= 50
-        and c.get("name") in df.columns
+        if c.get("type") == "categorical" and c.get("name") in df.columns
     ]
-    eligible.sort(key=lambda c: int(c.get("unique", 0) or 0))
-    filter_cols = [c["name"] for c in eligible[:max_filters]]
-    if not filter_cols:
+    categorical_candidates.sort(key=lambda c: int(c.get("unique", 0) or 0))
+    numeric_candidates = [
+        c for c in profile.get("columns", [])
+        if c.get("type") == "numeric" and c.get("name") in df.columns
+        and c.get("stats", {}).get("min") is not None and c.get("stats", {}).get("max") is not None
+        and c["stats"]["min"] != c["stats"]["max"]
+    ]
+    filter_candidates = (categorical_candidates + numeric_candidates)[:max_filters]
+    if not filter_candidates:
         return None
+
+    filter_cols = [c["name"] for c in filter_candidates]
 
     # Columns a filterable chart needs in order to re-aggregate itself from
     # raw rows, even if that particular column isn't offered as a filter
@@ -387,10 +402,24 @@ def _build_report_filter_payload(df: pd.DataFrame, profile: dict, charts: list,
         rows.append({c: _json_safe_cell(r[c], c in numeric_cols) for c in needed_cols})
 
     columns_meta = []
-    for c in filter_cols:
-        values = sorted({str(v) for v in df[c].dropna().unique()})
-        if values:
-            columns_meta.append({"name": c, "values": values})
+    for c in filter_candidates:
+        name = c["name"]
+        if c.get("type") == "numeric":
+            lo, hi = float(c["stats"]["min"]), float(c["stats"]["max"])
+            columns_meta.append({"name": name, "kind": "numeric", "min": lo, "max": hi})
+        else:
+            counts = df[name].dropna().astype(str).value_counts()
+            if counts.empty:
+                continue
+            truncated = len(counts) > max_values_per_filter
+            top = counts.head(max_values_per_filter)
+            columns_meta.append({
+                "name": name,
+                "kind": "categorical",
+                "values": top.index.tolist(),
+                "truncated": truncated,
+                "total_unique": int(len(counts)),
+            })
     if not columns_meta:
         return None
 
@@ -789,7 +818,8 @@ def _build_html_report(session, extra_charts=None) -> str:
             color: #96800A;
             margin-bottom: 4px;
         }
-        /* Filters bar (Power BI-style slicers) */
+        /* Filters bar (Power BI-style slicers). Sticky so it's always one
+           glance away instead of something you have to scroll back up for. */
         .filter-bar {
             background-color: var(--pbi-card);
             border: 1px solid var(--pbi-border);
@@ -797,6 +827,9 @@ def _build_html_report(session, extra_charts=None) -> str:
             box-shadow: var(--pbi-shadow);
             margin: 0 24px 22px;
             padding: 14px 18px;
+            position: sticky;
+            top: 10px;
+            z-index: 20;
         }
         .filter-bar-head {
             display: flex;
@@ -846,6 +879,16 @@ def _build_html_report(session, extra_charts=None) -> str:
         .filter-option { display: block; font-size: 0.86em; padding: 3px 0; color: var(--pbi-dark); cursor: pointer; }
         .filter-option input { margin-right: 6px; }
         .filter-option-actions { display: flex; gap: 8px; margin: 6px 0 8px; }
+        .fv-truncated { color: var(--pbi-gray); font-size: 0.76em; font-style: italic; margin-top: 4px; }
+        .filter-range-inputs { display: flex; align-items: center; gap: 6px; font-size: 0.86em; color: var(--pbi-dark); }
+        .filter-range-inputs input[type="number"] {
+            width: 80px;
+            padding: 4px 6px;
+            border: 1px solid var(--pbi-border);
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.95em;
+        }
         .filter-mini-btn {
             border: 1px solid var(--pbi-border);
             background-color: var(--pbi-card);
@@ -903,19 +946,40 @@ def _build_html_report(session, extra_charts=None) -> str:
         </div>""")
 
     # Filters bar (Power BI-style slicers): only rendered when the dataset
-    # actually has low-cardinality categorical columns worth filtering by.
-    # Entirely client-side — see the reportFilterData script block near the
-    # end of this file for how it re-aggregates the bar/pie/stacked_bar
-    # charts below as filters change.
+    # has at least one column worth filtering by. Any categorical or
+    # numeric column can be a filter, and several can be active at once —
+    # entirely client-side; see the reportFilterData script block near the
+    # end of this file for how it re-aggregates the bar/pie/stacked_bar/
+    # histogram/scatter/bubble/boxplot charts below as filters change.
     if filter_payload:
         filter_sections = []
         for i, col_meta in enumerate(filter_payload["columns"]):
             name_esc = html.escape(str(col_meta["name"]))
+            if col_meta["kind"] == "numeric":
+                lo, hi = col_meta["min"], col_meta["max"]
+                filter_sections.append(f"""                <details class="filter-dropdown filter-range" data-filter-index="{i}">
+                    <summary>{name_esc} <span class="filter-badge">range</span></summary>
+                    <div class="filter-options" data-filter-index="{i}">
+                        <div class="filter-range-inputs">
+                            <input type="number" class="fr-min" step="any" value="{lo!r}" aria-label="Minimum {name_esc}">
+                            <span>to</span>
+                            <input type="number" class="fr-max" step="any" value="{hi!r}" aria-label="Maximum {name_esc}">
+                        </div>
+                        <div class="filter-option-actions">
+                            <button type="button" class="filter-mini-btn" data-action="resetrange">Reset range</button>
+                        </div>
+                    </div>
+                </details>""")
+                continue
             options_html = "".join(
                 f'<label class="filter-option"><input type="checkbox" value="{html.escape(str(v), quote=True)}" checked> '
                 f'{html.escape(str(v))}</label>'
                 for v in col_meta["values"]
             )
+            truncated_note = ""
+            if col_meta.get("truncated"):
+                truncated_note = (f'<div class="fv-truncated">Showing top {len(col_meta["values"])} of '
+                                   f'{col_meta["total_unique"]:,} values (by frequency).</div>')
             filter_sections.append(f"""                <details class="filter-dropdown" data-filter-index="{i}">
                     <summary>{name_esc} <span class="filter-badge">{len(col_meta['values'])}</span></summary>
                     <div class="filter-options" data-filter-index="{i}">
@@ -924,6 +988,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                             <button type="button" class="filter-mini-btn" data-action="none">None</button>
                         </div>
                         {options_html}
+                        {truncated_note}
                     </div>
                 </details>""")
         sample_note = ""
@@ -2413,20 +2478,35 @@ def _build_html_report(session, extra_charts=None) -> str:
             function currentSelections() {
                 const sel = {};
                 filterCols.forEach((f, i) => {
+                    if (f.kind === 'numeric') {
+                        const body = document.querySelector(`.filter-options[data-filter-index="${i}"]`);
+                        const minInput = body && body.querySelector('.fr-min');
+                        const maxInput = body && body.querySelector('.fr-max');
+                        const lo = (minInput && minInput.value !== '') ? Number(minInput.value) : f.min;
+                        const hi = (maxInput && maxInput.value !== '') ? Number(maxInput.value) : f.max;
+                        const isDefault = !isFinite(lo) || !isFinite(hi) || (lo <= f.min && hi >= f.max);
+                        sel[f.name] = isDefault ? null : { kind: 'numeric', lo, hi };
+                        return;
+                    }
                     const boxes = Array.from(document.querySelectorAll(
                         `.filter-options[data-filter-index="${i}"] input[type=checkbox]`));
                     const checked = boxes.filter(b => b.checked).map(b => b.value);
-                    sel[f.name] = (checked.length === boxes.length) ? null : new Set(checked);
+                    sel[f.name] = (checked.length === boxes.length) ? null : { kind: 'categorical', values: new Set(checked) };
                 });
                 return sel;
             }
 
             function rowMatches(row, sel) {
                 for (const col in sel) {
-                    const set = sel[col];
-                    if (set === null) continue;
+                    const cond = sel[col];
+                    if (cond === null) continue;
                     const v = row[col];
-                    if (v === null || v === undefined || !set.has(String(v))) return false;
+                    if (v === null || v === undefined) return false;
+                    if (cond.kind === 'numeric') {
+                        if (v < cond.lo || v > cond.hi) return false;
+                    } else if (!cond.values.has(String(v))) {
+                        return false;
+                    }
                 }
                 return true;
             }
@@ -2493,13 +2573,27 @@ def _build_html_report(session, extra_charts=None) -> str:
             document.querySelectorAll('.filter-options input[type=checkbox]').forEach(cb => {
                 cb.addEventListener('change', applyFilters);
             });
+            document.querySelectorAll('.filter-range input[type=number]').forEach(inp => {
+                inp.addEventListener('change', applyFilters);
+            });
             document.querySelectorAll('.filter-mini-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const dropdown = btn.closest('.filter-dropdown');
                     const idx = dropdown.getAttribute('data-filter-index');
-                    const checkedState = btn.getAttribute('data-action') === 'all';
-                    document.querySelectorAll(`.filter-options[data-filter-index="${idx}"] input[type=checkbox]`)
-                        .forEach(cb => { cb.checked = checkedState; });
+                    const action = btn.getAttribute('data-action');
+                    if (action === 'resetrange') {
+                        const f = filterCols[idx];
+                        const body = document.querySelector(`.filter-options[data-filter-index="${idx}"]`);
+                        if (f && body) {
+                            const minInput = body.querySelector('.fr-min'), maxInput = body.querySelector('.fr-max');
+                            if (minInput) minInput.value = f.min;
+                            if (maxInput) maxInput.value = f.max;
+                        }
+                    } else {
+                        const checkedState = action === 'all';
+                        document.querySelectorAll(`.filter-options[data-filter-index="${idx}"] input[type=checkbox]`)
+                            .forEach(cb => { cb.checked = checkedState; });
+                    }
                     applyFilters();
                 });
             });
@@ -2507,6 +2601,13 @@ def _build_html_report(session, extra_charts=None) -> str:
             if (resetBtn) {
                 resetBtn.addEventListener('click', () => {
                     document.querySelectorAll('.filter-options input[type=checkbox]').forEach(cb => { cb.checked = true; });
+                    filterCols.forEach((f, i) => {
+                        if (f.kind !== 'numeric') return;
+                        const body = document.querySelector(`.filter-options[data-filter-index="${i}"]`);
+                        const minInput = body && body.querySelector('.fr-min'), maxInput = body && body.querySelector('.fr-max');
+                        if (minInput) minInput.value = f.min;
+                        if (maxInput) maxInput.value = f.max;
+                    });
                     applyFilters();
                 });
             }
