@@ -445,46 +445,92 @@ def _add_data_cell(cells: list[dict], session) -> bool:
         "# The original data exactly as uploaded, before any AutoDS cleaning.\n",
         "# Place this notebook in the same folder as the CSV file(s) it downloaded with.\n",
         "df_original = pd.read_csv('original_data.csv')\n",
+        "df = df_original.copy()\n\n",
+        "print(f'Loaded data: {len(df):,} rows x {len(df.columns)} columns')\n",
+        "df.head()",
     ]
-    if original_differs:
-        lines += [
-            "\n# The cleaned/current data, after every cleaning step done in AutoDS.\n",
-            "df = pd.read_csv('cleaned_data.csv')\n\n",
-            "print(f'Original data: {len(df_original):,} rows x {len(df_original.columns)} columns')\n",
-            "print(f'Cleaned data:  {len(df):,} rows x {len(df.columns)} columns')\n",
-            "df.head()",
-        ]
-    else:
-        lines += [
-            "\n# No cleaning has been applied yet, so this is the same as the original data --\n",
-            "# df is just a convenience alias so the rest of this notebook has something to work with.\n",
-            "df = df_original\n\n",
-            "print(f'Loaded data: {len(df):,} rows x {len(df.columns)} columns')\n",
-            "df.head()",
-        ]
+    # If cleaning happened, df is transformed step by step into the cleaned
+    # result by the cleaning cells below (see _add_cleaning_cells) instead of
+    # being loaded pre-cleaned here -- that's what makes those cells runnable,
+    # reproducible cleaning code instead of a description of what happened.
     cells.append(_code_cell("".join(lines)))
     return original_differs
 
 
+_CLEAN_OPTION_ORDER = [
+    "fix_column_names", "strip_whitespace", "fix_mixed_types",
+    "drop_constant_cols", "drop_high_missing_cols", "drop_duplicates",
+    "fill_missing_numeric", "fill_missing_categorical", "remove_outliers",
+]
+
+
+def _clean_options_literal(options: dict) -> str:
+    """Multi-line dict literal (one option per line) for embedding in a
+    generated code cell, in the same order clean_dataframe() applies them."""
+    ordered_keys = [k for k in _CLEAN_OPTION_ORDER if k in options]
+    ordered_keys += [k for k in options if k not in ordered_keys]  # keep any unknown/future keys too
+    body = "".join(f"    {k!r}: {options[k]!r},\n" for k in ordered_keys)
+    return "{\n" + body + "}"
+
+
 def _add_cleaning_cells(cells: list[dict], session):
+    """Replay the cleaning AutoDS actually applied as real, runnable code --
+    not a text description of it. This calls the exact same clean_dataframe()
+    / run_command() functions the app itself calls (bundled into
+    autods_cleaning_tools/ alongside the notebook; see
+    _write_cleaning_engine_bundle in main.py), so the result is guaranteed to
+    match the app instead of risking drift from a second, hand-written
+    reimplementation of the same cleaning logic."""
     cleaning_log = getattr(session, "cleaning_log", None) or []
     chat_log = getattr(session, "chat_clean_log", None) or []
+    clean_options = getattr(session, "last_clean_options", None) or {}
     if not cleaning_log and not chat_log:
         return
 
-    lines = ["Successful cleaning/actions recorded in AutoDS:"]
-    lines.extend(f"- {entry}" for entry in cleaning_log)
-    lines.extend(
-        f"- Chat command: {entry.get('command', '')} -> {entry.get('message', '')}"
-        for entry in chat_log
+    intro = (
+        "## Cleaning\n\n"
+        "This reruns the exact cleaning steps applied in AutoDS, using the app's own "
+        "`clean_dataframe()` (the \"Clean Now\" button) and `run_command()` (the chat "
+        "cleaning assistant) -- the same functions AutoDS itself calls, bundled into "
+        "`autods_cleaning_tools/` next to this notebook -- so the result matches the "
+        "app instead of approximating it."
     )
-    cells.append(_markdown_cell("## Cleaning Done"))
+    if clean_options and chat_log:
+        intro += (
+            "\n\n_Note: AutoDS doesn't record whether \"Clean Now\" was clicked before "
+            "or after chat commands, only that both happened -- they're replayed here "
+            "as Clean Now first, then every chat command in the order it was run._"
+        )
+    cells.append(_markdown_cell(intro))
     cells.append(_code_cell(
-        _comment_lines(lines) + "\n\n"
-        "# df (loaded above from cleaned_data.csv) is already this cleaned result --\n"
-        "# df_original (from original_data.csv) still has every row/column as uploaded,\n"
-        "# in case you want to start over or compare before/after.\n"
-        "df.shape\n"
+        "import sys\n"
+        "sys.path.insert(0, 'autods_cleaning_tools')\n"
+        "from clean import clean_dataframe\n"
+        "from clean_chat import run_command\n"
+    ))
+
+    if clean_options:
+        cells.append(_markdown_cell("### Clean Now (automated cleaning)"))
+        cells.append(_code_cell(
+            f"clean_options = {_clean_options_literal(clean_options)}\n\n"
+            "df, log = clean_dataframe(df, clean_options)\n"
+            "print('\\n'.join(log))\n"
+        ))
+
+    if chat_log:
+        cells.append(_markdown_cell("### Chat cleaning commands"))
+        for entry in chat_log:
+            command = (entry.get("command") or "").strip()
+            if not command:
+                continue
+            cells.append(_code_cell(
+                f"df, message = run_command(df, {command!r}, original_df=df_original)\n"
+                "print(message)\n"
+            ))
+
+    cells.append(_code_cell(
+        "print(f'Final shape after replaying AutoDS cleaning: {df.shape[0]:,} rows x {df.shape[1]} columns')\n"
+        "df.head()\n"
     ))
 
 
@@ -851,6 +897,13 @@ def build_notebook(session, charts: list | None = None) -> tuple[str, bool]:
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     title = "AutoDS - Completed Work Notebook" if _has_completed_work(session, charts) else "AutoDS - Data Notebook"
 
+    has_cleaning = bool((getattr(session, "cleaning_log", None) or []) or (getattr(session, "chat_clean_log", None) or []))
+    setup_note = "**Setup:** unzip this alongside the CSV file(s) it downloaded with (same folder) and run the cells from top to bottom -- no other setup needed."
+    if has_cleaning:
+        setup_note += (
+            " The zip also includes an `autods_cleaning_tools/` folder (the app's own cleaning code) "
+            "that the cleaning cells below import from -- keep it next to the notebook too."
+        )
     cells = [
         _markdown_cell(
             f"# {title}\n\n"
@@ -858,8 +911,7 @@ def build_notebook(session, charts: list | None = None) -> tuple[str, bool]:
             f"**Generated:** {generated_at}  \n"
             f"**Rows:** {len(session.df):,}  **Columns:** {len(session.df.columns)}\n\n"
             "This notebook keeps the export focused on the Python code and results from this session.\n\n"
-            "**Setup:** unzip this alongside the CSV file(s) it downloaded with (same folder) and run "
-            "the cells from top to bottom -- no other setup needed."
+            f"{setup_note}"
         )
     ]
 

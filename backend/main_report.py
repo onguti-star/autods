@@ -818,35 +818,43 @@ def _build_html_report(session, extra_charts=None) -> str:
             color: #96800A;
             margin-bottom: 4px;
         }
-        /* Filters bar (Power BI-style slicers). Sticky so it's always one
-           glance away instead of something you have to scroll back up for. */
+        /* Filters sidebar (Power BI-style slicers). A slim sticky rail on the
+           opposite side from .toc (see .report-shell) instead of a full-width
+           bar, so the report canvas keeps the full available width. */
         .filter-bar {
+            flex: 0 0 240px;
+            position: sticky;
+            top: 20px;
             background-color: var(--pbi-card);
-            border: 1px solid var(--pbi-border);
+            padding: 18px 16px;
             border-radius: 6px;
             box-shadow: var(--pbi-shadow);
-            margin: 0 24px 22px;
-            padding: 14px 18px;
-            position: sticky;
-            top: 10px;
-            z-index: 20;
+            border: 1px solid var(--pbi-border);
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
         }
         .filter-bar-head {
             display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-            margin-bottom: 10px;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 12px;
         }
-        .filter-bar-title { font-weight: 700; color: var(--pbi-dark); }
-        .filter-bar-status { color: var(--pbi-gray); font-size: 0.88em; flex: 1 1 auto; }
+        .filter-bar-title {
+            color: var(--pbi-gray);
+            font-size: 0.78em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .filter-bar-status { color: var(--pbi-gray); font-size: 0.82em; }
         .filter-sample-note { color: var(--pbi-gray); font-style: italic; }
-        .filter-bar-controls { display: flex; flex-wrap: wrap; gap: 10px; }
+        .filter-bar-controls { display: flex; flex-direction: column; gap: 8px; }
         .filter-dropdown {
             border: 1px solid var(--pbi-border);
             border-radius: 6px;
             background-color: var(--pbi-canvas);
-            min-width: 160px;
+            width: 100%;
         }
         .filter-dropdown summary {
             cursor: pointer;
@@ -907,6 +915,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             .chart-row { grid-template-columns: 1fr; }
             .report-shell { flex-direction: column; }
             .toc { position: static; width: 100%; max-height: none; }
+            .filter-bar { position: static; width: 100%; max-height: none; }
         }
         @media (max-width: 768px) {
             .report-shell { padding: 0 14px; }
@@ -995,7 +1004,11 @@ def _build_html_report(session, extra_charts=None) -> str:
         if filter_payload["sampled"]:
             sample_note = (f' <span class="filter-sample-note">(filters run against a sample of '
                             f'{filter_payload["sample_size"]:,} of {filter_payload["total_rows"]:,} rows)</span>')
-        html_parts.append(f"""        <div class="filter-bar" id="filterBar">
+        # Built here (needs filter_payload/filter_sections, computed above) but
+        # appended later, as a slim sidebar on the opposite side of .toc --
+        # see where filter_bar_html is appended, right after .report-main's
+        # content closes.
+        filter_bar_html = f"""        <div class="filter-bar" id="filterBar">
             <div class="filter-bar-head">
                 <span class="filter-bar-title">🔎 Filters</span>
                 <span class="filter-bar-status" id="filterStatus">Showing all rows{sample_note}</span>
@@ -1004,7 +1017,9 @@ def _build_html_report(session, extra_charts=None) -> str:
             <div class="filter-bar-controls">
 {chr(10).join(filter_sections)}
             </div>
-        </div>""")
+        </div>"""
+    else:
+        filter_bar_html = ""
 
     # Report shell: sticky left nav rail (Power BI-style "pages" panel) + main canvas.
     html_parts.append('        <div class="report-shell">')
@@ -1549,9 +1564,11 @@ def _build_html_report(session, extra_charts=None) -> str:
                 html_parts.append("            </tbody></table>")
             html_parts.append("        </div>")
     
-    html_parts.append("""        </div>
-        </div>
-    </div>
+    html_parts.append("        </div>")  # closes .report-main
+    if filter_bar_html:
+        html_parts.append(filter_bar_html)  # sidebar, opposite side from .toc -- still inside .report-shell
+    html_parts.append("        </div>")  # closes .report-shell
+    html_parts.append("""    </div>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         function copyReportLink() {

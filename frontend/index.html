@@ -3419,7 +3419,13 @@ $("pvCsvBtn").addEventListener("click", () => {
 // ---------- VISUALISE ----------
 function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
-  ["vizColX","vizColY","targetSelect","typeCol","splitColSel","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  ["vizColX","targetSelect","typeCol","splitColSel","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  // Y is only ever required for chart types that already validate for it
+  // (see the vizBtn click handler) -- for everything else, bar charts
+  // included, it's genuinely optional, so the dropdown needs a way to
+  // actually leave it unset instead of silently defaulting to whatever
+  // column happens to be first in the list.
+  if($("vizColY")) $("vizColY").innerHTML = `<option value="">None</option>` + opts;
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>` + opts;
   if($("vizFilterCol")) $("vizFilterCol").innerHTML = `<option value="">None</option>` + opts;
   resetVizFilterValues();

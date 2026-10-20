@@ -1866,6 +1866,14 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         new_val_raw = new_val_raw.strip(" '\"")
         new_df = df.copy()
         col_series = new_df[col]
+        if isinstance(col_series.dtype, pd.CategoricalDtype):
+            # A Categorical column raises on .where()/setitem the moment the
+            # replacement isn't already one of its existing categories (e.g.
+            # replacing a numeric course code with a brand-new text label) --
+            # decategorize first so replace can introduce any new value, the
+            # same as it would for a plain object/numeric column.
+            new_df[col] = new_df[col].astype(object)
+            col_series = new_df[col]
         if pd.api.types.is_numeric_dtype(col_series):
             old_num = _parse_value_token(old_val_raw)
             new_num = _parse_value_token(new_val_raw)

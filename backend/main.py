@@ -2860,13 +2860,41 @@ def unsupervised_association(session_id: str, req: dict):
 
 # ---------- Download Jupyter Notebook ----------
 
+def _write_cleaning_engine_bundle(zf) -> None:
+    """Bundle the app's own cleaning engine (clean.py + clean_chat.py and
+    their two small dependencies, nlp.py and assistant.py) into the zip as
+    flat, dependency-free files under autods_cleaning_tools/. The exported
+    notebook's cleaning cells import clean_dataframe()/run_command() from
+    these exact files instead of a hand-written re-implementation of the
+    same logic, so the notebook's cleaning result is guaranteed to match
+    what the app actually did instead of risking the two drifting apart."""
+    import inspect
+
+    for mod, fname in (
+        (nlp, "nlp.py"),
+        (assistant, "assistant.py"),
+        (clean_module, "clean.py"),
+        (clean_chat, "clean_chat.py"),
+    ):
+        src = inspect.getsource(mod)
+        # These four files are normally part of the `backend` package and use
+        # relative imports between each other; flatten those to plain
+        # top-level imports so the files work standalone, sitting next to the
+        # notebook with no package structure around them.
+        src = src.replace("from . import nlp", "import nlp")
+        src = src.replace("from .assistant import", "from assistant import")
+        zf.writestr(f"autods_cleaning_tools/{fname}", src)
+
+
 def _build_notebook_bundle_zip(session, charts: list | None) -> tuple[io.BytesIO, str]:
     """Zip the notebook together with the plain CSV file(s) it reads from
     (original_data.csv always, cleaned_data.csv too if cleaning changed
     anything) so the download is immediately runnable after unzipping --
     no separate "connect the dataset" step, and no base64-bloated .ipynb,
     regardless of how large the dataset is. Same bundle shape every time,
-    small dataset or large."""
+    small dataset or large. Also bundles autods_cleaning_tools/ (see
+    _write_cleaning_engine_bundle) whenever the notebook's cleaning cells
+    will need to import from it."""
     import zipfile
 
     notebook_json, needs_cleaned_csv = nb_module.build_notebook(session, charts=charts)
@@ -2878,6 +2906,8 @@ def _build_notebook_bundle_zip(session, charts: list | None) -> tuple[io.BytesIO
         zf.writestr("original_data.csv", session.original_df.to_csv(index=False))
         if needs_cleaned_csv:
             zf.writestr("cleaned_data.csv", session.df.to_csv(index=False))
+        if session.cleaning_log or session.chat_clean_log:
+            _write_cleaning_engine_bundle(zf)
     zip_buf.seek(0)
     return zip_buf, f"{name}_autods_notebook_bundle.zip"
 
