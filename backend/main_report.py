@@ -1911,9 +1911,13 @@ def _build_html_report(session, extra_charts=None) -> str:
 
         function buildChartConfig(chart) {
             switch (chart.type) {
-                case 'pie':
+                case 'pie': {
+                    // donut (default/legacy), normal (full pie, no hole) or
+                    // polar_area (slice length encodes the value too, not just angle)
+                    const pieStyle = chart._pieStyle || 'donut';
+                    const pieChartJsType = pieStyle === 'normal' ? 'pie' : pieStyle === 'polar_area' ? 'polarArea' : 'doughnut';
                     return {
-                        type: 'doughnut',
+                        type: pieChartJsType,
                         data: {
                             labels: chart.labels,
                             datasets: [{
@@ -1925,7 +1929,8 @@ def _build_html_report(session, extra_charts=None) -> str:
                         },
                         options: {
                             ...chartOptions,
-                            cutout: '52%',
+                            ...(pieChartJsType === 'doughnut' ? { cutout: '52%' } : {}),
+                            ...(pieChartJsType === 'polarArea' ? { scales: { r: { ticks: { color: '#495057' }, grid: { color: 'rgba(0,0,0,0.08)' }, angleLines: { color: 'rgba(0,0,0,0.08)' } } } } : {}),
                             plugins: {
                                 ...chartOptions.plugins,
                                 legend: {
@@ -1935,8 +1940,10 @@ def _build_html_report(session, extra_charts=None) -> str:
                                 tooltip: {
                                     callbacks: {
                                         label: (ctx) => {
+                                            // polarArea's ctx.parsed is {r: value}, not a plain number like
+                                            // pie/doughnut -- ctx.raw is the one plain number common to all three.
                                             const total = ctx.dataset.data.reduce((a, b) => a + Number(b || 0), 0);
-                                            const value = Number(ctx.parsed || 0);
+                                            const value = Number(ctx.raw || 0);
                                             const pct = total ? ` (${(value / total * 100).toFixed(1)}%)` : '';
                                             return `${ctx.label}: ${value}${pct}`;
                                         }
@@ -1945,6 +1952,7 @@ def _build_html_report(session, extra_charts=None) -> str:
                             }
                         }
                     };
+                }
                 case 'bar':
                 case 'histogram':
                     return {

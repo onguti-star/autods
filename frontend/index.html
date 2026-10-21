@@ -1113,7 +1113,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
           <div class="chart-type-grid" id="chartTypeGrid">
       <div class="ct-btn selected" data-type="histogram" onclick="selectChartType(this)"><div class="ct-name">Histogram</div><div class="ct-desc">Distribution of a numeric column</div></div>
       <div class="ct-btn" data-type="bar" onclick="selectChartType(this)"><div class="ct-name">Bar chart</div><div class="ct-desc">Value counts for a category column — or sum of Y per category, if you pick a Y column</div></div>
-      <div class="ct-btn" data-type="pie" onclick="selectChartType(this)"><div class="ct-name">Pie / Donut</div><div class="ct-desc">Proportion of each category</div></div>
+      <div class="ct-btn" data-type="pie" onclick="selectChartType(this)"><div class="ct-name">Pie chart</div><div class="ct-desc">Proportion of each category — donut, normal or polar area</div></div>
       <div class="ct-btn" data-type="boxplot" onclick="selectChartType(this)"><div class="ct-name">Box plot</div><div class="ct-desc">Median, quartiles and outliers</div></div>
       <div class="ct-btn" data-type="scatter" onclick="selectChartType(this)"><div class="ct-name">Scatter</div><div class="ct-desc">Relationship between two numeric columns</div></div>
       <div class="ct-btn" data-type="line" onclick="selectChartType(this)"><div class="ct-name">Line chart</div><div class="ct-desc">Trend of Y across X values</div></div>
@@ -1144,6 +1144,13 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <select id="boxplotMode">
           <option value="simple">Normal box plot</option>
           <option value="full">Statistical (Q1/Median/Q3)</option>
+        </select>
+      </div>
+      <div class="pred-field" id="pieStyleWrap"><label>Style</label>
+        <select id="pieStyle">
+          <option value="donut">Donut</option>
+          <option value="normal">Normal (full pie)</option>
+          <option value="polar_area">Polar area</option>
         </select>
       </div>
       <div class="pred-field" id="choroplethScaleWrap"><label>Color scale</label>
@@ -3685,6 +3692,7 @@ function updateVizFieldVisibility(){
   $("histBinWidthWrap").style.display = t === "histogram" ? "" : "none";
   $("barLimitWrap").style.display = (t === "bar" || t === "stacked_bar") ? "" : "none";
   $("boxplotModeWrap").style.display = t === "boxplot" ? "" : "none";
+  $("pieStyleWrap").style.display = t === "pie" ? "" : "none";
   $("choroplethScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("choroplethValueScaleWrap").style.display = t === "choropleth" ? "" : "none";
   $("xLabel").textContent = t === "choropleth" ? "Value column" : t === "boxplot" ? "Numeric column" : isMap ? "Latitude" : "Column (X)";
@@ -3903,6 +3911,9 @@ $("vizBtn").addEventListener("click", async () => {
     // Capture the upfront box plot mode selector so it travels with the chart object
     if(t === "boxplot"){
       ch._boxplotMode = $("boxplotMode").value;
+    }
+    if(t === "pie"){
+      ch._pieStyle = $("pieStyle").value;  // donut | normal | polar_area
     }
     if(t === "choropleth"){
       ch._colorScale = $("choroplethScale").value;
@@ -4367,9 +4378,14 @@ const corrValuePlugin = {
 function drawChart(canvasId, ch){
   vizSpecs[canvasId] = ch;
   if(ch.type === "pie"){
-    makeChart(canvasId,{type:"doughnut",
+    // donut (default/legacy), normal (full pie, no hole) or polar_area
+    // (Nightingale rose -- slice length encodes the value too, not just angle)
+    const pieStyle = ch._pieStyle || "donut";
+    const chartJsType = pieStyle === "normal" ? "pie" : pieStyle === "polar_area" ? "polarArea" : "doughnut";
+    makeChart(canvasId,{type:chartJsType,
       data:{labels:ch.labels,datasets:[{data:ch.values,backgroundColor:ch.colors||vizPalette(),borderColor:vizBorderColor(),borderWidth:2}]},
-      options:{plugins:{legend:{position:"right",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}}}});
+      options:{plugins:{legend:{position:"right",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
+        scales: chartJsType === "polarArea" ? {r:{ticks:{color:vizTextColor(),backdropColor:"transparent"},grid:{color:vizBorderColor()},angleLines:{color:vizBorderColor()}}} : undefined}});
     return;
   }
   if(ch.type === "scatter"){
@@ -8823,9 +8839,9 @@ async function refilterTile(tile, myGen){
     if(myGen !== gen) return "stale";
     if(!res.ok) throw new Error(data.detail || "Could not filter");
     destroyChart(cv.id);
-    // Carry the chosen color(s) and boxplot mode over -- a cross-filter re-fetch
-    // returns fresh values but knows nothing about a color the person picked.
-    const merged = Object.assign({}, data, {_boxplotMode: spec._boxplotMode, color: spec.color, colors: spec.colors});
+    // Carry the chosen color(s), boxplot mode and pie style over -- a cross-filter
+    // re-fetch returns fresh values but knows nothing about a style the person picked.
+    const merged = Object.assign({}, data, {_boxplotMode: spec._boxplotMode, _pieStyle: spec._pieStyle, color: spec.color, colors: spec.colors});
     drawChart(cv.id, merged);
     tile._filtered = true;
     tile._lastFilteredData = merged;
