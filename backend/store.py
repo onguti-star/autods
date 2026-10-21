@@ -492,9 +492,12 @@ def purge_stale_session_files(max_age_days: int = 7) -> int:
     try:
         active_ids = set(SESSIONS.keys())
         for fname in os.listdir(_SESSION_DIR):
-            if not fname.endswith(".csv"):
+            if fname.endswith(".csv"):
+                session_id = fname.replace("_original.csv", "").replace(".csv", "")
+            elif fname.endswith("_meta.json"):
+                session_id = fname[: -len("_meta.json")]
+            else:
                 continue
-            session_id = fname.replace("_original.csv", "").replace(".csv", "")
             if session_id in active_ids:
                 continue
             fpath = os.path.join(_SESSION_DIR, fname)
