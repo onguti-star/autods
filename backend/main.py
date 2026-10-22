@@ -64,6 +64,73 @@ MAX_REMOTE_BYTES = 200 * 1024 * 1024  # 200 MB
 MAX_DATAFRAME_ROWS = 5_500_000  # 5.5 million rows
 MAX_DATAFRAME_COLUMNS = 1_000  # 1000 columns
 
+
+# --- Bring-your-own-model import (see import_model below) -----------------
+#
+# Plain pickle.load() on a file someone else gave you is a code-execution
+# risk: a pickle's opcode stream can reconstruct ANY class it names, and
+# unpickling can run arbitrary code as a side effect (the classic exploit
+# is a crafted __reduce__ that calls os.system). AutoDS's OWN model
+# downloads are safe to re-load as-is (AutoDS wrote them seconds earlier),
+# but a model from someone else gets no such trust.
+#
+# _RestrictedUnpickler only allows the file to reference classes/functions
+# that live in the handful of libraries a trained model realistically
+# needs (scikit-learn, numpy, scipy, pandas, the common external tree-
+# boosting libraries, and plain containers) -- anything else (os,
+# subprocess, builtins.eval/exec/__import__, a custom class from someone's
+# notebook, ...) is refused before it's ever constructed.
+class UnsafeModelFileError(Exception):
+    pass
+
+
+_ALLOWED_PICKLE_MODULE_ROOTS = (
+    "sklearn", "numpy", "scipy", "pandas",
+    "xgboost", "lightgbm", "catboost",
+    "collections", "copyreg",
+)
+_ALLOWED_PICKLE_BUILTINS = {
+    "list", "dict", "set", "frozenset", "tuple",
+    "str", "int", "float", "bool", "bytes", "bytearray", "complex", "object",
+}
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        root = module.split(".", 1)[0]
+        if module == "builtins":
+            if name not in _ALLOWED_PICKLE_BUILTINS:
+                raise UnsafeModelFileError(f"blocked unsafe reference: builtins.{name}")
+        elif root not in _ALLOWED_PICKLE_MODULE_ROOTS:
+            raise UnsafeModelFileError(f"blocked unsafe reference: {module}.{name}")
+        return super().find_class(module, name)
+
+
+def _safe_unpickle_model(contents: bytes):
+    """Unpickle an uploaded model file through the restricted allowlist
+    above. Raises UnsafeModelFileError if the file references anything
+    outside it, and lets ModuleNotFoundError propagate as-is (a reference
+    to an allowed library that just isn't installed here, e.g. xgboost --
+    distinct from a blocked/unsafe one, so callers can give a clearer
+    error message for each case)."""
+    return _RestrictedUnpickler(io.BytesIO(contents)).load()
+
+
+def _extract_model_pipeline(obj):
+    """An uploaded model file might be AutoDS's own download_model bundle
+    (a dict with a "pipeline" key), some other dict shape using "model" or
+    "estimator", or just the bare fitted estimator/pipeline itself. Returns
+    the object to call .predict() on, or None if nothing predictable was
+    found in it."""
+    if hasattr(obj, "predict") and callable(getattr(obj, "predict", None)):
+        return obj
+    if isinstance(obj, dict):
+        for key in ("pipeline", "model", "estimator"):
+            candidate = obj.get(key)
+            if candidate is not None and hasattr(candidate, "predict") and callable(candidate.predict):
+                return candidate
+    return None
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 
@@ -2746,6 +2813,217 @@ def delete_prediction(session_id: str, prediction_id: str):
         "predictions": [
             _prediction_summary(pid, p) for pid, p in session.saved_predictions.items()
         ]
+    }
+
+
+def _imported_model_summary(model_id: str, entry: dict) -> dict:
+    return {
+        "id": model_id,
+        "model_label": entry["model_label"],
+        "problem_type": entry["problem_type"],
+        "feature_columns": entry["feature_columns"],
+        "target_name": entry["target_name"],
+        "has_label_classes": entry.get("label_classes") is not None,
+        "original_filename": entry["original_filename"],
+        "imported_at": entry["imported_at"],
+    }
+
+
+def _imported_models_summary(session) -> list[dict]:
+    return [_imported_model_summary(mid, e) for mid, e in session.imported_models.items()]
+
+
+@app.post("/api/import_model/{session_id}")
+async def import_model(
+    session_id: str,
+    file: UploadFile = File(...),
+    problem_type: str | None = Form(None),
+    feature_columns: str | None = Form(None),  # JSON array of column names, e.g. '["age","income"]'
+    target_name: str = Form(""),
+    label_classes: str | None = Form(None),    # JSON array of class labels, in encoded order
+    model_label: str = Form(""),
+):
+    """Import a model trained OUTSIDE AutoDS (e.g. by someone else, in their
+    own notebook) so it can be used for predictions here. Unlike a trained-
+    in-AutoDS model, this is read-only: it never appears on the leaderboard,
+    can't be retrained, and nothing about it is assumed beyond "it has a
+    .predict() method" -- see _extract_model_pipeline/_safe_unpickle_model.
+
+    problem_type and feature_columns are the two things AutoDS has no way
+    to know about a model it didn't train, so they're required UNLESS the
+    file is itself an AutoDS download_model bundle (which already carries
+    them) or the pipeline recorded its own feature_names_in_ (scikit-learn
+    does this automatically when fit on a DataFrame).
+    """
+    session = _get_session_or_404(session_id)
+
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, f"Model file is too large. Maximum upload size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+
+    try:
+        obj = _safe_unpickle_model(contents)
+    except UnsafeModelFileError as e:
+        raise HTTPException(400, f"This file can't be imported: {e}. Only models built with scikit-learn, "
+                                  f"numpy, scipy, pandas, xgboost, lightgbm or catboost are supported.")
+    except ModuleNotFoundError as e:
+        raise HTTPException(400, f"This model needs a package that isn't installed here ({e}).")
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't read this as a model file: {e}")
+
+    pipeline = _extract_model_pipeline(obj)
+    if pipeline is None:
+        raise HTTPException(400, "This file doesn't look like a trained model — no predict() method found.")
+
+    bundle = obj if isinstance(obj, dict) else {}
+
+    resolved_problem_type = problem_type or bundle.get("problem_type")
+    if resolved_problem_type not in ("classification", "regression"):
+        raise HTTPException(400, "problem_type must be 'classification' or 'regression' "
+                                  "(this file didn't already carry one, so it needs to be specified).")
+
+    resolved_feature_columns = None
+    if feature_columns:
+        try:
+            parsed = json.loads(feature_columns)
+            if not isinstance(parsed, list) or not parsed or not all(isinstance(c, str) for c in parsed):
+                raise ValueError
+            resolved_feature_columns = parsed
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(400, "feature_columns must be a JSON array of column names.")
+    if resolved_feature_columns is None:
+        bundle_cols = bundle.get("feature_columns")
+        if isinstance(bundle_cols, list) and bundle_cols:
+            resolved_feature_columns = list(bundle_cols)
+    if resolved_feature_columns is None:
+        names_in = getattr(pipeline, "feature_names_in_", None)
+        if names_in is not None:
+            resolved_feature_columns = list(names_in)
+    if not resolved_feature_columns:
+        raise HTTPException(400, "feature_columns is required — this model didn't record its own feature "
+                                  "names, so list the columns it expects to see, in the order it expects them.")
+
+    resolved_label_classes = None
+    if label_classes:
+        try:
+            parsed = json.loads(label_classes)
+            if not isinstance(parsed, list):
+                raise ValueError
+            resolved_label_classes = parsed
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(400, "label_classes must be a JSON array.")
+    if resolved_label_classes is None:
+        bundle_encoder = bundle.get("label_encoder")
+        classes = getattr(bundle_encoder, "classes_", None)
+        if classes is not None:
+            resolved_label_classes = [_jsonable_value(c) for c in classes]
+
+    resolved_target_name = target_name.strip() or bundle.get("target") or "prediction"
+
+    model_id = str(uuid.uuid4())
+    session.imported_models[model_id] = {
+        "pipeline": pipeline,
+        "problem_type": resolved_problem_type,
+        "feature_columns": resolved_feature_columns,
+        "target_name": resolved_target_name,
+        "label_classes": resolved_label_classes,
+        "model_label": model_label.strip() or (file.filename or "Imported model"),
+        "original_filename": file.filename or "model.pkl",
+        "imported_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    return {"imported_models": _imported_models_summary(session)}
+
+
+@app.get("/api/imported_models/{session_id}")
+def list_imported_models(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {"imported_models": _imported_models_summary(session)}
+
+
+@app.delete("/api/imported_models/{session_id}/{model_id}")
+def delete_imported_model(session_id: str, model_id: str):
+    session = _get_session_or_404(session_id)
+    if model_id not in session.imported_models:
+        raise HTTPException(404, "Imported model not found.")
+    del session.imported_models[model_id]
+    return {"imported_models": _imported_models_summary(session)}
+
+
+class ImportedModelPredictRequest(BaseModel):
+    model_id: str
+    target_session_id: str | None = None  # defaults to scoring this session's own data
+
+
+@app.post("/api/imported_model_predict/{session_id}")
+def imported_model_predict(session_id: str, req: ImportedModelPredictRequest):
+    """Score a dataset with an imported model — the imported-model
+    counterpart to /api/predict_batch, same response shape (full_csv,
+    submission_csv when an id column is detectable, preview rows) so the
+    frontend can reuse its existing batch-predict results UI for both."""
+    session = _get_session_or_404(session_id)
+    if req.model_id not in session.imported_models:
+        raise HTTPException(404, "Imported model not found.")
+    entry = session.imported_models[req.model_id]
+
+    target_session = _get_session_or_404(req.target_session_id) if req.target_session_id else session
+    input_df = target_session.df.copy()
+    if input_df.empty:
+        raise HTTPException(400, "The dataset to score has no rows.")
+
+    feature_columns = entry["feature_columns"]
+    missing_cols = [c for c in feature_columns if c not in input_df.columns]
+    scoring_df = input_df.copy()
+    for c in missing_cols:
+        scoring_df[c] = None
+    scoring_df = scoring_df[feature_columns]
+
+    try:
+        preds = entry["pipeline"].predict(scoring_df)
+    except Exception as e:
+        # An external model has no AutoDS-built "prep" step guaranteeing
+        # clean input, so a bad/missing column is a normal, expected
+        # failure here -- surface it plainly instead of a raw 500.
+        raise HTTPException(400, f"This model couldn't score the data: {e}")
+
+    label_classes = entry.get("label_classes")
+    if entry["problem_type"] == "classification" and label_classes:
+        decoded = []
+        for p in preds:
+            try:
+                idx = int(p)
+            except (TypeError, ValueError):
+                decoded = None
+                break
+            decoded.append(label_classes[idx] if 0 <= idx < len(label_classes) else p)
+        if decoded is not None:
+            preds = decoded
+
+    target_name = entry["target_name"]
+    full_df = input_df.copy()
+    full_df[target_name] = [_jsonable_value(p) for p in preds]
+
+    id_column = _guess_id_column(list(input_df.columns))
+    submission_csv = None
+    if id_column:
+        submission_csv = full_df[[id_column, target_name]].to_csv(index=False)
+
+    preview_df = full_df.head(10)
+    preview = [
+        {k: _jsonable_value(v) for k, v in row.items()}
+        for row in preview_df.to_dict(orient="records")
+    ]
+
+    return {
+        "ok": True,
+        "model_label": entry["model_label"],
+        "problem_type": entry["problem_type"],
+        "target_name": target_name,
+        "rows_predicted": int(len(full_df)),
+        "missing_feature_columns": missing_cols,
+        "id_column": id_column,
+        "full_csv": full_df.to_csv(index=False),
+        "submission_csv": submission_csv,
+        "preview": preview,
     }
 
 

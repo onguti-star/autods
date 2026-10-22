@@ -190,6 +190,13 @@ class Session:
         self._undo_stack: list = []               # snapshots of df taken before each cleaning change
         self.saved_runs: dict = {}                # run_id -> saved training snapshot (see main.py /api/train_runs)
         self.saved_predictions: dict = {}         # prediction_id -> prediction result snapshot
+        self.imported_models: dict = {}           # model_id -> {pipeline, problem_type, feature_columns,
+                                                    # target_name, label_classes, model_label, ...} for a
+                                                    # model someone trained outside AutoDS and uploaded in
+                                                    # (see import_model in main.py) -- read-only/prediction-
+                                                    # only, never eligible for the leaderboard or retraining.
+                                                    # Like session.models, deliberately not persisted to disk
+                                                    # (see store.py's restore path): re-upload after a restart.
         self.unsupervised_results: dict = {}       # latest unsupervised analysis snapshots for reports
         self.progress_messages: list = []          # progress messages for long-running operations
         self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
@@ -432,6 +439,7 @@ def get_session(session_id: str) -> "Session":
     s.last_visualization = {}
     s._undo_stack = []
     s.saved_runs = {}
+    s.imported_models = {}  # not persisted -- see the field comment in __init__
     s.saved_predictions = meta.get("saved_predictions", {})
     s.unsupervised_results = meta.get("unsupervised_results", {})
     s.progress_messages = []

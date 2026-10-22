@@ -1423,6 +1423,31 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <h2><span class="idx">07 /</span> Trained Models</h2>
     <p class="hint">Every model you train gets its own card here with its own prediction form. Train on <strong>price</strong>, then train on <strong>quantity</strong> — both cards stay open so you can predict freely on either one at any time.</p>
     <div id="modelCardsList"></div>
+
+    <div class="subhead" style="margin-top:26px;">Import a model someone else trained</div>
+    <p class="hint">Bring in a .pkl trained outside AutoDS — a colleague's scikit-learn/xgboost/lightgbm model, one from your own notebook, or an AutoDS model you downloaded earlier. This is prediction-only: it never joins the leaderboard above and can't be retrained.</p>
+    <div class="pred-row">
+      <div class="pred-field"><label>Model file (.pkl)</label><input type="file" id="importModelFile" accept=".pkl,application/octet-stream"></div>
+      <div class="pred-field">
+        <label>Problem type</label>
+        <select id="importModelProblemType">
+          <option value="">Leave blank if it's an AutoDS-exported file</option>
+          <option value="classification">Classification</option>
+          <option value="regression">Regression</option>
+        </select>
+      </div>
+    </div>
+    <div class="pred-row">
+      <div class="pred-field" style="flex:2;"><label>Feature columns, in order (comma-separated)</label><input type="text" id="importModelFeatureColumns" placeholder="e.g. age, income, tenure — leave blank if the file already knows them"></div>
+      <div class="pred-field"><label>Target name</label><input type="text" id="importModelTargetName" placeholder="e.g. churn (optional)"></div>
+    </div>
+    <div class="pred-row">
+      <div class="pred-field" style="flex:2;"><label>Class labels, in order (optional)</label><input type="text" id="importModelLabelClasses" placeholder="e.g. no, yes — only if it outputs plain numbers for a classification target"></div>
+      <div class="pred-field"><label>Display name (optional)</label><input type="text" id="importModelLabel" placeholder="e.g. Jane's XGBoost model"></div>
+    </div>
+    <button class="sec" id="importModelBtn" style="margin-top:4px;">⬆ Import model</button>
+    <div id="importModelStatus"></div>
+    <div id="importedModelsList" style="margin-top:14px;"></div>
     <div class="actions" style="margin-top:6px;">
       <button id="goTrainFromModelsBtn" class="sec">＋ Train another target</button>
     </div>
@@ -2144,6 +2169,7 @@ function restoreDataset(state){
     show("panelModelCards");
   }
   renderModelCards();
+  loadImportedModels();
 
   // Set the stepper to the most advanced step the user had reached
   if((state.modelCards && state.modelCards.length) || state.training){
@@ -6550,6 +6576,190 @@ function renderModelCards(){
   });
 }
 
+// --- Import a model trained outside AutoDS -------------------------------
+// Scoped per dataset tab, same as trained models (session.imported_models
+// on the backend) -- NOT part of state/dsState's existing machinery, since
+// it's simpler and lower-risk to just refetch from the backend (the source
+// of truth) whenever this panel opens or the active dataset tab changes,
+// rather than threading a new field through the whole app's state system.
+let importedModelsCache = [];
+
+async function loadImportedModels(){
+  const sid = getSid();
+  if(!sid){ importedModelsCache = []; renderImportedModels(); return; }
+  try{
+    const res = await fetch(`${API}/imported_models/${sid}`);
+    const data = await res.json();
+    importedModelsCache = res.ok ? (data.imported_models || []) : [];
+  }catch(err){
+    importedModelsCache = [];
+  }
+  renderImportedModels();
+}
+
+function renderImportedModels(){
+  const list = $("importedModelsList");
+  if(!list) return;
+
+  if(!importedModelsCache.length){
+    list.innerHTML = "";
+    return;
+  }
+
+  list.innerHTML = importedModelsCache.map((m, idx) => `
+    <div class="model-card" id="imported-model-card-${idx}" data-idx="${idx}" data-model-id="${escapeHtml(m.id)}">
+      <div class="model-card-header">
+        <div>
+          <div class="model-card-title">${escapeHtml(m.model_label)}</div>
+          <div class="model-card-meta">
+            ${escapeHtml(m.problem_type)} &nbsp;·&nbsp; predicts <span style="color:var(--accent);">${escapeHtml(m.target_name)}</span>
+            &nbsp;·&nbsp; ${m.feature_columns.length} feature(s): ${escapeHtml(m.feature_columns.join(", "))}
+            &nbsp;·&nbsp; <span style="color:var(--cyan);font-size:10px;">imported ${escapeHtml(m.imported_at)}</span>
+          </div>
+        </div>
+        <button class="sec imported-model-remove-btn" data-idx="${idx}" title="Remove this imported model">✕ Remove</button>
+      </div>
+      <div class="model-card-body">
+        <div class="subhead" style="margin-top:4px;margin-bottom:8px;">Score a dataset with this model</div>
+        <div class="model-card-predict-row">
+          <select class="imported-model-target" data-idx="${idx}" style="min-width:180px;"></select>
+          <button class="sec imported-model-predict-btn" data-idx="${idx}">▶ Run predictions</button>
+        </div>
+        <div class="model-card-batch-result" id="imported-model-result-${idx}"></div>
+      </div>
+    </div>`).join("");
+
+  // Every open dataset tab is a valid scoring target for an imported model
+  // (unlike a trained model's batch-predict, which excludes its own
+  // training data -- here scoring the dataset currently open is usually
+  // the whole point), defaulting to whichever tab is active right now.
+  list.querySelectorAll(".imported-model-target").forEach(sel => {
+    sel.innerHTML = datasets.map(d => `<option value="${escapeHtml(d.id)}" ${d.id === activeDs ? "selected" : ""}>${escapeHtml(d.name)}</option>`).join("");
+  });
+
+  list.querySelectorAll(".imported-model-remove-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      const model = importedModelsCache[idx];
+      if(!model) return;
+      btn.disabled = true;
+      try{
+        const res = await fetch(`${API}/imported_models/${getSid()}/${model.id}`, {method:"DELETE"});
+        const data = await res.json();
+        if(res.ok){ importedModelsCache = data.imported_models || []; renderImportedModels(); }
+      }catch(err){ /* leave the card as-is; they can retry */ }
+      btn.disabled = false;
+    });
+  });
+
+  list.querySelectorAll(".imported-model-predict-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const idx    = parseInt(btn.dataset.idx, 10);
+      const model  = importedModelsCache[idx];
+      const sel    = $(`imported-model-card-${idx}`).querySelector(".imported-model-target");
+      const result = $(`imported-model-result-${idx}`);
+      if(!model || !sel || !result) return;
+
+      const targetDsId = sel.value;
+      const targetSessionId = dsState[targetDsId]?.sessionId;
+      if(!targetSessionId){
+        result.innerHTML = `<div class="error-box">Pick a dataset to score.</div>`;
+        return;
+      }
+
+      result.innerHTML = `<p class="loading">Scoring every row</p>`;
+      btn.disabled = true;
+      try{
+        const res = await fetch(`${API}/imported_model_predict/${getSid()}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({model_id: model.id, target_session_id: targetSessionId})
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.detail || "Prediction failed");
+
+        const missingNote = data.missing_feature_columns.length
+          ? `<p class="hint" style="color:var(--bad);margin:6px 0;">This dataset is missing ${data.missing_feature_columns.map(escapeHtml).join(", ")} — those rows were filled blank before scoring, so results may be less reliable.</p>`
+          : "";
+
+        const previewCols = data.preview.length ? Object.keys(data.preview[0]) : [];
+        const previewHtml = previewCols.length ? `<div class="batch-preview-wrap"><table class="preview-table"><thead><tr>` +
+          previewCols.map(c => `<th><span class="col-name">${escapeHtml(c)}</span></th>`).join("") +
+          `</tr></thead><tbody>` +
+          data.preview.map(row => `<tr>${previewCols.map(c => {
+            const v = row[c];
+            return v === null || v === undefined ? `<td class="null-val">null</td>` : `<td>${escapeHtml(String(v))}</td>`;
+          }).join("")}</tr>`).join("") +
+          `</tbody></table></div>` +
+          `<p class="batch-preview-hint">Scroll the table sideways for the remaining columns — it carries all ${previewCols.length} of them (every original column plus the prediction).</p>` : "";
+
+        result.innerHTML =
+          `<p class="hint" style="margin:8px 0 6px;">Scored ${data.rows_predicted} row(s) with ${escapeHtml(model.model_label)}. Preview of the first ${data.preview.length}:</p>` +
+          missingNote + previewHtml +
+          `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="sec imported-model-download-full" data-idx="${idx}">⬇ Download full CSV</button>
+            ${data.submission_csv ? `<button class="sec imported-model-download-submission" data-idx="${idx}">⬇ Download submission CSV (${escapeHtml(data.id_column)}, ${escapeHtml(data.target_name)})</button>` : ""}
+           </div>`;
+
+        result.querySelector(".imported-model-download-full")?.addEventListener("click", () => {
+          downloadTextFile(data.full_csv, `${data.target_name}_predictions_full.csv`, "text/csv");
+        });
+        result.querySelector(".imported-model-download-submission")?.addEventListener("click", () => {
+          downloadTextFile(data.submission_csv, `${data.target_name}_submission.csv`, "text/csv");
+        });
+      }catch(err){
+        result.innerHTML = `<div class="error-box">${err.message}</div>`;
+      }
+      btn.disabled = false;
+    });
+  });
+}
+
+$("importModelBtn")?.addEventListener("click", async () => {
+  const fileInput = $("importModelFile");
+  const status = $("importModelStatus");
+  const file = fileInput?.files?.[0];
+  if(!file){
+    status.innerHTML = `<div class="error-box">Pick a .pkl file first.</div>`;
+    return;
+  }
+
+  const featureColumnsRaw = $("importModelFeatureColumns").value.trim();
+  const labelClassesRaw = $("importModelLabelClasses").value.trim();
+  const splitList = (s) => s.split(",").map(x => x.trim()).filter(Boolean);
+
+  const form = new FormData();
+  form.append("file", file);
+  const problemType = $("importModelProblemType").value;
+  if(problemType) form.append("problem_type", problemType);
+  if(featureColumnsRaw) form.append("feature_columns", JSON.stringify(splitList(featureColumnsRaw)));
+  const targetName = $("importModelTargetName").value.trim();
+  if(targetName) form.append("target_name", targetName);
+  if(labelClassesRaw) form.append("label_classes", JSON.stringify(splitList(labelClassesRaw)));
+  const modelLabel = $("importModelLabel").value.trim();
+  if(modelLabel) form.append("model_label", modelLabel);
+
+  status.innerHTML = `<p class="loading">Importing</p>`;
+  $("importModelBtn").disabled = true;
+  try{
+    const res = await fetch(`${API}/import_model/${getSid()}`, {method: "POST", body: form});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Import failed");
+    importedModelsCache = data.imported_models || [];
+    renderImportedModels();
+    status.innerHTML = `<p class="hint" style="color:var(--good);">Imported successfully.</p>`;
+    fileInput.value = "";
+    $("importModelProblemType").value = "";
+    $("importModelFeatureColumns").value = "";
+    $("importModelTargetName").value = "";
+    $("importModelLabelClasses").value = "";
+    $("importModelLabel").value = "";
+  }catch(err){
+    status.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+  $("importModelBtn").disabled = false;
+});
+
 function openModelCards(){
   // Show the panel BEFORE calling renderModelCards so that the canvas elements
   // have non-zero dimensions when Chart.js measures them inside the setTimeout.
@@ -6559,6 +6769,7 @@ function openModelCards(){
   show("panelModelCards");
   setStep(7);
   renderModelCards();
+  loadImportedModels();
   scrollPanel("panelModelCards");
 }
 
