@@ -641,6 +641,7 @@ HELP_TEXT = (
     "• remove duplicates\n"
     "• remove duplicates of column age\n"
     "• drop column notes  (also: remove / delete / discard / erase column notes)\n"
+    "• move price to the front  (also: to the end/back/last, to position 3, before cost, after quantity)\n"
     "• rename column dob to date_of_birth  (also: rename dob into date_of_birth / rename dob as date_of_birth)\n"
     "• create a new column called revenue  (creates an empty column)\n"
     "• fill revenue with price * quantity  (also: populate / update / set)\n"
@@ -1308,6 +1309,77 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if not col:
             return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
         return df.drop(columns=[col]), f"Dropped column '{col}'."
+
+    # ---- move column (reorder) ----
+    # Checked in this order: before/after a named column (most specific),
+    # then front/end (no second column to look up), then an explicit
+    # 1-based position — so "move age before income" is never mis-caught
+    # by the plainer front/end patterns.
+    m = re.search(r"\bmove\s+(?:column\s+)?(.+?)\s+(?:to\s+)?before\s+(?:column\s+)?(.+)", ql)
+    if m:
+        col = _match_col(m.group(1).strip(), columns)
+        ref_col = _match_col(m.group(2).strip(), columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        if not ref_col:
+            return df, f"I couldn't find a column matching '{m.group(2).strip()}'. Available columns: {', '.join(columns)}."
+        if col == ref_col:
+            return df, f"'{col}' is already right before itself — nothing to do."
+        remaining = [c for c in columns if c != col]
+        target_idx = remaining.index(ref_col)
+        new_order = remaining[:target_idx] + [col] + remaining[target_idx:]
+        return df[new_order], f"Moved column '{col}' to just before '{ref_col}'."
+
+    m = re.search(r"\bmove\s+(?:column\s+)?(.+?)\s+(?:to\s+)?after\s+(?:column\s+)?(.+)", ql)
+    if m:
+        col = _match_col(m.group(1).strip(), columns)
+        ref_col = _match_col(m.group(2).strip(), columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        if not ref_col:
+            return df, f"I couldn't find a column matching '{m.group(2).strip()}'. Available columns: {', '.join(columns)}."
+        if col == ref_col:
+            return df, f"'{col}' is already right after itself — nothing to do."
+        remaining = [c for c in columns if c != col]
+        target_idx = remaining.index(ref_col)
+        new_order = remaining[:target_idx + 1] + [col] + remaining[target_idx + 1:]
+        return df[new_order], f"Moved column '{col}' to just after '{ref_col}'."
+
+    m = re.search(r"\bmove\s+(?:column\s+)?(.+?)\s+(?:to\s+(?:the\s+)?)?(?:front|first|start|beginning)\b", ql)
+    if m:
+        col = _match_col(m.group(1).strip(), columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        if columns[0] == col:
+            return df, f"'{col}' is already the first column — nothing to do."
+        new_order = [col] + [c for c in columns if c != col]
+        return df[new_order], f"Moved column '{col}' to the front."
+
+    m = re.search(r"\bmove\s+(?:column\s+)?(.+?)\s+(?:to\s+(?:the\s+)?)?(?:end|back|last)\b", ql)
+    if m:
+        col = _match_col(m.group(1).strip(), columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        if columns[-1] == col:
+            return df, f"'{col}' is already the last column — nothing to do."
+        new_order = [c for c in columns if c != col] + [col]
+        return df[new_order], f"Moved column '{col}' to the end."
+
+    m = re.search(r"\bmove\s+(?:column\s+)?(.+?)\s+to\s+(?:position|index|spot|column)\s+(\d+)\b", ql)
+    if m:
+        col = _match_col(m.group(1).strip(), columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
+        pos = int(m.group(2))
+        if pos < 1 or pos > len(columns):
+            return df, (f"Position {pos} is out of range — this dataset has {len(columns)} column(s), "
+                         f"so pick a position from 1 to {len(columns)}.")
+        remaining = [c for c in columns if c != col]
+        insert_at = min(pos - 1, len(remaining))
+        if columns.index(col) == pos - 1:
+            return df, f"'{col}' is already at position {pos} — nothing to do."
+        new_order = remaining[:insert_at] + [col] + remaining[insert_at:]
+        return df[new_order], f"Moved column '{col}' to position {pos}."
 
     # ---- decimal separator fix: replace , with . (European/African number format) ----
     # MUST be before the rename handler — "change comma to dot in price" is otherwise
