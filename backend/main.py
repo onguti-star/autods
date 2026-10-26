@@ -44,6 +44,7 @@ from . import pca_analysis
 from . import simulation as simulation_module
 from . import pivot as pivot_module
 from . import unsupervised
+from . import recommender
 from . import viz
 from .main_report import _build_html_report
 from .store import (
@@ -3132,6 +3133,119 @@ def unsupervised_association(session_id: str, req: dict):
         return result
     except ImportError as e:
         raise HTTPException(500, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------- Recommender Systems ----------
+# Works on any dataset: Netflix-style user/item ratings, implicit
+# interactions (clicks/purchases/watches), or a single item-feature table
+# (content-based "more like this"). See backend/recommender.py.
+
+@app.get("/api/recommender/detect/{session_id}")
+def recommender_detect(session_id: str):
+    """Inspect the current dataset and suggest the best recommender mode + columns."""
+    session = _get_session_or_404(session_id)
+    return recommender.detect_recommender_setup(session.df)
+
+
+@app.post("/api/recommender/fit/{session_id}")
+def recommender_fit(session_id: str, req: dict):
+    """
+    Fit a recommender model and cache it in-memory on the session.
+    req:
+      mode: "collaborative" | "implicit" | "content"
+      collaborative/implicit: user_col, item_col, rating_col (optional), n_components
+      content: item_col, feature_cols (list), text_cols (list, optional), list_cols (list, optional)
+    Returns {model_id, ...summary stats...} -- model_id is used by the
+    recommend/similar endpoints below.
+    """
+    session = _get_session_or_404(session_id)
+    mode = req.get("mode")
+    try:
+        if mode in ("collaborative", "implicit"):
+            user_col = req.get("user_col")
+            item_col = req.get("item_col")
+            rating_col = req.get("rating_col") if mode == "collaborative" else None
+            if not user_col or not item_col:
+                raise HTTPException(400, "user_col and item_col are required.")
+            model = recommender.fit_collaborative(
+                session.df, user_col, item_col, rating_col,
+                n_components=req.get("n_components", 20),
+            )
+        elif mode == "content":
+            item_col = req.get("item_col")
+            feature_cols = req.get("feature_cols") or []
+            if not item_col or not feature_cols:
+                raise HTTPException(400, "item_col and feature_cols are required.")
+            model = recommender.fit_content(
+                session.df, item_col, feature_cols,
+                text_cols=req.get("text_cols"), list_cols=req.get("list_cols"),
+            )
+        else:
+            raise HTTPException(400, f"Unknown recommender mode: {mode}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    model_id = str(uuid.uuid4())
+    session.recommender_models[model_id] = model
+    summary = {k: v for k, v in model.items() if not k.startswith("_")}
+    summary["model_id"] = model_id
+    session.recommender_results[model_id] = summary
+    return summary
+
+
+@app.get("/api/recommender/models/{session_id}")
+def recommender_list_models(session_id: str):
+    """List previously fitted recommender models for this session."""
+    session = _get_session_or_404(session_id)
+    return {"models": list(session.recommender_results.values())}
+
+
+@app.get("/api/recommender/recommend/{session_id}/{model_id}")
+def recommender_recommend(session_id: str, model_id: str, user_id: str, top_n: int = 10, method: str = "hybrid"):
+    """Recommend unseen items for a user (collaborative/implicit models only)."""
+    session = _get_session_or_404(session_id)
+    model = session.recommender_models.get(model_id)
+    if model is None:
+        raise HTTPException(404, "Recommender model not found. Fit one first with /api/recommender/fit.")
+    if model["mode"] not in ("collaborative", "implicit"):
+        raise HTTPException(400, "This endpoint needs a collaborative/implicit model; use /api/recommender/similar for a content model.")
+    try:
+        return recommender.recommend_for_user(model, user_id, top_n=top_n, method=method)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/recommender/similar/{session_id}/{model_id}")
+def recommender_similar(session_id: str, model_id: str, item: str, top_n: int = 10):
+    """'More like this' -- similar items for a content model, or item-item similarity for a collaborative model."""
+    session = _get_session_or_404(session_id)
+    model = session.recommender_models.get(model_id)
+    if model is None:
+        raise HTTPException(404, "Recommender model not found. Fit one first with /api/recommender/fit.")
+    try:
+        if model["mode"] == "content":
+            return recommender.recommend_similar(model, item, top_n=top_n)
+        else:
+            return recommender.similar_items_collaborative(model, item, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/recommender/evaluate/{session_id}")
+def recommender_evaluate(session_id: str, req: dict):
+    """Quick RMSE/MAE train/test sanity check for a collaborative model (needs a rating_col)."""
+    session = _get_session_or_404(session_id)
+    user_col, item_col, rating_col = req.get("user_col"), req.get("item_col"), req.get("rating_col")
+    if not user_col or not item_col or not rating_col:
+        raise HTTPException(400, "user_col, item_col, and rating_col are required.")
+    try:
+        return recommender.evaluate_collaborative(
+            session.df, user_col, item_col, rating_col,
+            test_size=req.get("test_size", 0.2),
+            n_components=req.get("n_components", 20),
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
 

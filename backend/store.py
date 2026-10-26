@@ -198,6 +198,10 @@ class Session:
                                                     # Like session.models, deliberately not persisted to disk
                                                     # (see store.py's restore path): re-upload after a restart.
         self.unsupervised_results: dict = {}       # latest unsupervised analysis snapshots for reports
+        self.recommender_models: dict = {}         # model_id -> fitted recommender.py model dict (holds numpy
+                                                    # arrays / sparse matrices). Deliberately not persisted to
+                                                    # disk, same as session.models -- re-fit after a restart.
+        self.recommender_results: dict = {}        # latest JSON-safe recommender snapshots for reports
         self.progress_messages: list = []          # progress messages for long-running operations
         self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
         self.geo_name_col: str | None = None         # column auto-matched to country/state names, if any

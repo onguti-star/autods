@@ -1333,6 +1333,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <div class="pred-row" style="margin-bottom:18px;">
       <div class="pred-field"><button id="supervisedLearningBtn">Supervised learning</button></div>
       <div class="pred-field"><button class="sec" id="unsupervisedLearningBtn">Unsupervised learning</button></div>
+      <div class="pred-field"><button class="sec" id="recommenderBtn">Recommender system</button></div>
     </div>
 
     <div class="subhead">Supervised AutoML</div>
@@ -1550,6 +1551,93 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="actions">
       <button id="goPredictFromUnsupervisedBtn">Continue to predictions →</button>
+    </div>
+  </section>
+
+  <!-- RECOMMENDER -->
+  <section class="panel hidden" id="panelRecommender">
+    <h2><span class="idx">06 /</span> Recommender System</h2>
+    <p class="hint">Build a "Netflix-style" recommender from this dataset — ratings/interactions give you collaborative filtering, an item-feature table gives you content-based "more like this".</p>
+
+    <div class="subhead">1. Detect setup</div>
+    <p class="hint">AutoDS inspects the columns and suggests which recommender fits this dataset. You can override anything below before fitting.</p>
+    <button class="sec" id="recDetectBtn">🔍 Detect recommender setup</button>
+    <div id="recDetectResult" class="hidden"></div>
+
+    <div class="subhead" style="margin-top:20px;">2. Configure &amp; fit</div>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Mode</label>
+        <select id="recMode">
+          <option value="collaborative">Collaborative filtering (ratings)</option>
+          <option value="implicit">Implicit feedback (clicks/purchases, no rating)</option>
+          <option value="content">Content-based ("more like this")</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="recUserItemFields">
+      <div class="pred-row">
+        <div class="pred-field"><label>User column</label><select id="recUserCol"></select></div>
+        <div class="pred-field"><label>Item column</label><select id="recItemCol"></select></div>
+        <div class="pred-field" id="recRatingColWrap"><label>Rating column</label><select id="recRatingCol"></select></div>
+      </div>
+      <div class="pred-row">
+        <div class="pred-field"><label>Factors (components)</label><input type="number" id="recComponents" value="20" min="2" max="200"></div>
+      </div>
+    </div>
+
+    <div id="recContentFields" class="hidden">
+      <div class="pred-row">
+        <div class="pred-field"><label>Item column (one row per item, e.g. title)</label><select id="recContentItemCol"></select></div>
+      </div>
+      <div class="pred-field" style="margin-bottom:10px;">
+        <label>Feature columns (used to measure similarity)</label>
+        <div id="recFeatureCols" style="max-height:160px;overflow-y:auto;border:1px solid var(--panel-border);padding:8px;margin-top:4px;"></div>
+      </div>
+      <p class="hint">Tick "text" for free-text columns (e.g. description/overview) and "list" for delimited tag/genre columns (e.g. "Action|Comedy" or "Action, Comedy"). Leave both unticked for a plain numeric or low-cardinality categorical column.</p>
+    </div>
+
+    <button id="recFitBtn" style="margin-top:10px;">Fit recommender</button>
+    <div id="recFitResult" class="hidden"></div>
+
+    <div id="recUseSection" class="hidden">
+      <div class="subhead" style="margin-top:20px;">3. Recommend for a user</div>
+      <p class="hint">Only available for collaborative/implicit models — needs a user who appears in the training data.</p>
+      <div class="pred-row">
+        <div class="pred-field"><label>User ID</label><input type="text" id="recUserIdInput" placeholder="e.g. u42"></div>
+        <div class="pred-field">
+          <label>Method</label>
+          <select id="recMethod">
+            <option value="hybrid">Hybrid (recommended)</option>
+            <option value="svd">Matrix factorization (SVD)</option>
+            <option value="item_knn">Item-based kNN</option>
+          </select>
+        </div>
+        <div class="pred-field"><label>How many</label><input type="number" id="recTopNUser" value="10" min="1" max="50"></div>
+        <div class="pred-field"><button class="sec" id="recRecommendBtn" style="margin-top:13px;">Get recommendations</button></div>
+      </div>
+      <div id="recRecommendResult" class="hidden"></div>
+
+      <div class="subhead" style="margin-top:20px;">4. More like this</div>
+      <p class="hint">Content models: similar items by feature. Collaborative/implicit models: items frequently liked by the same users.</p>
+      <div class="pred-row">
+        <div class="pred-field" style="flex:2;"><label>Item</label><input type="text" id="recItemInput" placeholder="e.g. The Matrix, or m12"></div>
+        <div class="pred-field"><label>How many</label><input type="number" id="recTopNItem" value="10" min="1" max="50"></div>
+        <div class="pred-field"><button class="sec" id="recSimilarBtn" style="margin-top:13px;">Find similar</button></div>
+      </div>
+      <div id="recSimilarResult" class="hidden"></div>
+
+      <div id="recEvalSection" class="hidden">
+        <div class="subhead" style="margin-top:20px;">5. Sanity-check accuracy</div>
+        <p class="hint">Holds out 20% of ratings and reports RMSE/MAE against a "always predict the average rating" baseline.</p>
+        <button class="sec" id="recEvalBtn">Evaluate model</button>
+        <div id="recEvalResult" class="hidden"></div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="goPredictFromRecommenderBtn">Continue to predictions →</button>
     </div>
   </section>
 
@@ -1998,14 +2086,18 @@ function clearAnalysisUI(){
     "savedRunsList","predictFields","predictResult","savedPredictionsList",
     "chatWrap","corrFallback","corrLegend","corrPairSummary","pcaResult",
     "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
-    "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError"
+    "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError",
+    "recDetectResult","recFitResult","recRecommendResult","recSimilarResult","recEvalResult"
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
 
   if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
   ["cleanPreviewSection","edaUpdatedSection","cleanLog","cleanNarrative","dlBarClean","dlBarEDA",
    "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint",
    "pcaResult","corrPicker","clusterAnalysisResult","clusterResult","simResult",
-   "anomalyResult","reduceResult","assocResult"].forEach(id => { if($(id)) hide(id); });
+   "anomalyResult","reduceResult","assocResult",
+   "recDetectResult","recFitResult","recUseSection","recRecommendResult","recSimilarResult","recEvalSection","recEvalResult"
+  ].forEach(id => { if($(id)) hide(id); });
+  recModelId = null; recModel = null;
 
   ["vizCleanStatus","trainCleanStatus"].forEach(id => {
     if($(id)){
@@ -2448,6 +2540,8 @@ async function uploadDb(){
 // Convenience getter used by downstream code
 function getSid(){ return getState().sessionId; }
 let allColumns = [];   // kept in sync for selects
+let recModelId = null; // id of the last fitted recommender model on the current session
+let recModel = null;   // summary dict of the last fitted recommender model (mode, cols, stats)
 
 // ---------- EDA ----------
 let currentCorrelation = null;
@@ -3464,6 +3558,7 @@ function populateSelects(){
   resetVizFilterValues();
   populateDatabaseAnalysisSelects();
   populateSimulationSelects();
+  if(typeof populateRecommenderSelects === "function") populateRecommenderSelects();
   // Prefer the previously trained target so switching tabs doesn't reset the
   // dropdown to the EDA suggestion and make it look like training was lost.
   const trainedTarget = getState().training?.target;
@@ -5296,6 +5391,11 @@ $("unsupervisedLearningBtn").addEventListener("click", () => {
   show("panelUnsupervised"); setStep(6); scrollPanel("panelUnsupervised");
   loadUnsupervisedSuggestions();
 });
+$("recommenderBtn").addEventListener("click", () => {
+  show("panelRecommender"); setStep(6); scrollPanel("panelRecommender");
+  populateRecommenderSelects();
+  recDetectSetup();
+});
 
 // ---------- TRAIN ----------
 function clearTrainingUI(){
@@ -6282,6 +6382,202 @@ $("predictBtn").addEventListener("click", async () => {
     setState({savedPredictions: data.saved_predictions || []});
     renderSavedPredictionsList();
   }catch(err){ $("predictResult").innerHTML = `<div class="error-box">${err.message}</div>`; }
+});
+
+// ---------- RECOMMENDER ----------
+$("goPredictFromRecommenderBtn").addEventListener("click", () => { show("panelPredict"); setStep(7); scrollPanel("panelPredict"); });
+
+function populateRecommenderSelects(){
+  const opts = `<option value="">—</option>` + allColumns.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  ["recUserCol","recItemCol","recRatingCol","recContentItemCol"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  renderRecFeatureCols();
+}
+
+function renderRecFeatureCols(){
+  const wrap = $("recFeatureCols");
+  if(!wrap) return;
+  const itemCol = $("recContentItemCol")?.value || "";
+  const cols = allColumns.filter(c => c !== itemCol);
+  if(!cols.length){ wrap.innerHTML = `<span class="hint">No other columns to use as features.</span>`; return; }
+  wrap.innerHTML = cols.map(c => `
+    <label class="inline-option" style="display:flex;gap:10px;align-items:center;margin-bottom:4px;">
+      <input type="checkbox" class="recFeatCol" value="${escapeHtml(c)}" checked>
+      <span style="flex:1;">${escapeHtml(c)}</span>
+      <span style="font-size:10px;color:var(--ink-dim);">text <input type="checkbox" class="recFeatText" value="${escapeHtml(c)}"></span>
+      <span style="font-size:10px;color:var(--ink-dim);">list <input type="checkbox" class="recFeatList" value="${escapeHtml(c)}"></span>
+    </label>`).join("");
+}
+$("recContentItemCol") && $("recContentItemCol").addEventListener("change", renderRecFeatureCols);
+
+function updateRecModeFields(){
+  const mode = $("recMode").value;
+  if(mode === "content"){ show("recContentFields"); hide("recUserItemFields"); $("recUserItemFields").classList.add("hidden"); }
+  else { hide("recContentFields"); $("recUserItemFields").classList.remove("hidden"); }
+  $("recRatingColWrap").style.display = mode === "collaborative" ? "" : "none";
+}
+$("recMode").addEventListener("change", updateRecModeFields);
+updateRecModeFields();
+
+async function recDetectSetup(){
+  const sid = getSid();
+  if(!sid) return;
+  $("recDetectResult").innerHTML = `<p class="loading">Inspecting columns</p>`;
+  show("recDetectResult");
+  try{
+    const res = await fetch(`${API}/recommender/detect/${sid}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Detection failed");
+    if(!data.ok){
+      $("recDetectResult").innerHTML = `<div class="hint">${escapeHtml(data.message)}</div>`;
+      return;
+    }
+    const g = data.best_guess;
+    $("recDetectResult").innerHTML = `<div class="result-box">
+      <strong>Suggested: ${escapeHtml(g.mode)}</strong><br>
+      <span style="font-size:12px;color:var(--ink-dim);">${escapeHtml(g.description)}</span>
+    </div>`;
+    // Pre-fill the form from the suggestion; the user can still change any of it before fitting.
+    $("recMode").value = g.mode;
+    updateRecModeFields();
+    if(g.mode === "content"){
+      if($("recContentItemCol")) $("recContentItemCol").value = g.item_col || "";
+      renderRecFeatureCols();
+      if(g.feature_cols){
+        document.querySelectorAll(".recFeatCol").forEach(cb => { cb.checked = g.feature_cols.includes(cb.value); });
+      }
+      document.querySelectorAll(".recFeatText").forEach(cb => { cb.checked = (g.text_cols || []).includes(cb.value); });
+      document.querySelectorAll(".recFeatList").forEach(cb => { cb.checked = (g.list_cols || []).includes(cb.value); });
+    } else {
+      if($("recUserCol")) $("recUserCol").value = g.user_col || "";
+      if($("recItemCol")) $("recItemCol").value = g.item_col || "";
+      if(g.rating_col && $("recRatingCol")) $("recRatingCol").value = g.rating_col;
+    }
+  }catch(err){
+    $("recDetectResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
+}
+$("recDetectBtn").addEventListener("click", recDetectSetup);
+
+function renderRecFitSummary(model){
+  let rows = "";
+  if(model.mode === "content"){
+    rows = `Items: <strong>${model.n_items}</strong> · Features encoded: <strong>${model.n_features}</strong>`;
+  } else {
+    rows = `Users: <strong>${model.n_users}</strong> · Items: <strong>${model.n_items}</strong> · Factors: <strong>${model.n_components}</strong>
+      · Sparsity: <strong>${(model.sparsity*100).toFixed(1)}%</strong> · Variance explained: <strong>${(model.explained_variance_ratio*100).toFixed(1)}%</strong>`;
+  }
+  $("recFitResult").innerHTML = `<div class="result-box">✓ Fitted <strong>${escapeHtml(model.mode)}</strong> recommender<br>
+    <span style="font-size:12px;">${rows}</span></div>`;
+  show("recFitResult");
+  show("recUseSection");
+  if(model.mode === "collaborative"){ show("recEvalSection"); } else { hide("recEvalSection"); }
+}
+
+$("recFitBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  const mode = $("recMode").value;
+  let body = { mode };
+  if(mode === "content"){
+    const itemCol = $("recContentItemCol").value;
+    if(!itemCol){ $("recFitResult").innerHTML = `<div class="error-box">Pick an item column first.</div>`; show("recFitResult"); return; }
+    const featureCols = Array.from(document.querySelectorAll(".recFeatCol:checked")).map(cb => cb.value);
+    const textCols = Array.from(document.querySelectorAll(".recFeatText:checked")).map(cb => cb.value).filter(c => featureCols.includes(c));
+    const listCols = Array.from(document.querySelectorAll(".recFeatList:checked")).map(cb => cb.value).filter(c => featureCols.includes(c));
+    if(!featureCols.length){ $("recFitResult").innerHTML = `<div class="error-box">Tick at least one feature column.</div>`; show("recFitResult"); return; }
+    Object.assign(body, {item_col: itemCol, feature_cols: featureCols, text_cols: textCols, list_cols: listCols});
+  } else {
+    const userCol = $("recUserCol").value, itemCol = $("recItemCol").value;
+    if(!userCol || !itemCol){ $("recFitResult").innerHTML = `<div class="error-box">Pick a user column and an item column.</div>`; show("recFitResult"); return; }
+    Object.assign(body, {user_col: userCol, item_col: itemCol, n_components: parseInt($("recComponents").value || "20", 10)});
+    if(mode === "collaborative") body.rating_col = $("recRatingCol").value || null;
+  }
+  $("recFitResult").innerHTML = `<p class="loading">Fitting recommender</p>`;
+  show("recFitResult");
+  hide("recUseSection");
+  try{
+    const res = await fetch(`${API}/recommender/fit/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not fit recommender");
+    recModelId = data.model_id;
+    recModel = data;
+    renderRecFitSummary(data);
+  }catch(err){
+    $("recFitResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
+});
+
+$("recRecommendBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid || !recModelId) return;
+  const userId = $("recUserIdInput").value.trim();
+  if(!userId){ $("recRecommendResult").innerHTML = `<div class="error-box">Enter a user ID.</div>`; show("recRecommendResult"); return; }
+  const params = new URLSearchParams({user_id: userId, top_n: $("recTopNUser").value || "10", method: $("recMethod").value});
+  $("recRecommendResult").innerHTML = `<p class="loading">Scoring</p>`;
+  show("recRecommendResult");
+  try{
+    const res = await fetch(`${API}/recommender/recommend/${sid}/${recModelId}?${params.toString()}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not get recommendations");
+    if(!data.recommendations.length){
+      $("recRecommendResult").innerHTML = `<div class="hint">No unseen items left to recommend for this user.</div>`;
+      return;
+    }
+    $("recRecommendResult").innerHTML = `<div class="result-box">
+      <strong>Top picks for ${escapeHtml(data.user)}</strong> <span style="font-size:11px;color:var(--ink-dim);">(${escapeHtml(data.method)} · ${data.n_items_seen} items in history)</span>
+      <ol style="margin:8px 0 0 18px;padding:0;">
+        ${data.recommendations.map(r => `<li>${escapeHtml(r.item)} <span style="color:var(--ink-dim);font-size:11px;">(score ${r.score})</span></li>`).join("")}
+      </ol></div>`;
+  }catch(err){
+    $("recRecommendResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
+});
+
+$("recSimilarBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid || !recModelId) return;
+  const item = $("recItemInput").value.trim();
+  if(!item){ $("recSimilarResult").innerHTML = `<div class="error-box">Enter an item.</div>`; show("recSimilarResult"); return; }
+  const params = new URLSearchParams({item, top_n: $("recTopNItem").value || "10"});
+  $("recSimilarResult").innerHTML = `<p class="loading">Searching</p>`;
+  show("recSimilarResult");
+  try{
+    const res = await fetch(`${API}/recommender/similar/${sid}/${recModelId}?${params.toString()}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not find similar items");
+    const list = data.similar_items || data.recommendations || [];
+    if(!list.length){
+      $("recSimilarResult").innerHTML = `<div class="hint">No similar items found.</div>`;
+      return;
+    }
+    $("recSimilarResult").innerHTML = `<div class="result-box">
+      <strong>More like "${escapeHtml(data.item)}"</strong>
+      <ol style="margin:8px 0 0 18px;padding:0;">
+        ${list.map(r => `<li>${escapeHtml(r.item)} <span style="color:var(--ink-dim);font-size:11px;">(similarity ${r.similarity})</span></li>`).join("")}
+      </ol></div>`;
+  }catch(err){
+    $("recSimilarResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
+});
+
+$("recEvalBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid || !recModel) return;
+  const body = {user_col: recModel.user_col, item_col: recModel.item_col, rating_col: recModel.rating_col, n_components: recModel.n_components};
+  $("recEvalResult").innerHTML = `<p class="loading">Evaluating</p>`;
+  show("recEvalResult");
+  try{
+    const res = await fetch(`${API}/recommender/evaluate/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Evaluation failed");
+    const better = data.rmse < data.baseline_rmse_global_mean;
+    $("recEvalResult").innerHTML = `<div class="result-box">
+      RMSE: <strong>${data.rmse}</strong> · MAE: <strong>${data.mae}</strong> · Baseline RMSE (global mean): <strong>${data.baseline_rmse_global_mean}</strong><br>
+      <span style="font-size:12px;color:${better ? "var(--good)" : "var(--bad,#e06060)"};">${better ? "✓ Beats the always-predict-average baseline." : "⚠ Does not beat the baseline — try more interactions per user/item, or fewer factors."}</span>
+    </div>`;
+  }catch(err){
+    $("recEvalResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
 });
 
 // ---------- TRAINED MODELS PANEL (each model gets its own card) ----------
