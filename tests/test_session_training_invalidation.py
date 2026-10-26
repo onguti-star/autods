@@ -81,3 +81,26 @@ def test_repeated_clear_does_not_duplicate_runs():
 
     auto_saved = [r for r in session.saved_runs.values() if r.get("auto_saved")]
     assert len(auto_saved) == 1
+
+
+def test_invalidate_training_on_schema_change_clears_stale_columns():
+    """If a cleaned dataset renames or drops columns, any stale training state
+    for the previous schema must be discarded immediately so re-training uses
+    the current dataframe instead of ghost columns from the earlier dataset."""
+    session = Session(pd.DataFrame({"age": [20, 25], "income": [50_000, 60_000], "target": [1, 0]}), "data.csv")
+    session.target = "target"
+    session.problem_type = "classification"
+    session.models = {"model": object()}
+    session.best_model_name = "model"
+    session.feature_columns = ["age", "income", "old_feature"]
+    session.label_encoder = object()
+
+    session.df = session.df.rename(columns={"income": "salary"}).drop(columns=["age"])
+    session.invalidate_training_if_schema_changed()
+
+    assert session.target is None
+    assert session.models == {}
+    assert session.best_model_name is None
+    assert session.feature_columns == []
+    assert session.label_encoder is None
+    assert session.progress_messages == []
