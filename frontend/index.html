@@ -1334,6 +1334,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <div class="pred-field"><button id="supervisedLearningBtn">Supervised learning</button></div>
       <div class="pred-field"><button class="sec" id="unsupervisedLearningBtn">Unsupervised learning</button></div>
       <div class="pred-field"><button class="sec" id="recommenderBtn">Recommender system</button></div>
+      <div class="pred-field"><button class="sec" id="forecastBtn">Trend &amp; forecast</button></div>
     </div>
 
     <div class="subhead">Supervised AutoML</div>
@@ -1638,6 +1639,62 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="actions">
       <button id="goPredictFromRecommenderBtn">Continue to predictions →</button>
+    </div>
+  </section>
+
+  <!-- FORECAST -->
+  <section class="panel hidden" id="panelForecast">
+    <h2><span class="idx">06 /</span> Trend &amp; Forecast</h2>
+    <p class="hint">Aggregate a date (or year) column into periods, fit a trend, and project it forward — e.g. "content additions per year, 5 years out".</p>
+
+    <div class="subhead">1. Detect setup</div>
+    <button class="sec" id="fcDetectBtn">🔍 Detect trend setup</button>
+    <div id="fcDetectResult" class="hidden"></div>
+
+    <div class="subhead" style="margin-top:20px;">2. Configure</div>
+    <div class="pred-row">
+      <div class="pred-field"><label>Date / year column</label><select id="fcDateCol"></select></div>
+      <div class="pred-field">
+        <label>Bucket by</label>
+        <select id="fcPeriod">
+          <option value="year">Year</option>
+          <option value="quarter">Quarter</option>
+          <option value="month">Month</option>
+        </select>
+      </div>
+      <div class="pred-field">
+        <label>Metric</label>
+        <select id="fcAgg">
+          <option value="count">Count rows</option>
+          <option value="sum">Sum a column</option>
+          <option value="mean">Average a column</option>
+          <option value="median">Median of a column</option>
+          <option value="min">Min of a column</option>
+          <option value="max">Max of a column</option>
+        </select>
+      </div>
+      <div class="pred-field" id="fcMetricColWrap"><label>Numeric column</label><select id="fcMetricCol"></select></div>
+    </div>
+    <div class="pred-row">
+      <div class="pred-field">
+        <label>Trend shape</label>
+        <select id="fcDegree">
+          <option value="1">Linear</option>
+          <option value="2">Quadratic (curved)</option>
+        </select>
+      </div>
+      <div class="pred-field"><label>Periods to project forward</label><input type="number" id="fcPeriodsAhead" value="5" min="1" max="50"></div>
+      <div class="pred-field"><button id="fcRunBtn" style="margin-top:13px;">Fit &amp; forecast</button></div>
+    </div>
+
+    <div id="fcResult" class="hidden"></div>
+    <div id="fcChartWrap" class="hidden" style="height:360px;margin-top:14px;"><canvas id="fcCanvas"></canvas></div>
+    <div id="fcDownloadWrap" class="hidden" style="margin-top:10px;">
+      <button class="sec" id="fcDownloadBtn">⬇ Download chart as image</button>
+    </div>
+
+    <div class="actions">
+      <button id="goPredictFromForecastBtn">Continue to predictions →</button>
     </div>
   </section>
 
@@ -2087,7 +2144,8 @@ function clearAnalysisUI(){
     "chatWrap","corrFallback","corrLegend","corrPairSummary","pcaResult",
     "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
     "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError",
-    "recDetectResult","recFitResult","recRecommendResult","recSimilarResult","recEvalResult"
+    "recDetectResult","recFitResult","recRecommendResult","recSimilarResult","recEvalResult",
+    "fcDetectResult","fcResult"
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
 
   if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
@@ -2095,9 +2153,11 @@ function clearAnalysisUI(){
    "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint",
    "pcaResult","corrPicker","clusterAnalysisResult","clusterResult","simResult",
    "anomalyResult","reduceResult","assocResult",
-   "recDetectResult","recFitResult","recUseSection","recRecommendResult","recSimilarResult","recEvalSection","recEvalResult"
+   "recDetectResult","recFitResult","recUseSection","recRecommendResult","recSimilarResult","recEvalSection","recEvalResult",
+   "fcDetectResult","fcResult","fcChartWrap","fcDownloadWrap"
   ].forEach(id => { if($(id)) hide(id); });
   recModelId = null; recModel = null;
+  destroyChart("fcCanvas");
 
   ["vizCleanStatus","trainCleanStatus"].forEach(id => {
     if($(id)){
@@ -3559,6 +3619,7 @@ function populateSelects(){
   populateDatabaseAnalysisSelects();
   populateSimulationSelects();
   if(typeof populateRecommenderSelects === "function") populateRecommenderSelects();
+  if(typeof populateForecastSelects === "function") populateForecastSelects();
   // Prefer the previously trained target so switching tabs doesn't reset the
   // dropdown to the EDA suggestion and make it look like training was lost.
   const trainedTarget = getState().training?.target;
@@ -5396,6 +5457,11 @@ $("recommenderBtn").addEventListener("click", () => {
   populateRecommenderSelects();
   recDetectSetup();
 });
+$("forecastBtn").addEventListener("click", () => {
+  show("panelForecast"); setStep(6); scrollPanel("panelForecast");
+  populateForecastSelects();
+  fcDetectSetup();
+});
 
 // ---------- TRAIN ----------
 function clearTrainingUI(){
@@ -6578,6 +6644,144 @@ $("recEvalBtn").addEventListener("click", async () => {
   }catch(err){
     $("recEvalResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
   }
+});
+
+// ---------- FORECAST ----------
+$("goPredictFromForecastBtn").addEventListener("click", () => { show("panelPredict"); setStep(7); scrollPanel("panelPredict"); });
+
+function populateForecastSelects(){
+  const opts = `<option value="">—</option>` + allColumns.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  ["fcDateCol","fcMetricCol"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+}
+
+function updateFcAggFields(){
+  const needsMetric = $("fcAgg").value !== "count";
+  $("fcMetricColWrap").style.display = needsMetric ? "" : "none";
+}
+$("fcAgg").addEventListener("change", updateFcAggFields);
+updateFcAggFields();
+
+async function fcDetectSetup(){
+  const sid = getSid();
+  if(!sid) return;
+  $("fcDetectResult").innerHTML = `<p class="loading">Inspecting columns</p>`;
+  show("fcDetectResult");
+  try{
+    const res = await fetch(`${API}/forecast/detect/${sid}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Detection failed");
+    if(!data.ok){
+      $("fcDetectResult").innerHTML = `<div class="hint">${escapeHtml(data.message)}</div>`;
+      return;
+    }
+    const g = data.best_guess;
+    $("fcDetectResult").innerHTML = `<div class="result-box">${escapeHtml(g.description)}</div>`;
+    if($("fcDateCol")) $("fcDateCol").value = g.date_col || "";
+    if($("fcPeriod")) $("fcPeriod").value = g.period || "year";
+    if($("fcAgg")) $("fcAgg").value = g.agg || "count";
+    if($("fcMetricCol")) $("fcMetricCol").value = g.metric_col || "";
+    updateFcAggFields();
+  }catch(err){
+    $("fcDetectResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
+}
+$("fcDetectBtn").addEventListener("click", fcDetectSetup);
+
+function downloadChartImage(canvasId, filename){
+  const canvas = $(canvasId);
+  if(!canvas) return;
+  // Chart.js canvases are transparent by default -- bake in the app's dark
+  // background first so the exported PNG looks right dropped straight into
+  // a slide or doc instead of showing light text on nothing.
+  const tmp = document.createElement("canvas");
+  tmp.width = canvas.width; tmp.height = canvas.height;
+  const ctx = tmp.getContext("2d");
+  ctx.fillStyle = "#0d1b2e";
+  ctx.fillRect(0, 0, tmp.width, tmp.height);
+  ctx.drawImage(canvas, 0, 0);
+  const a = document.createElement("a");
+  a.href = tmp.toDataURL("image/png");
+  a.download = filename;
+  a.click();
+}
+
+let fcLastRunMeta = null;
+
+function renderFcChart(data){
+  const histLabels = data.historical.labels, histValues = data.historical.values;
+  const trendValues = data.trend.values;
+  const futureLabels = data.future.labels, futureValues = data.future.values;
+  const labels = histLabels.concat(futureLabels);
+  const pad = arr => arr.concat(Array(futureLabels.length).fill(null));
+  const padFront = arr => Array(histLabels.length).fill(null).concat(arr);
+
+  show("fcChartWrap");
+  makeChart("fcCanvas", {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {label: "Historical", data: pad(histValues), borderColor: "#5fd4d6", backgroundColor: "#5fd4d620", borderWidth: 2.5, pointRadius: 2.5, tension: 0.25},
+        {label: "Trend", data: pad(trendValues), borderColor: "#ffb627", borderDash: [6,4], borderWidth: 2, pointRadius: 0, tension: 0.25},
+        {label: "Forecast", data: padFront(futureValues), borderColor: "#5fd98c", backgroundColor: "#5fd98c20", borderWidth: 2.5, pointRadius: 2.5, borderDash: [2,2], tension: 0.25},
+      ]
+    },
+    options: {
+      plugins: {legend: {labels: {color: "#8fa3bc", font: {family: "IBM Plex Mono", size: 10}}}},
+      scales: {
+        x: {ticks: {color:"#8fa3bc", font:{family:"IBM Plex Mono", size:9}, maxRotation:45}, grid:{color:"#1f3a5f"}},
+        y: {ticks: {color:"#8fa3bc"}, grid:{color:"#1f3a5f"}}
+      }
+    }
+  });
+}
+
+$("fcRunBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+  const dateCol = $("fcDateCol").value;
+  if(!dateCol){ $("fcResult").innerHTML = `<div class="error-box">Pick a date/year column first.</div>`; show("fcResult"); hide("fcChartWrap"); return; }
+  const agg = $("fcAgg").value;
+  const body = {
+    date_col: dateCol,
+    period: $("fcPeriod").value,
+    agg,
+    degree: parseInt($("fcDegree").value, 10),
+    periods_ahead: parseInt($("fcPeriodsAhead").value || "5", 10),
+  };
+  if(agg !== "count"){
+    const metricCol = $("fcMetricCol").value;
+    if(!metricCol){ $("fcResult").innerHTML = `<div class="error-box">Pick a numeric column to ${escapeHtml(agg)}.</div>`; show("fcResult"); hide("fcChartWrap"); return; }
+    body.metric_col = metricCol;
+  }
+  $("fcResult").innerHTML = `<p class="loading">Fitting trend</p>`;
+  show("fcResult");
+  hide("fcChartWrap");
+  try{
+    const res = await fetch(`${API}/forecast/run/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not fit a forecast");
+    const warn = (data.warnings || []).map(w => `<div class="hint" style="color:var(--accent);">⚠ ${escapeHtml(w)}</div>`).join("");
+    $("fcResult").innerHTML = `<div class="result-box">
+      <strong>${escapeHtml(data.degree === 2 ? "Quadratic" : "Linear")} trend</strong> over ${data.n_points} ${escapeHtml(data.period)}s
+      · R² = <strong>${data.r2 == null ? "n/a" : data.r2}</strong>
+      <br><span style="font-size:11px;color:var(--ink-dim);">${escapeHtml(data.equation)}</span>
+      ${warn}
+    </div>`;
+    renderFcChart(data);
+    fcLastRunMeta = {date_col: data.date_col, period: data.period, metric_col: data.metric_col, agg: data.agg};
+    show("fcDownloadWrap");
+  }catch(err){
+    $("fcResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+    hide("fcDownloadWrap");
+  }
+});
+
+$("fcDownloadBtn").addEventListener("click", () => {
+  const meta = fcLastRunMeta || {};
+  const metricPart = meta.agg && meta.agg !== "count" ? `${meta.agg}_${meta.metric_col}` : "count";
+  const safe = s => String(s || "forecast").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+  downloadChartImage("fcCanvas", `forecast_${safe(meta.date_col)}_${safe(metricPart)}_by_${safe(meta.period)}.png`);
 });
 
 // ---------- TRAINED MODELS PANEL (each model gets its own card) ----------

@@ -45,6 +45,7 @@ from . import simulation as simulation_module
 from . import pivot as pivot_module
 from . import unsupervised
 from . import recommender
+from . import forecast
 from . import viz
 from .main_report import _build_html_report
 from .store import (
@@ -3245,6 +3246,48 @@ def recommender_evaluate(session_id: str, req: dict):
             session.df, user_col, item_col, rating_col,
             test_size=req.get("test_size", 0.2),
             n_components=req.get("n_components", 20),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------- Trend & Forecast ----------
+# "Content additions per year, projected N years forward" style workflow:
+# aggregate a date/year column into periods, fit a linear/quadratic trend,
+# extrapolate, and return chart-ready historical/trend/future series.
+# Stateless (nothing cached on the session) since each run is cheap.
+
+@app.get("/api/forecast/detect/{session_id}")
+def forecast_detect(session_id: str):
+    """Suggest a date/year column and metric to trend & forecast."""
+    session = _get_session_or_404(session_id)
+    return forecast.detect_forecast_setup(session.df)
+
+
+@app.post("/api/forecast/run/{session_id}")
+def forecast_run(session_id: str, req: dict):
+    """
+    req:
+      date_col: required -- a date column, or an already-numeric year column
+      period: "year" | "quarter" | "month" (default "year")
+      metric_col: optional numeric column to aggregate (omit to count rows)
+      agg: "count" | "sum" | "mean" | "median" | "min" | "max" (default "count")
+      degree: 1 (linear) or 2 (quadratic trend), default 1
+      periods_ahead: how many future periods to project, default 5
+    """
+    session = _get_session_or_404(session_id)
+    date_col = req.get("date_col")
+    if not date_col:
+        raise HTTPException(400, "date_col is required.")
+    try:
+        return forecast.run_forecast(
+            session.df,
+            date_col=date_col,
+            period=req.get("period", "year"),
+            metric_col=req.get("metric_col") or None,
+            agg=req.get("agg", "count"),
+            degree=req.get("degree", 1),
+            periods_ahead=req.get("periods_ahead", 5),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
