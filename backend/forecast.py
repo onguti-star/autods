@@ -13,7 +13,7 @@ from sklearn.metrics import r2_score
 
 _warnings.filterwarnings("ignore")
 
-VALID_PERIODS = ("year", "quarter", "month")
+VALID_PERIODS = ("year", "quarter", "month", "numeric")
 VALID_AGGS = ("count", "sum", "mean", "median", "min", "max")
 
 
@@ -102,16 +102,35 @@ def detect_forecast_setup(df: pd.DataFrame) -> dict:
 
 # ── Period resolution ────────────────────────────────────────────────────
 
+def _fmt_numeric_label(v: float) -> str:
+    if pd.isna(v):
+        return ""
+    v = float(v)
+    return str(int(v)) if v.is_integer() else f"{v:.4g}"
+
+
 def _resolve_periods(df: pd.DataFrame, date_col: str, period: str):
     """
     Return (idx, label) series for every row:
       idx   -- a numeric, strictly-increasing-by-1-per-period axis usable
                for regression (the year itself for "year"; a calendar
                ordinal for "quarter"/"month" so gaps in the data don't
-               distort future extrapolation).
-      label -- the matching display string ("2024", "2024Q2", "2024-02").
+               distort future extrapolation; the raw value itself for
+               "numeric").
+      label -- the matching display string ("2024", "2024Q2", "2024-02",
+               or the plain number for "numeric").
     """
     series = df[date_col]
+
+    if period == "numeric":
+        # Not a time axis at all -- any numeric column (price, age, an
+        # index, ...). No date parsing: the values are used exactly as
+        # given, so this is the same trend-fit-and-extrapolate workflow
+        # but generalised to any numeric x, not just a date/year.
+        idx = pd.to_numeric(series, errors="coerce")
+        if idx.notna().sum() == 0:
+            raise ValueError(f"'{date_col}' doesn't hold numeric values.")
+        return idx.astype(float), idx.map(_fmt_numeric_label)
 
     if period == "year" and pd.api.types.is_numeric_dtype(series):
         vals = series.dropna()
@@ -218,12 +237,24 @@ def _format_equation(coeffs: np.ndarray, degree: int) -> str:
 
 def run_forecast(df: pd.DataFrame, date_col: str, period: str = "year",
                   metric_col: str | None = None, agg: str = "count",
-                  degree: int = 1, periods_ahead: int = 5) -> dict:
+                  degree: int = 1, periods_ahead: int = 5,
+                  future_values: list[float] | None = None) -> dict:
     """
     Aggregate df[date_col] into periods, fit a degree-1 (linear) or
-    degree-2 (quadratic) trend, and extrapolate periods_ahead steps beyond
-    the last observed period. Returns JSON-safe historical/trend/future
-    series ready to chart, plus fit diagnostics and any caveats.
+    degree-2 (quadratic) trend, and extrapolate. Returns JSON-safe
+    historical/trend/future series ready to chart, plus fit diagnostics
+    and any caveats.
+
+    By default (future_values omitted) this projects periods_ahead
+    consecutive steps beyond the last observed period, same as before.
+    Pass future_values -- a list of specific years ("year") or raw
+    numbers ("numeric") -- to predict an arbitrary range or an
+    irregular/non-consecutive set of inputs instead (e.g. [2030, 2040,
+    2050], or every 5th year of a 30-year span) rather than only "N
+    periods right after the last one". Only supported for period
+    "year"/"numeric", where a typed value maps directly onto the x-axis;
+    "quarter"/"month" still use periods_ahead, since a bare typed number
+    doesn't unambiguously name a quarter or month.
     """
     grouped = aggregate_series(df, date_col, period, metric_col, agg)
     n = len(grouped)
@@ -248,11 +279,39 @@ def run_forecast(df: pd.DataFrame, date_col: str, period: str = "year",
     fitted = poly(x)
     r2 = float(r2_score(y, fitted)) if n >= 2 else None
 
-    periods_ahead = max(1, min(int(periods_ahead), 50))
     last_x = float(x[-1])
-    future_x = np.array([last_x + i + 1 for i in range(periods_ahead)])
+    if future_values:
+        if period not in ("year", "numeric"):
+            raise ValueError(
+                "A specific list/range of values to predict only works with period "
+                "'year' or a numeric x-axis -- quarter/month still use \"periods to project forward\"."
+            )
+        try:
+            future_x = np.array(sorted({round(float(v), 6) for v in future_values}), dtype=float)
+        except (TypeError, ValueError):
+            raise ValueError("Couldn't read the values to predict -- give plain numbers (e.g. years).")
+        if future_x.size == 0:
+            raise ValueError("Give at least one value to predict.")
+        if future_x.size > 50:
+            raise ValueError("Predict at most 50 values at a time.")
+        periods_ahead = int(future_x.size)
+        if period == "year":
+            future_labels = [str(int(round(v))) for v in future_x]
+        else:
+            future_labels = [_fmt_numeric_label(v) for v in future_x]
+        n_within_history = int(np.sum((future_x >= x.min()) & (future_x <= x.max())))
+        if n_within_history:
+            warnings_out.append(
+                f"{n_within_history} of the values you asked for fall inside the historical range "
+                f"({_fmt_numeric_label(float(x.min()))}–{_fmt_numeric_label(float(x.max()))}) -- "
+                "that's the trend line's fitted estimate for that point, not a genuine forecast."
+            )
+    else:
+        periods_ahead = max(1, min(int(periods_ahead), 50))
+        future_x = np.array([last_x + i + 1 for i in range(periods_ahead)])
+        future_labels = _future_labels(period, labels[-1], periods_ahead)
+
     future_y = poly(future_x)
-    future_labels = _future_labels(period, labels[-1], periods_ahead)
 
     if agg == "count":
         display_hist = np.round(y)
@@ -281,5 +340,6 @@ def run_forecast(df: pd.DataFrame, date_col: str, period: str = "year",
         "historical": {"labels": labels, "values": [round(float(v), 4) for v in display_hist]},
         "trend": {"labels": labels, "values": [round(float(v), 4) for v in display_fit]},
         "future": {"labels": future_labels, "values": [round(float(v), 4) for v in display_future]},
+        "is_custom_future": bool(future_values),
         "warnings": warnings_out,
     }

@@ -202,6 +202,12 @@ class Session:
                                                     # arrays / sparse matrices). Deliberately not persisted to
                                                     # disk, same as session.models -- re-fit after a restart.
         self.recommender_results: dict = {}        # latest JSON-safe recommender snapshots for reports
+        self.forecast_results: dict = {}            # latest JSON-safe trend/forecast run (see forecast.py) --
+                                                      # plain numbers/strings only (no fitted model object), so
+                                                      # like unsupervised_results it's persisted below and
+                                                      # survives tab switches, restarts, and shows up in the
+                                                      # HTML report / notebook export instead of only existing
+                                                      # on screen until you navigate away
         self.progress_messages: list = []          # progress messages for long-running operations
         self.geojson: dict | None = None            # raw GeoJSON if a .geojson file was uploaded
         self.geo_name_col: str | None = None         # column auto-matched to country/state names, if any
@@ -254,6 +260,7 @@ class Session:
             "geo_level": self._geo_level,
             "unsupervised_results": self.unsupervised_results,
             "saved_predictions": self.saved_predictions,
+            "forecast_results": self.forecast_results,
         }
 
     def save_meta_to_disk(self):
@@ -446,6 +453,7 @@ def get_session(session_id: str) -> "Session":
     s.imported_models = {}  # not persisted -- see the field comment in __init__
     s.saved_predictions = meta.get("saved_predictions", {})
     s.unsupervised_results = meta.get("unsupervised_results", {})
+    s.forecast_results = meta.get("forecast_results", {})
     s.progress_messages = []
     # The rest below are properties backed by a `_`-prefixed attribute (see
     # the Session class) -- assigned directly here, bypassing their setters,

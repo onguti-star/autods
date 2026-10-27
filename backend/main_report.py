@@ -1049,6 +1049,8 @@ def _build_html_report(session, extra_charts=None) -> str:
         html_parts.append('                <li><a href="#predictions">Saved Predictions</a></li>')
     if session.unsupervised_results:
         html_parts.append('                <li><a href="#unsupervised">Unsupervised Learning</a></li>')
+    if session.forecast_results.get("latest"):
+        html_parts.append('                <li><a href="#forecast">Trend &amp; Forecast</a></li>')
     
     html_parts.append("""            </ul>
         </div>""")
@@ -1563,7 +1565,69 @@ def _build_html_report(session, extra_charts=None) -> str:
                 </tr>""")
                 html_parts.append("            </tbody></table>")
             html_parts.append("        </div>")
-    
+
+    forecast_result = session.forecast_results.get("latest")
+    if forecast_result:
+        f = forecast_result
+        degree_label = "Quadratic" if f.get("degree") == 2 else "Linear"
+        period_label = "numeric points" if f.get("period") == "numeric" else f"{html.escape(str(f.get('period', 'year')))}s"
+        metric_label = (
+            f"{html.escape(str(f.get('agg', 'count')))} of {html.escape(str(f.get('metric_col')))}"
+            if f.get("metric_col") else "row count"
+        )
+        warnings_html = "".join(
+            f'<div class="analysis-meta">⚠ {html.escape(str(w))}</div>' for w in (f.get("warnings") or [])
+        )
+        # Same Historical / Trend / Forecast overlay as the app's own Trend &
+        # Forecast panel: one continuous axis, future points plotted only
+        # past the end of the historical ones (padFront), same as
+        # renderFcChart() in the frontend.
+        hist_labels = f.get("historical", {}).get("labels", [])
+        hist_values = f.get("historical", {}).get("values", [])
+        trend_values = f.get("trend", {}).get("values", [])
+        future_labels = f.get("future", {}).get("labels", [])
+        future_values = f.get("future", {}).get("values", [])
+        n_future = len(future_labels)
+        n_hist = len(hist_labels)
+        all_labels = hist_labels + future_labels
+        pad_hist = hist_values + [None] * n_future
+        pad_trend = trend_values + [None] * n_future
+        pad_future = [None] * n_hist + future_values
+        fc_chart_data = json.dumps({
+            "labels": all_labels,
+            "historical": pad_hist,
+            "trend": pad_trend,
+            "future": pad_future,
+        })
+        html_parts.append(f"""        <h2 class="section-title" id="forecast">📈 Trend &amp; Forecast</h2>
+        <div class="analysis-item">
+            <strong>{degree_label} trend</strong> over {f.get("n_points", 0)} {period_label} · column: {html.escape(str(f.get("date_col", "")))} · metric: {metric_label}
+            <div class="analysis-meta">R² = {_fmt_report_value(f.get("r2")) if f.get("r2") is not None else "n/a"}</div>
+            <div class="analysis-meta">{html.escape(str(f.get("equation", "")))}</div>
+            {warnings_html}
+            <div class="chart-canvas-wrap"><canvas id="forecastChart"></canvas></div>
+        </div>
+        <script>
+        (function(){{
+            var fcData = {fc_chart_data};
+            var ctx = document.getElementById('forecastChart');
+            if (ctx && window.Chart) {{
+                new Chart(ctx, {{
+                    type: 'line',
+                    data: {{
+                        labels: fcData.labels,
+                        datasets: [
+                            {{label: 'Historical', data: fcData.historical, borderColor: '#5fd4d6', backgroundColor: '#5fd4d620', borderWidth: 2.5, pointRadius: 2.5, tension: 0.25}},
+                            {{label: 'Trend', data: fcData.trend, borderColor: '#ffb627', borderDash: [6,4], borderWidth: 2, pointRadius: 0, tension: 0.25}},
+                            {{label: 'Forecast', data: fcData.future, borderColor: '#5fd98c', backgroundColor: '#5fd98c20', borderWidth: 2.5, pointRadius: 2.5, borderDash: [2,2], tension: 0.25}}
+                        ]
+                    }},
+                    options: {{responsive: true, plugins: {{legend: {{display: true}}}}}}
+                }});
+            }}
+        }})();
+        </script>""")
+
     html_parts.append("        </div>")  # closes .report-main
     if filter_bar_html:
         html_parts.append(filter_bar_html)  # sidebar, opposite side from .toc -- still inside .report-shell
@@ -2875,6 +2939,31 @@ def _build_work_report(session) -> str:
                     con = ", ".join(str(x) for x in (rule.get("consequents") or []))
                     lines.append(f"| {ant} | {con} | {_fmt_report_value(rule.get('support'))} | {_fmt_report_value(rule.get('confidence'))} | {_fmt_report_value(rule.get('lift'))} |")
             lines.append("")
+
+    forecast_result = session.forecast_results.get("latest")
+    if forecast_result:
+        f = forecast_result
+        lines.extend(["", "## Trend & Forecast", ""])
+        degree_label = "Quadratic" if f.get("degree") == 2 else "Linear"
+        period_label = "numeric points" if f.get("period") == "numeric" else f"{f.get('period', 'year')}s"
+        metric_label = f"{f.get('agg', 'count')} of {f.get('metric_col')}" if f.get("metric_col") else "row count"
+        r2 = f.get("r2")
+        lines.append(f"**{degree_label} trend** over {f.get('n_points', 0)} {period_label} — column: `{f.get('date_col', '')}`, metric: {metric_label}")
+        lines.append(f"- R² = {_fmt_report_value(r2) if r2 is not None else 'n/a'}")
+        lines.append(f"- {f.get('equation', '')}")
+        for w in (f.get("warnings") or []):
+            lines.append(f"- ⚠ {w}")
+        hist = f.get("historical", {})
+        future = f.get("future", {})
+        if hist.get("labels") or future.get("labels"):
+            lines.append("")
+            lines.append("| Period | Actual | Forecast |")
+            lines.append("| --- | --- | --- |")
+            for label, value in zip(hist.get("labels", []), hist.get("values", [])):
+                lines.append(f"| {label} | {_fmt_report_value(value)} |  |")
+            for label, value in zip(future.get("labels", []), future.get("values", [])):
+                lines.append(f"| {label} |  | {_fmt_report_value(value)} |")
+        lines.append("")
 
     lines.extend(["", f"## {preview_title}", ""])
     preview = eda.safe_preview(session.df, 15)

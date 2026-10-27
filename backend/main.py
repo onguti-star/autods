@@ -1521,6 +1521,41 @@ def pivot_table(session_id: str, req: pivot_module.PivotRequest):
         raise HTTPException(400, str(exc))
 
 
+class PivotToTabRequest(pivot_module.PivotRequest):
+    new_name: str = Field(default="pivot_table", max_length=120)
+
+
+@app.post("/api/pivot_to_tab/{session_id}")
+def pivot_to_tab(session_id: str, req: PivotToTabRequest):
+    """
+    Build a pivot table and turn it into a brand-new session, same pattern
+    as /api/filter (Filter & Split): the summarised table becomes its own
+    dataset tab -- original stays untouched -- so it can be studied further
+    (visualised, filtered, cleaned, trained on) instead of only existing as
+    a one-off view in the pivot panel.
+    """
+    session = _get_session_or_404(session_id)
+    try:
+        result = pivot_module.build_pivot(session.df, req)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    result_df = pivot_module.pivot_rows_to_dataframe(result)
+    if result_df.empty:
+        raise HTTPException(400, "The pivot table has no rows to send over.")
+
+    new_name = req.new_name.strip() or "pivot_table"
+    new_session = create_session(result_df, new_name + ".csv")
+
+    return {
+        "session_id": new_session.id,
+        "name": new_name,
+        "shape": {"rows": len(result_df), "columns": len(result_df.columns)},
+        "columns": list(result_df.columns),
+        "preview": _json_safe_records(result_df.head(5)),
+    }
+
+
 @app.post("/api/simulate/{session_id}")
 def simulate_scenario(session_id: str, req: simulation_module.SimulationRequest):
     session = _get_session_or_404(session_id)
@@ -1588,11 +1623,14 @@ def _build_work_report(session) -> str:
     has_training  = bool(session.leaderboard)
     has_unsupervised = bool(session.unsupervised_results)
     has_predictions  = bool(session.saved_predictions)
+    has_forecast     = bool(session.forecast_results.get("latest"))
 
     if has_training or has_predictions:
         stage = "Model Training & Prediction"
     elif has_unsupervised:
         stage = "Unsupervised Learning"
+    elif has_forecast:
+        stage = "Trend & Forecast"
     elif has_cleaning:
         stage = "Data Cleaning"
     else:
@@ -1783,6 +1821,31 @@ def _build_work_report(session) -> str:
                     con = ", ".join(str(x) for x in (rule.get("consequents") or []))
                     lines.append(f"| {ant} | {con} | {_fmt_report_value(rule.get('support'))} | {_fmt_report_value(rule.get('confidence'))} | {_fmt_report_value(rule.get('lift'))} |")
             lines.append("")
+
+    forecast_result = session.forecast_results.get("latest")
+    if forecast_result:
+        f = forecast_result
+        lines.extend(["", "## Trend & Forecast", ""])
+        degree_label = "Quadratic" if f.get("degree") == 2 else "Linear"
+        period_label = "numeric points" if f.get("period") == "numeric" else f"{f.get('period', 'year')}s"
+        metric_label = f"{f.get('agg', 'count')} of {f.get('metric_col')}" if f.get("metric_col") else "row count"
+        r2 = f.get("r2")
+        lines.append(f"**{degree_label} trend** over {f.get('n_points', 0)} {period_label} — column: `{f.get('date_col', '')}`, metric: {metric_label}")
+        lines.append(f"- R² = {_fmt_report_value(r2) if r2 is not None else 'n/a'}")
+        lines.append(f"- {f.get('equation', '')}")
+        for w in (f.get("warnings") or []):
+            lines.append(f"- ⚠ {w}")
+        hist = f.get("historical", {})
+        future = f.get("future", {})
+        if hist.get("labels") or future.get("labels"):
+            lines.append("")
+            lines.append("| Period | Actual | Forecast |")
+            lines.append("| --- | --- | --- |")
+            for label, value in zip(hist.get("labels", []), hist.get("values", [])):
+                lines.append(f"| {label} | {_fmt_report_value(value)} |  |")
+            for label, value in zip(future.get("labels", []), future.get("values", [])):
+                lines.append(f"| {label} |  | {_fmt_report_value(value)} |")
+        lines.append("")
 
     lines.extend(["", f"## {preview_title}", ""])
     preview = eda.safe_preview(session.df, 15)
@@ -3268,19 +3331,25 @@ def forecast_detect(session_id: str):
 def forecast_run(session_id: str, req: dict):
     """
     req:
-      date_col: required -- a date column, or an already-numeric year column
-      period: "year" | "quarter" | "month" (default "year")
+      date_col: required -- a date column, an already-numeric year column,
+                or (with period "numeric") any numeric column at all
+      period: "year" | "quarter" | "month" | "numeric" (default "year")
       metric_col: optional numeric column to aggregate (omit to count rows)
       agg: "count" | "sum" | "mean" | "median" | "min" | "max" (default "count")
       degree: 1 (linear) or 2 (quadratic trend), default 1
-      periods_ahead: how many future periods to project, default 5
+      periods_ahead: how many future periods to project, default 5 --
+                     ignored when future_values is given
+      future_values: optional list of specific numbers to predict (years,
+                     for period "year"; raw numbers for "numeric") instead
+                     of "N periods right after the last one" -- an
+                     arbitrary range or a non-consecutive set of inputs
     """
     session = _get_session_or_404(session_id)
     date_col = req.get("date_col")
     if not date_col:
         raise HTTPException(400, "date_col is required.")
     try:
-        return forecast.run_forecast(
+        result = forecast.run_forecast(
             session.df,
             date_col=date_col,
             period=req.get("period", "year"),
@@ -3288,9 +3357,18 @@ def forecast_run(session_id: str, req: dict):
             agg=req.get("agg", "count"),
             degree=req.get("degree", 1),
             periods_ahead=req.get("periods_ahead", 5),
+            future_values=req.get("future_values") or None,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    # Persist the latest run (plain JSON-safe numbers/strings -- no fitted
+    # model object) so it survives tab switches and server restarts, and
+    # shows up in the HTML report / notebook export, like every other
+    # analysis tool's results already do. See store.py's forecast_results.
+    session.forecast_results["latest"] = result
+    session.save_meta_to_disk()
+    return result
 
 
 # ---------- Download Jupyter Notebook ----------

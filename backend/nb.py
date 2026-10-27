@@ -897,6 +897,77 @@ def _add_unsupervised_cells(cells: list[dict], session):
     ))
 
 
+def _add_forecast_cells(cells: list[dict], session):
+    result = getattr(session, "forecast_results", None) or {}
+    if not result or not result.get("historical"):
+        return
+
+    cells.append(_markdown_cell("## Trend & Forecast"))
+    cells.append(_code_cell(
+        "import json\n"
+        "import numpy as np\n"
+        "import matplotlib.pyplot as plt\n"
+        "\n"
+        f"forecast_result = {_py_embed(result)}\n\n"
+        "hist = forecast_result['historical']\n"
+        "trend = forecast_result['trend']\n"
+        "future = forecast_result['future']\n"
+        "\n"
+        "metric_label = 'row count' if forecast_result['agg'] == 'count' else f\"{forecast_result['agg']} of {forecast_result['metric_col']}\"\n"
+        "print(f\"Trend over '{forecast_result['date_col']}', bucketed by {forecast_result['period']} ({metric_label})\")\n"
+        "print(f\"Fit: {forecast_result['equation']}  (R^2 = {forecast_result['r2']}, {forecast_result['n_points']} data points)\")\n"
+        "for note in forecast_result.get('warnings', []):\n"
+        "    print(f'Note: {note}')\n"
+        "print()\n"
+        "\n"
+        "plt.figure(figsize=(10, 6))\n"
+        "plt.plot(hist['labels'], hist['values'], marker='o', label='Historical', color='#2f7ed8', linewidth=2)\n"
+        "plt.plot(trend['labels'], trend['values'], linestyle='--', label='Trend fit', color='#e6a23c', linewidth=2)\n"
+        "# Prepend the last historical point so the forecast line visually connects to it.\n"
+        "future_labels = [hist['labels'][-1]] + future['labels']\n"
+        "future_values = [hist['values'][-1]] + future['values']\n"
+        "plt.plot(future_labels, future_values, marker='o', linestyle='--', label='Forecast', color='#2ecc71', linewidth=2)\n"
+        "plt.xticks(rotation=45, ha='right')\n"
+        "plt.xlabel(forecast_result['period'].capitalize())\n"
+        "plt.ylabel(metric_label)\n"
+        "plt.title('Trend & Forecast')\n"
+        "plt.legend()\n"
+        "plt.tight_layout()\n"
+        "plt.show()\n"
+        "\n"
+        "future_df = pd.DataFrame({'period': future['labels'], 'prediction': future['values']})\n"
+        "print(future_df.to_string(index=False))\n"
+    ))
+
+def _add_recommender_cells(cells: list[dict], session):
+    results = getattr(session, "recommender_results", None) or {}
+    if not results:
+        return
+
+    cells.append(_markdown_cell("## Recommender System"))
+    cells.append(_code_cell(
+        "import json\n"
+        "\n"
+        f"recommender_models = {_py_embed(list(results.values()))}\n\n"
+        "for model in recommender_models:\n"
+        "    label = model.get('item_col') or f\"{model.get('n_users')} users x {model.get('n_items')} items\"\n"
+        "    print(f\"[{model['mode']}] {label}  (model_id={model['model_id']})\")\n"
+        "    for key, value in model.items():\n"
+        "        if key in {'model_id', 'mode', 'item_col'}:\n"
+        "            continue\n"
+        "        print(f'  {key}: {value}')\n"
+        "    print()\n"
+        "\n"
+        "# These models were fitted in the app for this session only -- re-fit them here if you\n"
+        "# want to call them from code. The module is self-contained (same file the app uses):\n"
+        "#   import recommender\n"
+        "#   model = recommender.fit_collaborative(df, user_col=..., item_col=..., rating_col=...)\n"
+        "#   recommender.recommend_for_user(model, user_id=..., top_n=10)\n"
+        "# or for content-based:\n"
+        "#   model = recommender.fit_content(df, item_col=..., feature_cols=[...], text_cols=[...], list_cols=[...])\n"
+        "#   recommender.recommend_similar(model, item_name=..., top_n=10)\n"
+    ))
+
 def build_notebook(session, charts: list | None = None) -> tuple[str, bool]:
     """Build a compact .ipynb JSON string for completed session work.
     `charts` is the frontend's full chart history for this dataset (same list
@@ -939,10 +1010,12 @@ def build_notebook(session, charts: list | None = None) -> tuple[str, bool]:
     _add_training_cells(cells, session)
     _add_prediction_cells(cells, session)
     _add_unsupervised_cells(cells, session)
+    _add_recommender_cells(cells, session)
+    _add_forecast_cells(cells, session)
 
     if len(cells) == 2:
         cells.append(_code_cell(
-            "# No cleaning, training, prediction, visualization, or unsupervised actions were recorded yet.\n"
+            "# No cleaning, training, prediction, visualization, unsupervised, recommender, or forecast actions were recorded yet.\n"
             "# df_original/df above are ready for your own Python analysis.\n"
             "df.describe(include='all')"
         ))

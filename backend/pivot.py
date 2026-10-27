@@ -324,3 +324,48 @@ def build_pivot(df: pd.DataFrame, req: PivotRequest) -> dict:
         "source_rows": int(len(df)),
         "value_label": value_title or agg,
     }
+
+
+def pivot_rows_to_dataframe(result: dict) -> pd.DataFrame:
+    """Flatten a build_pivot() JSON result back into a plain DataFrame.
+
+    Lets a pivot table become a real dataset of its own -- sent to a new tab
+    the same way Filter & Split extracts a subset of rows into a new tab --
+    so the summarised table can be studied further: visualised, filtered,
+    cleaned, or trained on, instead of only existing as a one-off view in
+    the pivot panel.
+
+    The margin/"Total" row is dropped: it's a summary line over the other
+    rows, not a data point for further analysis, and keeping it would throw
+    off any aggregation or chart built from the new tab.
+    """
+    row_fields = [f if f else "Group" for f in (result.get("row_fields") or [])]
+    headers = result.get("headers") or []
+
+    # Column names must be unique -- a row field and a value header can
+    # collide (e.g. grouping by "total" while a value column is also
+    # labelled "Total"), so disambiguate exactly like the UI's own
+    # "Copy table" / "Add to notes" export does (_pvTableObj in the
+    # frontend) rather than silently dropping one.
+    seen: dict[str, int] = {}
+    columns: list[str] = []
+    for name in [*row_fields, *headers]:
+        name = str(name)
+        if name in seen:
+            seen[name] += 1
+            columns.append(f"{name} ({seen[name]})")
+        else:
+            seen[name] = 1
+            columns.append(name)
+    row_cols = columns[: len(row_fields)]
+    value_cols = columns[len(row_fields):]
+
+    records = []
+    for row in result.get("rows", []):
+        if row.get("is_total"):
+            continue
+        rec = dict(zip(row_cols, row.get("labels", [])))
+        rec.update(dict(zip(value_cols, row.get("cells", []))))
+        records.append(rec)
+
+    return pd.DataFrame(records, columns=columns)

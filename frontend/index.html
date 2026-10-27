@@ -956,6 +956,79 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <div id="dbAnalysisResult" class="db-analysis-result"></div>
       </div>
     </details>
+
+    <details id="pivotDropdown" style="margin-bottom:18px;">
+      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:14px;">▶</span>
+        ▦ Pivot table — summarise your data by category
+      </summary>
+      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
+        <p class="hint" style="margin:0 0 14px;">Group your rows by one or two fields, optionally spread another field across the columns, and let AutoDS add up (or average, count…) a number for every combination. Example: <em>Rows</em> = region, <em>Columns</em> = product, <em>Values</em> = revenue, <em>Calculate</em> = Sum.</p>
+        <div class="pred-row">
+          <div class="pred-field"><label>Rows</label><select id="pvRow1"></select></div>
+          <div class="pred-field"><label>Then by (optional)</label><select id="pvRow2"></select></div>
+          <div class="pred-field"><label>Columns (optional)</label><select id="pvCol"></select></div>
+          <div class="pred-field"><label>Values</label><select id="pvVal1"></select></div>
+          <div class="pred-field"><label>Second value (optional)</label><select id="pvVal2"></select></div>
+        </div>
+        <div class="pred-row" style="margin-top:10px;">
+          <div class="pred-field"><label>Calculate</label>
+            <select id="pvAgg">
+              <option value="sum">Sum</option><option value="mean">Average</option><option value="median">Median</option>
+              <option value="min">Minimum</option><option value="max">Maximum</option>
+              <option value="count">Count (non-blank)</option><option value="nunique">Distinct count</option><option value="std">Std. deviation</option>
+            </select>
+          </div>
+          <div class="pred-field"><label>Show as</label>
+            <select id="pvPercent">
+              <option value="none">Numbers</option><option value="of_total">% of grand total</option>
+              <option value="of_row">% of each row</option><option value="of_col">% of each column</option>
+            </select>
+          </div>
+          <div class="pred-field"><label>Group dates by</label>
+            <select id="pvDate">
+              <option value="">Leave as is</option><option value="year">Year</option><option value="quarter">Quarter</option>
+              <option value="month">Month</option><option value="weekday">Weekday</option>
+            </select>
+          </div>
+          <div class="pred-field"><label>Sort</label>
+            <select id="pvSort">
+              <option value="label_asc">Labels A → Z</option><option value="label_desc">Labels Z → A</option>
+              <option value="value_desc">Biggest first</option><option value="value_asc">Smallest first</option>
+            </select>
+          </div>
+          <div class="pred-field"><button id="pvBtn" style="margin-top:13px;">Build pivot</button></div>
+        </div>
+        <div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap;">
+          <label class="inline-option"><input type="checkbox" id="pvTotals" checked> Show totals</label>
+          <label class="inline-option"><input type="checkbox" id="pvHeat" checked> Colour scale</label>
+        </div>
+        <div id="pvError" class="error-box hidden" style="margin-top:10px;"></div>
+        <div id="pvResult" class="hidden">
+          <div class="pv-caption" id="pvCaption"></div>
+          <div class="pv-notes" id="pvNotes"></div>
+          <div class="pv-wrap" id="pvTableWrap"></div>
+          <div class="pv-actions">
+            <button class="sec" id="pvCopyBtn" title="Copies as a real table when pasted into Word, LibreOffice, Docs, Slack, etc.">Copy table</button>
+            <button class="sec" id="pvNotesBtn" title="Adds a real table to this dataset's Notes (shows as a table with the preview toggle on)">📝 Add to notes</button>
+            <button class="sec" id="pvCsvBtn">Download CSV</button>
+          </div>
+
+          <!-- Send the pivot result into its own dataset tab, same pattern as
+               Filter & Split above, so it can be studied like a real dataset
+               instead of only a one-off view here: visualised, filtered,
+               cleaned, or trained on. -->
+          <div class="subhead" style="margin-top:16px;">Send to new tab — study it like its own dataset</div>
+          <p class="hint" style="margin:0 0 8px;">Turns this pivot table into a new dataset tab you can visualise, filter, clean further, or train a model on. The Total row is left out; your original data is untouched.</p>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+            <input type="text" id="pvNewName" placeholder="Name for the new tab" style="flex:1;min-width:160px;">
+            <button id="pvSendBtn" onclick="sendPivotToTab()">↗ Send to new tab</button>
+          </div>
+          <div id="pvSendError" class="error-box hidden" style="margin-top:10px;"></div>
+        </div>
+      </div>
+    </details>
+
     <div class="subhead">Clean it yourself — chat</div>
     <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email", "create a new column called revenue", or "fill revenue with price * quantity". Type "help" to see everything I understand.</p>
 
@@ -1179,66 +1252,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     </div>
 
-    <details id="pivotDropdown" style="margin-top:20px;margin-bottom:8px;">
-      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
-        <span style="font-size:14px;">▶</span>
-        ▦ Pivot table — summarise your data by category
-      </summary>
-      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
-        <p class="hint" style="margin:0 0 14px;">Group your rows by one or two fields, optionally spread another field across the columns, and let AutoDS add up (or average, count…) a number for every combination. Example: <em>Rows</em> = region, <em>Columns</em> = product, <em>Values</em> = revenue, <em>Calculate</em> = Sum.</p>
-        <div class="pred-row">
-          <div class="pred-field"><label>Rows</label><select id="pvRow1"></select></div>
-          <div class="pred-field"><label>Then by (optional)</label><select id="pvRow2"></select></div>
-          <div class="pred-field"><label>Columns (optional)</label><select id="pvCol"></select></div>
-          <div class="pred-field"><label>Values</label><select id="pvVal1"></select></div>
-          <div class="pred-field"><label>Second value (optional)</label><select id="pvVal2"></select></div>
-        </div>
-        <div class="pred-row" style="margin-top:10px;">
-          <div class="pred-field"><label>Calculate</label>
-            <select id="pvAgg">
-              <option value="sum">Sum</option><option value="mean">Average</option><option value="median">Median</option>
-              <option value="min">Minimum</option><option value="max">Maximum</option>
-              <option value="count">Count (non-blank)</option><option value="nunique">Distinct count</option><option value="std">Std. deviation</option>
-            </select>
-          </div>
-          <div class="pred-field"><label>Show as</label>
-            <select id="pvPercent">
-              <option value="none">Numbers</option><option value="of_total">% of grand total</option>
-              <option value="of_row">% of each row</option><option value="of_col">% of each column</option>
-            </select>
-          </div>
-          <div class="pred-field"><label>Group dates by</label>
-            <select id="pvDate">
-              <option value="">Leave as is</option><option value="year">Year</option><option value="quarter">Quarter</option>
-              <option value="month">Month</option><option value="weekday">Weekday</option>
-            </select>
-          </div>
-          <div class="pred-field"><label>Sort</label>
-            <select id="pvSort">
-              <option value="label_asc">Labels A → Z</option><option value="label_desc">Labels Z → A</option>
-              <option value="value_desc">Biggest first</option><option value="value_asc">Smallest first</option>
-            </select>
-          </div>
-          <div class="pred-field"><button id="pvBtn" style="margin-top:13px;">Build pivot</button></div>
-        </div>
-        <div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap;">
-          <label class="inline-option"><input type="checkbox" id="pvTotals" checked> Show totals</label>
-          <label class="inline-option"><input type="checkbox" id="pvHeat" checked> Colour scale</label>
-        </div>
-        <div id="pvError" class="error-box hidden" style="margin-top:10px;"></div>
-        <div id="pvResult" class="hidden">
-          <div class="pv-caption" id="pvCaption"></div>
-          <div class="pv-notes" id="pvNotes"></div>
-          <div class="pv-wrap" id="pvTableWrap"></div>
-          <div class="pv-actions">
-            <button class="sec" id="pvCopyBtn" title="Copies as a real table when pasted into Word, LibreOffice, Docs, Slack, etc.">Copy table</button>
-            <button class="sec" id="pvNotesBtn" title="Adds a real table to this dataset's Notes (shows as a table with the preview toggle on)">📝 Add to notes</button>
-            <button class="sec" id="pvCsvBtn">Download CSV</button>
-          </div>
-        </div>
-      </div>
-    </details>
-
     <details id="simDropdown" style="margin-top:20px;margin-bottom:18px;">
       <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
         <span id="simDropdownArrow" style="font-size:14px;transition:transform .2s;">▶</span>
@@ -1316,6 +1329,31 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
       <div class="late-clean-status" id="trainCleanStatus"></div>
     </div>
+
+    <div class="subhead" style="margin-top:26px;">Import a model someone else trained</div>
+    <p class="hint">Bring in a .pkl trained outside AutoDS — a colleague's scikit-learn/xgboost/lightgbm model, one from your own notebook, or an AutoDS model you downloaded earlier. This is prediction-only: it never joins the leaderboard and can't be retrained. No training needed first — import and predict right here.</p>
+    <div class="pred-row">
+      <div class="pred-field"><label>Model file (.pkl)</label><input type="file" id="importModelFile" accept=".pkl,application/octet-stream"></div>
+      <div class="pred-field">
+        <label>Problem type</label>
+        <select id="importModelProblemType">
+          <option value="">Leave blank if it's an AutoDS-exported file</option>
+          <option value="classification">Classification</option>
+          <option value="regression">Regression</option>
+        </select>
+      </div>
+    </div>
+    <div class="pred-row">
+      <div class="pred-field" style="flex:2;"><label>Feature columns, in order (comma-separated)</label><input type="text" id="importModelFeatureColumns" placeholder="e.g. age, income, tenure — leave blank if the file already knows them"></div>
+      <div class="pred-field"><label>Target name</label><input type="text" id="importModelTargetName" placeholder="e.g. churn (optional)"></div>
+    </div>
+    <div class="pred-row">
+      <div class="pred-field" style="flex:2;"><label>Class labels, in order (optional)</label><input type="text" id="importModelLabelClasses" placeholder="e.g. no, yes — only if it outputs plain numbers for a classification target"></div>
+      <div class="pred-field"><label>Display name (optional)</label><input type="text" id="importModelLabel" placeholder="e.g. Jane's XGBoost model"></div>
+    </div>
+    <button class="sec" id="importModelBtn" style="margin-top:4px;">⬆ Import model</button>
+    <div id="importModelStatus"></div>
+    <div id="importedModelsList" style="margin-top:14px;"></div>
 
     <div id="trainSetupCollapsedBar" class="hidden" style="background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
@@ -1426,30 +1464,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
     <p class="hint">Every model you train gets its own card here with its own prediction form. Train on <strong>price</strong>, then train on <strong>quantity</strong> — both cards stay open so you can predict freely on either one at any time.</p>
     <div id="modelCardsList"></div>
 
-    <div class="subhead" style="margin-top:26px;">Import a model someone else trained</div>
-    <p class="hint">Bring in a .pkl trained outside AutoDS — a colleague's scikit-learn/xgboost/lightgbm model, one from your own notebook, or an AutoDS model you downloaded earlier. This is prediction-only: it never joins the leaderboard above and can't be retrained.</p>
-    <div class="pred-row">
-      <div class="pred-field"><label>Model file (.pkl)</label><input type="file" id="importModelFile" accept=".pkl,application/octet-stream"></div>
-      <div class="pred-field">
-        <label>Problem type</label>
-        <select id="importModelProblemType">
-          <option value="">Leave blank if it's an AutoDS-exported file</option>
-          <option value="classification">Classification</option>
-          <option value="regression">Regression</option>
-        </select>
-      </div>
-    </div>
-    <div class="pred-row">
-      <div class="pred-field" style="flex:2;"><label>Feature columns, in order (comma-separated)</label><input type="text" id="importModelFeatureColumns" placeholder="e.g. age, income, tenure — leave blank if the file already knows them"></div>
-      <div class="pred-field"><label>Target name</label><input type="text" id="importModelTargetName" placeholder="e.g. churn (optional)"></div>
-    </div>
-    <div class="pred-row">
-      <div class="pred-field" style="flex:2;"><label>Class labels, in order (optional)</label><input type="text" id="importModelLabelClasses" placeholder="e.g. no, yes — only if it outputs plain numbers for a classification target"></div>
-      <div class="pred-field"><label>Display name (optional)</label><input type="text" id="importModelLabel" placeholder="e.g. Jane's XGBoost model"></div>
-    </div>
-    <button class="sec" id="importModelBtn" style="margin-top:4px;">⬆ Import model</button>
-    <div id="importModelStatus"></div>
-    <div id="importedModelsList" style="margin-top:14px;"></div>
     <div class="actions" style="margin-top:6px;">
       <button id="goTrainFromModelsBtn" class="sec">＋ Train another target</button>
     </div>
@@ -1645,7 +1659,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <!-- FORECAST -->
   <section class="panel hidden" id="panelForecast">
     <h2><span class="idx">06 /</span> Trend &amp; Forecast</h2>
-    <p class="hint">Aggregate a date (or year) column into periods, fit a trend, and project it forward — e.g. "content additions per year, 5 years out".</p>
+    <p class="hint">Aggregate a date (or year) column into periods, fit a trend, and project it forward — e.g. "content additions per year, 5 years out". Works on any numeric column too, not just dates — pick "Numeric (any column)" below.</p>
 
     <div class="subhead">1. Detect setup</div>
     <button class="sec" id="fcDetectBtn">🔍 Detect trend setup</button>
@@ -1653,13 +1667,14 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
     <div class="subhead" style="margin-top:20px;">2. Configure</div>
     <div class="pred-row">
-      <div class="pred-field"><label>Date / year column</label><select id="fcDateCol"></select></div>
+      <div class="pred-field"><label>Date / year / numeric column</label><select id="fcDateCol"></select></div>
       <div class="pred-field">
         <label>Bucket by</label>
         <select id="fcPeriod">
           <option value="year">Year</option>
           <option value="quarter">Quarter</option>
           <option value="month">Month</option>
+          <option value="numeric">Numeric (any column)</option>
         </select>
       </div>
       <div class="pred-field">
@@ -1685,6 +1700,12 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
       <div class="pred-field"><label>Periods to project forward</label><input type="number" id="fcPeriodsAhead" value="5" min="1" max="50"></div>
       <div class="pred-field"><button id="fcRunBtn" style="margin-top:13px;">Fit &amp; forecast</button></div>
+    </div>
+    <div class="pred-row" style="margin-top:4px;">
+      <div class="pred-field" style="flex:1;min-width:260px;">
+        <label>Or predict specific values instead <span class="hint" style="font-weight:normal;">(overrides "periods to project forward" above)</span></label>
+        <input type="text" id="fcCustomValues" placeholder='e.g. 2030, 2035, 2040  or  2024-2030  — years only, works with "Year" or "Numeric"'>
+      </div>
     </div>
 
     <div id="fcResult" class="hidden"></div>
@@ -1815,6 +1836,9 @@ function _doAutoSave(){
         panelVizVisible:    st.panelVizVisible     || false,
         panelSimVisible:    st.panelSimVisible     || false,
         panelTrainVisible:  st.panelTrainVisible   || false,
+        panelForecastVisible: st.panelForecastVisible || false,
+        fcLast:             st.fcLast               || null,
+        pvLast:             st.pvLast               || null,
         simulationResult:   st.simulationResult    || null,
         vizSuggestionsData: st.vizSuggestionsData  || [],
         customChartSpecs:   st.customChartSpecs    || [],
@@ -2145,7 +2169,7 @@ function clearAnalysisUI(){
     "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
     "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError",
     "recDetectResult","recFitResult","recRecommendResult","recSimilarResult","recEvalResult",
-    "fcDetectResult","fcResult"
+    "fcDetectResult","fcResult","pvCaption","pvNotes","pvTableWrap"
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
 
   if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
@@ -2154,9 +2178,15 @@ function clearAnalysisUI(){
    "pcaResult","corrPicker","clusterAnalysisResult","clusterResult","simResult",
    "anomalyResult","reduceResult","assocResult",
    "recDetectResult","recFitResult","recUseSection","recRecommendResult","recSimilarResult","recEvalSection","recEvalResult",
-   "fcDetectResult","fcResult","fcChartWrap","fcDownloadWrap"
+   "fcDetectResult","fcResult","fcChartWrap","fcDownloadWrap",
+   "pvError","pvResult","pvSendError"
   ].forEach(id => { if($(id)) hide(id); });
   recModelId = null; recModel = null;
+  // pivotLast backs the Copy/Notes/CSV/"Send to new tab" buttons -- without
+  // resetting it here, switching to a dataset that's never had a pivot
+  // built would still let you "send" the PREVIOUS dataset's pivot table,
+  // and the table itself stayed on screen since nothing above cleared it.
+  pivotLast = null;
   destroyChart("fcCanvas");
 
   ["vizCleanStatus","trainCleanStatus"].forEach(id => {
@@ -2165,7 +2195,7 @@ function clearAnalysisUI(){
       $(id).style.color = "";
     }
   });
-  ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName"].forEach(id => {
+  ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName","fcCustomValues","pvNewName"].forEach(id => {
     if($(id)) $(id).value = "";
   });
   ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","splitColSel","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2"].forEach(id => {
@@ -2187,7 +2217,7 @@ function clearAnalysisUI(){
 }
 
 function resetPanels(){
-  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards"].forEach(hide);
+  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards","panelForecast"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -2208,8 +2238,11 @@ function restoreDataset(state){
     allColumns = [];
   }
 
-  if(state.profile){
-    renderEDA(state.profile);
+  if(state.lastProfile || state.profile){
+    // lastProfile reflects the current cleaned state (renames/drops included);
+    // profile is only the one-time snapshot from the original upload, so
+    // prefer lastProfile whenever cleaning has happened since then.
+    renderEDA(state.lastProfile || state.profile);
   } else if(state.sessionId){
     // Profile not cached yet — fetch it now so allColumns and targetSelect are correct
     loadEDA(activeDs, state.sessionId);
@@ -2306,6 +2339,39 @@ function restoreDataset(state){
     if(state.simulationResult){
       setTimeout(() => renderSimulationResult(state.simulationResult), 80);
     }
+  }
+
+  // Restore the Trend & Forecast chart (historical vs. predicted overlay).
+  // Without this it behaved just like the pivot/EDA bugs above: switch
+  // tabs away and back and the chart was simply gone, with nothing to
+  // rebuild it from -- the server-side persistence fix in store.py covers
+  // reloads/report-export, this covers same-session tab switching.
+  if(state.fcLast){
+    show("panelForecast");
+    const data = state.fcLast;
+    const warn = (data.warnings || []).map(w => `<div class="hint" style="color:var(--accent);">⚠ ${escapeHtml(w)}</div>`).join("");
+    const periodLabel = data.period === "numeric" ? "points" : `${escapeHtml(data.period)}s`;
+    $("fcResult").innerHTML = `<div class="result-box">
+      <strong>${escapeHtml(data.degree === 2 ? "Quadratic" : "Linear")} trend</strong> over ${data.n_points} ${periodLabel}
+      · R² = <strong>${data.r2 == null ? "n/a" : data.r2}</strong>
+      <br><span style="font-size:11px;color:var(--ink-dim);">${escapeHtml(data.equation)}</span>
+      ${warn}
+    </div>`;
+    show("fcResult");
+    fcLastRunMeta = {date_col: data.date_col, period: data.period, metric_col: data.metric_col, agg: data.agg};
+    show("fcDownloadWrap");
+    setTimeout(() => renderFcChart(data), 80);
+  } else if(state.panelForecastVisible){
+    show("panelForecast");
+  }
+
+  // Restore this dataset's own pivot table, if it built one -- and only
+  // this dataset's: pivotLast/pvResult are reset in clearAnalysisUI above
+  // on every tab switch, so a tab with no cached pivot simply shows none,
+  // instead of still showing whatever the previously active tab last built.
+  if(state.pvLast){
+    if($("pivotDropdown")) $("pivotDropdown").open = true;
+    renderPivot(state.pvLast);
   }
 
   renderSavedRunsList();
@@ -3500,8 +3566,9 @@ function _pvRowsAsMatrix(){
   return out;
 }
 
-$("pvBtn").addEventListener("click", async () => {
-  hide("pvError");
+// Shared by the "Build pivot" button and "Send to new tab" below, so both
+// always submit exactly the same fields the person currently has picked.
+function _pvBuildRequestBody(){
   const pick = id => $(id).value;
   const body = {
     rows: [pick("pvRow1"), pick("pvRow2")].filter(Boolean),
@@ -3515,6 +3582,12 @@ $("pvBtn").addEventListener("click", async () => {
   const sort = pick("pvSort").split("_");
   body.sort_by = sort[0];
   body.descending = sort[1] === "desc";
+  return body;
+}
+
+$("pvBtn").addEventListener("click", async () => {
+  hide("pvError");
+  const body = _pvBuildRequestBody();
   $("pvBtn").disabled = true;
   $("pvBtn").textContent = "Building…";
   try{
@@ -3529,6 +3602,16 @@ $("pvBtn").addEventListener("click", async () => {
       throw new Error(detail || "Couldn't build the pivot table.");
     }
     renderPivot(data);
+    // Suggest a name for the new tab, built from the grouping fields, so
+    // "Send to new tab" already has something sensible typed in.
+    if(!$("pvNewName").value && data.row_fields?.length){
+      $("pvNewName").value = "pivot_by_" + data.row_fields.filter(Boolean).join("_");
+    }
+    // Cache per-dataset so this pivot table is restored only on THIS
+    // dataset's tab -- switching to a different tab clears it (see
+    // clearAnalysisUI's pivotLast reset) instead of leaking a stale table
+    // across datasets.
+    setDatasetState(activeDs, {pvLast: data});
   }catch(err){
     $("pvError").textContent = err.message;
     show("pvError");
@@ -3538,6 +3621,59 @@ $("pvBtn").addEventListener("click", async () => {
     $("pvBtn").textContent = "Build pivot";
   }
 });
+
+async function sendPivotToTab(){
+  const sid = getSid();
+  if(!sid){ alert("No dataset loaded."); return; }
+  if(!pivotLast){ alert("Build the pivot table first."); return; }
+  const newName = $("pvNewName").value.trim() || "pivot_table";
+
+  hide("pvSendError");
+  $("pvSendBtn").disabled = true;
+  $("pvSendBtn").textContent = "Creating tab…";
+
+  try{
+    const body = {..._pvBuildRequestBody(), new_name: newName};
+    const res = await fetch(`${API}/pivot_to_tab/${sid}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if(!res.ok){
+      const detail = Array.isArray(data.detail) ? "Please check the fields you picked." : data.detail;
+      throw new Error(detail || "Couldn't send the pivot table to a new tab.");
+    }
+
+    // Same "new dataset tab" pattern as Filter & Split's sendFilterToTab().
+    const newId = "ds_" + Date.now();
+    datasets.push({id: newId, name: data.name, sessionId: data.session_id});
+    dsState[newId] = {
+      sessionId:        data.session_id,
+      allColumns:       data.columns,
+      profile:          null,
+      lastProfile:      null,
+      cleanLog:         null,
+      training:         null,
+      savedRuns:        [],
+      savedPredictions: [],
+      chatCleanLog:     [],
+    };
+    activeDs = newId;
+    resetPanels();
+    renderDsTabs();
+    autoSave();
+    await loadEDA(newId, data.session_id);
+    $("sessionTag").textContent = `${data.name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
+    scrollPanel("panelEDA");
+  }catch(err){
+    $("pvSendError").textContent = err.message;
+    show("pvSendError");
+  }finally{
+    $("pvSendBtn").disabled = false;
+    $("pvSendBtn").textContent = "↗ Send to new tab";
+  }
+}
 
 // Re-shade when the colour-scale box is toggled, without another server call
 $("pvHeat").addEventListener("change", () => { if(pivotLast) renderPivot(pivotLast); });
@@ -5441,6 +5577,7 @@ function drawChart(canvasId, ch){
 $("goTrainBtn").addEventListener("click", () => { 
   show("panelTrain"); setStep(6); scrollPanel("panelTrain"); 
   setTimeout(populatePcaColorCol, 0);
+  loadImportedModels(); // show any already-imported models right away -- the import form here no longer requires training first
   if(dsState[activeDs]){ dsState[activeDs].panelTrainVisible = true; autoSave(); }
 });
 $("supervisedLearningBtn").addEventListener("click", () => {
@@ -6736,19 +6873,55 @@ function renderFcChart(data){
   });
 }
 
+// Parses "2030, 2035, 2040" or "2024-2030" (or a mix, comma-separated)
+// into a flat list of numbers to predict, instead of only "N periods right
+// after the last one". Returns null for an empty/blank field.
+function _fcParseCustomValues(raw){
+  raw = (raw || "").trim();
+  if(!raw) return null;
+  const out = new Set();
+  for(let part of raw.split(",")){
+    part = part.trim();
+    if(!part) continue;
+    const range = part.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$/);
+    if(range){
+      let a = parseFloat(range[1]), b = parseFloat(range[2]);
+      if(a > b) [a, b] = [b, a];
+      for(let v = a; v <= b + 1e-9; v++) out.add(Math.round(v * 1e6) / 1e6);
+    } else {
+      const v = parseFloat(part);
+      if(!isNaN(v)) out.add(v);
+    }
+  }
+  return out.size ? [...out].sort((a,b) => a - b) : null;
+}
+
 $("fcRunBtn").addEventListener("click", async () => {
   const sid = getSid();
   if(!sid) return;
   const dateCol = $("fcDateCol").value;
-  if(!dateCol){ $("fcResult").innerHTML = `<div class="error-box">Pick a date/year column first.</div>`; show("fcResult"); hide("fcChartWrap"); return; }
+  if(!dateCol){ $("fcResult").innerHTML = `<div class="error-box">Pick a date/year/numeric column first.</div>`; show("fcResult"); hide("fcChartWrap"); return; }
   const agg = $("fcAgg").value;
+  const period = $("fcPeriod").value;
+  const customValues = _fcParseCustomValues($("fcCustomValues").value);
+  if(customValues && period !== "year" && period !== "numeric"){
+    $("fcResult").innerHTML = `<div class="error-box">Specific values to predict only work with "Year" or "Numeric (any column)" bucketing — switch "Bucket by" above, or clear that field to use "periods to project forward" instead.</div>`;
+    show("fcResult"); hide("fcChartWrap");
+    return;
+  }
+  if(customValues && customValues.length > 50){
+    $("fcResult").innerHTML = `<div class="error-box">Predict at most 50 values at a time (${customValues.length} given).</div>`;
+    show("fcResult"); hide("fcChartWrap");
+    return;
+  }
   const body = {
     date_col: dateCol,
-    period: $("fcPeriod").value,
+    period,
     agg,
     degree: parseInt($("fcDegree").value, 10),
     periods_ahead: parseInt($("fcPeriodsAhead").value || "5", 10),
   };
+  if(customValues) body.future_values = customValues;
   if(agg !== "count"){
     const metricCol = $("fcMetricCol").value;
     if(!metricCol){ $("fcResult").innerHTML = `<div class="error-box">Pick a numeric column to ${escapeHtml(agg)}.</div>`; show("fcResult"); hide("fcChartWrap"); return; }
@@ -6762,8 +6935,9 @@ $("fcRunBtn").addEventListener("click", async () => {
     const data = await res.json();
     if(!res.ok) throw new Error(data.detail || "Could not fit a forecast");
     const warn = (data.warnings || []).map(w => `<div class="hint" style="color:var(--accent);">⚠ ${escapeHtml(w)}</div>`).join("");
+    const periodLabel = data.period === "numeric" ? "points" : `${escapeHtml(data.period)}s`;
     $("fcResult").innerHTML = `<div class="result-box">
-      <strong>${escapeHtml(data.degree === 2 ? "Quadratic" : "Linear")} trend</strong> over ${data.n_points} ${escapeHtml(data.period)}s
+      <strong>${escapeHtml(data.degree === 2 ? "Quadratic" : "Linear")} trend</strong> over ${data.n_points} ${periodLabel}
       · R² = <strong>${data.r2 == null ? "n/a" : data.r2}</strong>
       <br><span style="font-size:11px;color:var(--ink-dim);">${escapeHtml(data.equation)}</span>
       ${warn}
@@ -6771,6 +6945,10 @@ $("fcRunBtn").addEventListener("click", async () => {
     renderFcChart(data);
     fcLastRunMeta = {date_col: data.date_col, period: data.period, metric_col: data.metric_col, agg: data.agg};
     show("fcDownloadWrap");
+    // Cache so switching dataset tabs and back doesn't lose this chart
+    // (server-side, the /api/forecast/run endpoint already persisted it
+    // onto the session for the HTML report / notebook export / reloads).
+    setDatasetState(activeDs, {fcLast: data, panelForecastVisible: true});
   }catch(err){
     $("fcResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
     hide("fcDownloadWrap");
