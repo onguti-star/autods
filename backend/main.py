@@ -2326,6 +2326,7 @@ def ask(session_id: str, req: AskRequest):
 
 class TrainRequest(BaseModel):
     target: str = Field(min_length=1)
+    feature_columns: list[str] | None = None
     use_pca: bool = False
 
 
@@ -2362,7 +2363,7 @@ def _watchdog_timeout(session_id: str, pid: int):
             pass
 
 
-def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
+def _train_worker(df, target: str, feature_columns: list[str], use_pca: bool, progress_list, result_queue):
     """Runs in a child process. Talks back to the parent only via progress_list/result_queue."""
     import time
     import traceback
@@ -2387,7 +2388,7 @@ def _train_worker(df, target: str, use_pca: bool, progress_list, result_queue):
 
     try:
         problem_type, leaderboard, fitted, best_name, label_encoder, best_importance = automl.train_all(
-            df, target, use_pca=use_pca, progress_callback=_report
+            df, target, use_pca=use_pca, feature_columns=feature_columns, progress_callback=_report
         )
 
         elapsed_total = time.time() - worker_start
@@ -2442,6 +2443,12 @@ def train(session_id: str, req: TrainRequest):
     session = _get_session_or_404(session_id)
     if req.target not in session.df.columns:
         raise HTTPException(400, f"Column '{req.target}' not found.")
+    feature_columns = list(dict.fromkeys(req.feature_columns or [c for c in session.df.columns if c != req.target]))
+    invalid_features = [c for c in feature_columns if c not in session.df.columns or c == req.target]
+    if invalid_features:
+        raise HTTPException(400, f"Invalid training feature column(s): {', '.join(invalid_features)}")
+    if not feature_columns:
+        raise HTTPException(400, "Choose at least one X/feature column besides the target Y column.")
 
     # Automatically preserve the current training as a saved run before starting
     # a new one, so the user never loses a trained model when switching targets.
@@ -2484,7 +2491,7 @@ def train(session_id: str, req: TrainRequest):
 
     process = ctx.Process(
         target=_train_worker,
-        args=(session.df.copy(), req.target, req.use_pca, progress, result_queue),
+        args=(session.df.copy(), req.target, feature_columns, req.use_pca, progress, result_queue),
         daemon=True,
     )
     process.start()
@@ -2499,6 +2506,7 @@ def train(session_id: str, req: TrainRequest):
         "progress": progress,
         "result_queue": result_queue,
         "target": req.target,
+        "feature_columns": feature_columns,
         "cancel_requested": False,
         "timed_out": False,
         "n_rows": len(session.df),
@@ -2653,7 +2661,7 @@ def train_status(session_id: str):
     session.leaderboard = leaderboard
     session.best_model_name = best_name
     session.label_encoder = label_encoder
-    session.feature_columns = [c for c in session.df.columns if c != target]
+    session.feature_columns = job.get("feature_columns") or [c for c in session.df.columns if c != target]
 
     # Computed inside the worker (train_all), where the held-out X_test/y_test
     # split was still available for the permutation-importance fallback --

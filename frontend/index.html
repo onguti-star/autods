@@ -1035,7 +1035,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         ⛏ Extract parts from a column (regex)
       </summary>
       <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
-        <p class="hint" style="margin:0 0 14px;">Pull one or more pieces straight out of a text column with a pattern — e.g. the number out of "90 min" and the unit out of "90 min", from the same column, with nothing to split on between them. Different from "Split column" at upload time, which breaks a column apart wherever a separator (comma, pipe, …) appears; this applies a pattern to each value directly. Wrap each piece you want in parentheses: <code>(\d+)</code> for a number, <code>([a-zA-Z]+)</code> for letters. One pattern with two groups like <code>(\d+)\s*([a-zA-Z]+)</code> extracts both at once.</p>
+        <p class="hint" style="margin:0 0 14px;">Pull one or more pieces straight out of a text column with a pattern. For <code>2021-09-10</code>, use <code>(\d{4})</code> for the year, <code>\d{4}-(\d{2})-\d{2}</code> for the month, or <code>\d{4}-\d{2}-(\d{2})</code> for the day <strong>10</strong>. You can also type <code>extract day from date into day</code> in the cleaning chat.</p>
         <div class="pred-row">
           <div class="pred-field"><label>Column</label><select id="extractColSel"></select></div>
           <div class="pred-field" style="flex:2;"><label>Pattern (regex, with capture groups)</label><input type="text" id="extractColPattern" placeholder="e.g. (\d+) or (\d+)\s*([a-zA-Z]+)"></div>
@@ -1442,6 +1442,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
         <button id="cancelTrainBtn" class="sec" style="margin-top:13px;display:none;">Cancel</button>
       </div>
     </div>
+    <div class="pred-field" style="margin-top:10px;">
+      <label>X / feature columns <span class="hint" style="font-weight:normal;">(tick one or more columns; leave all ticked to use every other column)</span></label>
+      <div id="featureCheckboxes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;padding:10px;border:1px solid var(--line);border-radius:6px;max-height:190px;overflow:auto;"></div>
+    </div>
     </div><!-- /trainSetupSection -->
     <div id="trainStatus"></div>
 
@@ -1483,7 +1487,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <!-- 07 TRAINED MODELS — one persistent card per trained target -->
   <section class="panel hidden" id="panelModelCards">
     <h2><span class="idx">07 /</span> Trained Models</h2>
-    <p class="hint">Every model you train gets its own card here with its own prediction form. Train on <strong>price</strong>, then train on <strong>quantity</strong> — both cards stay open so you can predict freely on either one at any time.</p>
+    <p class="hint">Every model you train gets its own card here with its own prediction form. Use <strong>↗ Choose input range</strong> in a card to enter many X values and predict them with one button. For numeric targets, use <strong>Forecast &amp; compare</strong> in that same card to see original vs future as a line, bar, or pie chart.</p>
     <div id="modelCardsList"></div>
 
     <div class="actions" style="margin-top:6px;">
@@ -3846,9 +3850,28 @@ function populateSelects(){
   if(targetToSelect && $("targetSelect")){
     $("targetSelect").value = targetToSelect;
   }
+  populateTrainingFeatures();
   // Populate PCA color column dropdown with categorical/text columns
   populatePcaColorCol();
 }
+
+function populateTrainingFeatures(){
+  const wrap = $("featureCheckboxes");
+  if(!wrap) return;
+  const target = $("targetSelect")?.value;
+  const previous = new Set(
+    getState().training?.featureColumns || allColumns.filter(c => c !== target)
+  );
+  wrap.innerHTML = allColumns
+    .filter(c => c !== target)
+    .map(c => `<label class="inline-option" style="margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+        <input type="checkbox" name="trainingFeature" value="${escapeHtml(c)}" ${previous.has(c) ? "checked" : ""}>
+        <span>${escapeHtml(c)}</span>
+      </label>`)
+    .join("");
+}
+
+$("targetSelect")?.addEventListener("change", populateTrainingFeatures);
 
 function numericColumnNames(){
   const profile = getState().lastProfile || getState().profile;
@@ -5758,6 +5781,7 @@ $("trainBtn").addEventListener("click", async () => {
   const datasetId = activeDs;
   const sid = getSid();
   const target = $("targetSelect").value;
+  const featureColumns = [...document.querySelectorAll('input[name="trainingFeature"]:checked')].map(o => o.value);
   const usePca = $("usePcaForTraining").checked;
   const thorough = $("thoroughTraining").checked;
   if(!sid || !target) return;
@@ -5769,6 +5793,10 @@ $("trainBtn").addEventListener("click", async () => {
   if(!allColumns.includes(target)){
     populateSelects();
     $("trainStatus").innerHTML = `<div class="error-box">"${target}" isn't a column on this dataset — refreshed the target list, pick again.</div>`;
+    return;
+  }
+  if(!featureColumns.length){
+    $("trainStatus").innerHTML = `<div class="error-box">Choose at least one X / feature column besides the target.</div>`;
     return;
   }
 
@@ -5788,7 +5816,7 @@ $("trainBtn").addEventListener("click", async () => {
   setTrainingInProgress(true);
 
   try{
-    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, use_pca: usePca, thorough})});
+    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, feature_columns: featureColumns, use_pca: usePca, thorough})});
     if(!startRes.ok){
       const errData = await startRes.json().catch(()=>({}));
       throw new Error(errData.detail || "Could not start training");
@@ -5879,6 +5907,7 @@ $("trainBtn").addEventListener("click", async () => {
         featureImportance: data.feature_importance,
         narrative: data.narrative,
         target: data.target,
+        featureColumns: data.feature_columns,
       };
       setDatasetState(datasetId, {training});
 
@@ -5893,6 +5922,7 @@ $("trainBtn").addEventListener("click", async () => {
         bestModel:        training.bestModel,
         problemType:      training.problemType,
         feedColumns:      training.feedColumns,
+        featureColumns:   training.featureColumns,
         featureImportance:training.featureImportance,
         leaderboard:      training.leaderboard,
         narrative:        training.narrative,
@@ -7319,7 +7349,10 @@ function renderModelCards(){
           </div>
           ${metricRow ? `<div style="margin:6px 0 2px;font-size:11px;">${metricRow}</div>` : ""}
         </div>
-        <button class="model-card-collapse-btn" data-idx="${idx}">▲ collapse</button>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
+          <button class="sec model-card-range-btn" data-idx="${idx}" type="button">↗ Choose input range</button>
+          <button class="model-card-collapse-btn" data-idx="${idx}">▲ collapse</button>
+        </div>
       </div>
       <div class="model-card-body" id="model-card-body-${idx}">
         ${m.narrative ? `<div class="narrative" style="margin-bottom:12px;"><div class="nlabel">What this model learned</div><p>${escapeHtml(m.narrative)}</p></div>` : ""}
@@ -7408,6 +7441,26 @@ function renderModelCards(){
       all.forEach((m, idx) => {
         renderImportanceInto(`modelCardImportance-${idx}`, `modelCardImportanceHint-${idx}`, m.featureImportance);
       });
+    });
+  });
+
+  // Wire collapse toggles
+  list.querySelectorAll(".model-card-range-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      const model = all[idx];
+      if(!model) return;
+      renderPredictSourceOptions();
+      const source = $("predictSourceSelect");
+      if(source){
+        source.value = model.runId || "";
+        source.dispatchEvent(new Event("change"));
+      } else {
+        buildPredictForm(model.feedColumns || []);
+      }
+      show("panelPredict");
+      setStep(7);
+      scrollPanel("panelPredict");
     });
   });
 

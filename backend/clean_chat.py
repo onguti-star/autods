@@ -328,6 +328,9 @@ def _split_first_word_columns(
 _EXTRACT_SHORTCUTS = {
     "title": r",\s*([A-Za-z ]+?)\.",   # "Braund, Mr. Owen Harris" -> "Mr"
     "deck": r"^\s*([A-Za-z])",         # "C85" / "B96 B98" -> "C" / "B"
+    "year": r"^\s*(\d{4})",             # "2021-09-10" -> "2021"
+    "month": r"^\s*\d{4}[-/]\s*(\d{1,2})",  # "2021-09-10" -> "09"
+    "day": r"^\s*\d{4}[-/]\d{1,2}[-/]\s*(\d{1,2})",  # "2021-09-10" -> "10"
 }
 
 # Patterns for the general "extract a text pattern into a new column" command.
@@ -336,7 +339,7 @@ _EXTRACT_SHORTCUTS = {
 _EXTRACT_COMMAND_PATTERNS = [
     (r"\bextract\s+(?:pattern|regex)\s+(.+?)\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "regex"),
     (r"\bextract\s+(?:the\s+)?first\s+letter\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "first_letter"),
-    (r"\b(?:extract|get|pull)\s+(?:the\s+)?(title|deck)\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "shortcut"),
+    (r"\b(?:extract|get|pull)\s+(?:the\s+)?(title|deck|year|month|day)\s+from\s+(.+?)\s+(?:into|to)\s+(?:columns?\s+)?(\w+)\b", "shortcut"),
 ]
 
 
@@ -664,6 +667,9 @@ HELP_TEXT = (
     "stays in sub_category, e.g. 'Mountain Bike' → category_type='Mountain', sub_category='Bike')\n"
     "• extract title from Name into Title  (pulls the title out of 'Last, Title. First' names)\n"
     "• extract deck from Cabin into Deck  (first letter of a cabin code like 'C85')\n"
+    "• extract year from date into year  (e.g. '2021-09-10' → '2021')\n"
+    "• extract month from date into month  (e.g. '2021-09-10' → '09')\n"
+    "• extract day from date into day  (e.g. '2021-09-10' → '10')\n"
     "• extract first letter from Cabin into Deck\n"
     "• extract pattern ([A-Za-z]) from Cabin into Deck  (your own regex — first capture group is used)\n"
     "• replace 2 with 0 in profit  (replaces exact values in a column)\n"

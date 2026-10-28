@@ -853,6 +853,8 @@ def train_all(
     target: str,
     use_pca: bool = False,
     progress_callback=None,
+    *,
+    feature_columns: list[str] | None = None,
 ) -> Tuple[str, list, dict, str, object, list]:
     """
     Returns: (problem_type, leaderboard, fitted_pipelines_by_name, best_name,
@@ -875,7 +877,16 @@ def train_all(
         raise ValueError(f"Target column '{target}' has no non-missing values.")
 
     y_raw = df.loc[valid_target, target]
-    if len(df.columns) <= 1:
+    if feature_columns is None:
+        feature_columns = [c for c in df.columns if c != target]
+    # Keep the selection explicit and ordered as supplied by the user. This
+    # also prevents a stale/forged column name from silently becoming a
+    # missing feature later in the preprocessing pipeline.
+    feature_columns = list(dict.fromkeys(feature_columns))
+    invalid_features = [c for c in feature_columns if c not in df.columns or c == target]
+    if invalid_features:
+        raise ValueError(f"Invalid training feature column(s): {', '.join(map(str, invalid_features))}.")
+    if not feature_columns:
         raise ValueError("Training needs at least one feature column besides the target.")
     if len(y_raw) < 5:
         raise ValueError("Training needs at least 5 rows with a non-missing target.")
@@ -943,11 +954,11 @@ def train_all(
             rng = np.random.default_rng(42)
             sample_idx = rng.choice(n_rows, size=sample_size, replace=False)
         
-        X = df.loc[y_raw.index[sample_idx]].drop(columns=[target]).reset_index(drop=True)
+        X = df.loc[y_raw.index[sample_idx], feature_columns].reset_index(drop=True)
         y = y[sample_idx]
         n_rows = sample_size
     else:
-        X = df.loc[y_raw.index].drop(columns=[target]).reset_index(drop=True)
+        X = df.loc[y_raw.index, feature_columns].reset_index(drop=True)
 
     stratify = y if problem_type == "classification" and pd.Series(y).value_counts().min() >= 2 else None
     test_size = max(1, int(round(n_rows * (0.1 if is_large_dataset else 0.2))))
