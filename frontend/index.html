@@ -1029,6 +1029,28 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       </div>
     </details>
 
+    <details id="extractDropdown" style="margin-bottom:18px;">
+      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:14px;">▶</span>
+        ⛏ Extract parts from a column (regex)
+      </summary>
+      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
+        <p class="hint" style="margin:0 0 14px;">Pull one or more pieces straight out of a text column with a pattern — e.g. the number out of "90 min" and the unit out of "90 min", from the same column, with nothing to split on between them. Different from "Split column" at upload time, which breaks a column apart wherever a separator (comma, pipe, …) appears; this applies a pattern to each value directly. Wrap each piece you want in parentheses: <code>(\d+)</code> for a number, <code>([a-zA-Z]+)</code> for letters. One pattern with two groups like <code>(\d+)\s*([a-zA-Z]+)</code> extracts both at once.</p>
+        <div class="pred-row">
+          <div class="pred-field"><label>Column</label><select id="extractColSel"></select></div>
+          <div class="pred-field" style="flex:2;"><label>Pattern (regex, with capture groups)</label><input type="text" id="extractColPattern" placeholder="e.g. (\d+) or (\d+)\s*([a-zA-Z]+)"></div>
+        </div>
+        <div class="pred-row">
+          <div class="pred-field" style="flex:2;"><label>New column name(s) (comma-separated, optional)</label><input type="text" id="extractColNames" placeholder="e.g. duration_num, duration_unit — defaults to colname_extract_1, _2, …"></div>
+          <div class="pred-field">
+            <label class="clean-option" style="margin-top:13px;"><input type="checkbox" id="extractColDrop"> Drop original column</label>
+          </div>
+          <div class="pred-field"><button id="extractColBtn" style="margin-top:13px;">Extract</button></div>
+        </div>
+        <p class="hint" id="extractColStatus" style="display:none;"></p>
+      </div>
+    </details>
+
     <div class="subhead">Clean it yourself — chat</div>
     <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email", "create a new column called revenue", or "fill revenue with price * quantity". Type "help" to see everything I understand.</p>
 
@@ -1477,6 +1499,31 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
       <label>Model source</label>
       <select id="predictSourceSelect"></select>
     </div>
+
+    <div class="subhead">Predict a range</div>
+    <p class="hint">Pick one or more features to vary, predict every value (or every combination) with the trained model, and see it as a plain table — the value(s), the prediction, and (where that exact combination also appears for real in the training data) the actual target right next to it. Every feature you don't vary is held at its average (numbers) or most common value (categories) automatically — override any of them below if you'd rather.</p>
+
+    <div id="predictRangeCols"></div>
+    <div class="actions" style="margin:4px 0 14px;">
+      <button class="sec" id="predictRangeAddColBtn" type="button">+ Vary another column</button>
+    </div>
+    <div class="pred-row" id="predictRangeModeWrap" style="display:none;">
+      <div class="pred-field">
+        <label>When varying more than one column</label>
+        <select id="predictRangeMode">
+          <option value="grid">All combinations (grid)</option>
+          <option value="paired">Matched pairs — Nth value of each column together</option>
+        </select>
+      </div>
+    </div>
+    <div class="pred-field" id="predictRangeFixedWrap" style="display:none;">
+      <label>Override other columns (optional)</label>
+      <div id="predictRangeFixed" class="pred-row"></div>
+    </div>
+    <div class="actions"><button id="predictRangeBtn">Predict range</button></div>
+    <div id="predictRangeResult"></div>
+
+    <div class="subhead" style="margin-top:22px;">Predict one row manually</div>
     <div class="pred-row" id="predictFields"></div>
     <button id="predictBtn" style="display:none;">Predict</button>
     <div id="predictResult"></div>
@@ -2195,10 +2242,10 @@ function clearAnalysisUI(){
       $(id).style.color = "";
     }
   });
-  ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName","fcCustomValues","pvNewName"].forEach(id => {
+  ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName","fcCustomValues","pvNewName","extractColPattern","extractColNames"].forEach(id => {
     if($(id)) $(id).value = "";
   });
-  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","splitColSel","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2"].forEach(id => {
+  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","splitColSel","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2","extractColSel"].forEach(id => {
     if($(id)) $(id).innerHTML = "";
   });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
@@ -3384,6 +3431,41 @@ $("splitColBtn").addEventListener("click", async () => {
   }finally{ $("splitColBtn").disabled = false; $("splitColBtn").textContent = "Split column"; }
 });
 
+$("extractColBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  const status = $("extractColStatus");
+  if(!sid){
+    status.style.color = "var(--bad)"; status.textContent = "Load a dataset first.";
+    status.style.display = "block";
+    return;
+  }
+  const column = $("extractColSel").value;
+  const pattern = $("extractColPattern").value.trim();
+  if(!column || !pattern){
+    status.style.color = "var(--bad)"; status.textContent = "Pick a column and a pattern with at least one (capture group).";
+    status.style.display = "block";
+    return;
+  }
+  const new_column_names = $("extractColNames").value.split(",").map(s => s.trim()).filter(Boolean);
+  const drop_original = $("extractColDrop").checked;
+  $("extractColBtn").disabled = true; $("extractColBtn").textContent = "Extracting…";
+  hide("cleanNarrative"); hide("dlBarClean");
+  status.style.display = "none";
+  try{
+    const res = await fetch(`${API}/extract_column/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({column, pattern, new_column_names, drop_original})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Extraction failed");
+    showCleaningResult(data);
+    const lastLogLine = data.cleaning_log?.length ? data.cleaning_log[data.cleaning_log.length - 1] : "Extraction complete.";
+    status.style.color = "var(--good)"; status.textContent = "✓ " + lastLogLine;
+    status.style.display = "block";
+  }catch(err){
+    status.style.color = "var(--bad)"; status.textContent = err.message;
+    status.style.display = "block";
+  }finally{ $("extractColBtn").disabled = false; $("extractColBtn").textContent = "Extract"; }
+});
+
 $("goVizBtn").addEventListener("click", () => {
   show("panelViz"); setStep(4); scrollPanel("panelViz"); loadVizSuggestions();
   if(dsState[activeDs]){ dsState[activeDs].panelVizVisible = true; autoSave(); }
@@ -3742,7 +3824,7 @@ $("pvCsvBtn").addEventListener("click", () => {
 // ---------- VISUALISE ----------
 function populateSelects(){
   const opts = allColumns.map(c=>`<option value="${c}">${c}</option>`).join("");
-  ["vizColX","targetSelect","typeCol","splitColSel","simOutcome","simDriver"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
+  ["vizColX","targetSelect","typeCol","splitColSel","simOutcome","simDriver","extractColSel"].forEach(id => { if($(id)) $(id).innerHTML = opts; });
   // Y is only ever required for chart types that already validate for it
   // (see the vizBtn click handler) -- for everything else, bar charts
   // included, it's genuinely optional, so the dropdown needs a way to
@@ -6500,6 +6582,90 @@ function buildPredictForm(columns){
   $("predictFields").innerHTML = cols.map(c =>
     `<div class="pred-field"><label>${c}</label><input type="text" data-field="${c}" placeholder="value"></div>`
   ).join("");
+
+  // Predict-a-range reuses the same feature column list, starting fresh
+  // with a single "vary this column" row each time a new model/training
+  // result is loaded.
+  predictRangeFeatureCols = cols;
+  if($("predictRangeCols")){
+    $("predictRangeCols").innerHTML = "";
+    predictRangeRowSeq = 0;
+    addPredictRangeRow();
+  }
+}
+
+// Up to this many columns can be varied at once (also mirrors the 5-column
+// cap enforced server-side).
+const PREDICT_RANGE_MAX_COLS = 5;
+let predictRangeFeatureCols = [];
+let predictRangeRowSeq = 0;
+
+function addPredictRangeRow(){
+  const container = $("predictRangeCols");
+  if(!container || !predictRangeFeatureCols.length) return;
+  const rows = container.querySelectorAll(".predict-range-col-row");
+  if(rows.length >= PREDICT_RANGE_MAX_COLS) return;
+
+  const rowId = predictRangeRowSeq++;
+  const used = [...rows].map(r => r.querySelector(".prr-col")?.value).filter(Boolean);
+  const defaultCol = predictRangeFeatureCols.find(c => !used.includes(c)) || predictRangeFeatureCols[0];
+  const colOptions = predictRangeFeatureCols.map(c =>
+    `<option value="${escapeHtml(c)}" ${c === defaultCol ? "selected" : ""}>${escapeHtml(c)}</option>`
+  ).join("");
+
+  const row = document.createElement("div");
+  row.className = "pred-row predict-range-col-row";
+  row.dataset.rowId = rowId;
+  row.innerHTML = `
+    <div class="pred-field"><label>Column to vary</label><select class="prr-col">${colOptions}</select></div>
+    <div class="pred-field" style="flex:2;">
+      <label>Values or range <span class="hint" style="font-weight:normal;">(e.g. 2020-2030, or 10, 20, 50)</span></label>
+      <input type="text" class="prr-values" placeholder="e.g. 2020-2030">
+    </div>
+    <div class="pred-field"><button class="sec prr-remove" type="button" style="margin-top:13px;" title="Stop varying this column">✕ Remove</button></div>
+  `;
+  container.appendChild(row);
+
+  row.querySelector(".prr-col").addEventListener("change", () => renderPredictRangeFixed());
+  row.querySelector(".prr-remove").addEventListener("click", () => {
+    row.remove();
+    updatePredictRangeChrome();
+    renderPredictRangeFixed();
+  });
+
+  updatePredictRangeChrome();
+  renderPredictRangeFixed();
+}
+$("predictRangeAddColBtn")?.addEventListener("click", addPredictRangeRow);
+
+// Hides per-row Remove buttons and the grid/paired mode picker when only
+// one column is being varied -- both only matter once there's more than one.
+function updatePredictRangeChrome(){
+  const rows = $("predictRangeCols")?.querySelectorAll(".predict-range-col-row") || [];
+  rows.forEach(r => {
+    const removeBtn = r.querySelector(".prr-remove");
+    if(removeBtn) removeBtn.style.display = rows.length > 1 ? "" : "none";
+  });
+  if($("predictRangeModeWrap")) $("predictRangeModeWrap").style.display = rows.length > 1 ? "" : "none";
+  if($("predictRangeAddColBtn")) $("predictRangeAddColBtn").style.display = rows.length >= PREDICT_RANGE_MAX_COLS ? "none" : "";
+}
+
+// Builds one optional override input per feature column NOT currently being
+// varied -- left blank, the backend fills it with that column's mean
+// (numeric) / most common value (categorical) from the training data
+// automatically, so this only needs touching when the default isn't the
+// scenario you want to test.
+function renderPredictRangeFixed(){
+  const wrap = $("predictRangeFixed");
+  const outerWrap = $("predictRangeFixedWrap");
+  if(!wrap || !outerWrap) return;
+  const varying = [...($("predictRangeCols")?.querySelectorAll(".prr-col") || [])].map(sel => sel.value);
+  const others = predictRangeFeatureCols.filter(c => !varying.includes(c));
+  if(!others.length){ outerWrap.style.display = "none"; wrap.innerHTML = ""; return; }
+  outerWrap.style.display = "";
+  wrap.innerHTML = others.map(c =>
+    `<div class="pred-field"><label>${escapeHtml(c)}</label><input type="text" data-fixed-field="${escapeHtml(c)}" placeholder="auto"></div>`
+  ).join("");
 }
 
 function clearPredictionsUI(){
@@ -6585,6 +6751,94 @@ $("predictBtn").addEventListener("click", async () => {
     setState({savedPredictions: data.saved_predictions || []});
     renderSavedPredictionsList();
   }catch(err){ $("predictResult").innerHTML = `<div class="error-box">${err.message}</div>`; }
+});
+
+$("predictRangeBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  if(!sid) return;
+
+  const rowEls = [...($("predictRangeCols")?.querySelectorAll(".predict-range-col-row") || [])];
+  if(!rowEls.length){ $("predictRangeResult").innerHTML = `<div class="error-box">Pick at least one column to vary.</div>`; return; }
+
+  const columns = [];
+  const valuesByCol = {};
+  for(const rowEl of rowEls){
+    const col = rowEl.querySelector(".prr-col").value;
+    if(!col) continue;
+    if(columns.includes(col)){
+      $("predictRangeResult").innerHTML = `<div class="error-box">"${escapeHtml(col)}" is picked to vary more than once — each row needs a different column.</div>`;
+      return;
+    }
+    const parsed = _fcParseCustomValues(rowEl.querySelector(".prr-values").value);
+    if(!parsed){
+      $("predictRangeResult").innerHTML = `<div class="error-box">Give values for "${escapeHtml(col)}", e.g. "2020-2030" or "10, 20, 50".</div>`;
+      return;
+    }
+    columns.push(col);
+    valuesByCol[col] = parsed;
+  }
+  if(!columns.length){ $("predictRangeResult").innerHTML = `<div class="error-box">Pick at least one column to vary.</div>`; return; }
+
+  const mode = columns.length > 1 ? $("predictRangeMode").value : "grid";
+  if(mode === "paired"){
+    const lengths = new Set(columns.map(c => valuesByCol[c].length));
+    if(lengths.size > 1){
+      $("predictRangeResult").innerHTML = `<div class="error-box">"Matched pairs" needs the same number of values for every column (got ${columns.map(c => `${escapeHtml(c)}: ${valuesByCol[c].length}`).join(", ")}). Either match the counts, or switch to "All combinations".</div>`;
+      return;
+    }
+  }
+  const totalRows = mode === "paired"
+    ? valuesByCol[columns[0]].length
+    : columns.reduce((acc, c) => acc * valuesByCol[c].length, 1);
+  if(totalRows > 200){
+    $("predictRangeResult").innerHTML = `<div class="error-box">That's ${totalRows.toLocaleString()} combinations — predict at most 200 at a time. Narrow the ranges, remove a column, or switch to "Matched pairs".</div>`;
+    return;
+  }
+
+  const fixed = {};
+  document.querySelectorAll("#predictRangeFixed input[data-fixed-field]").forEach(inp => {
+    const v = inp.value.trim();
+    if(v === "") return;
+    fixed[inp.dataset.fixedField] = isNaN(v) ? v : parseFloat(v);
+  });
+
+  const runId = $("predictSourceSelect")?.value || null;
+  const body = {columns, values: valuesByCol, mode, fixed};
+  if(runId) body.run_id = runId;
+
+  $("predictRangeResult").innerHTML = `<p class="loading">Scoring ${totalRows} combination(s)</p>`;
+  $("predictRangeBtn").disabled = true;
+  try{
+    const res = await fetch(`${API}/predict_range/${sid}`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not predict that range.");
+
+    const fixedNote = Object.keys(data.fixed || {}).length
+      ? `<p class="hint" style="margin:6px 0;">Other columns held at: ${Object.entries(data.fixed).map(([k,v]) => `${escapeHtml(k)} = ${v === null ? "—" : escapeHtml(String(v))}`).join(", ")}</p>`
+      : "";
+    const showActual = !!data.has_target;
+    const varCols = data.columns || [columns[0]];
+    let html = `<div class="result-box" style="margin-top:10px;">` + fixedNote +
+      `<div class="batch-preview-wrap"><table class="preview-table"><thead><tr>` +
+      varCols.map(c => `<th>${escapeHtml(c)}</th>`).join("") +
+      `<th>Predicted ${escapeHtml(data.target)}</th>` +
+      (showActual ? `<th>Actual ${escapeHtml(data.target)}</th><th>From</th>` : "") +
+      `</tr></thead><tbody>` +
+      data.rows.map(r => {
+        const actualCell = r.actual === null || r.actual === undefined
+          ? `<td class="null-val">no matching rows</td>`
+          : `<td>${escapeHtml(String(r.actual))}</td>`;
+        const fromCell = r.n_actual_rows ? `<td>${r.n_actual_rows} row(s)</td>` : `<td class="null-val">—</td>`;
+        const valueCells = varCols.map(c => `<td>${escapeHtml(String(r.values[c]))}</td>`).join("");
+        return `<tr>${valueCells}<td><strong>${escapeHtml(String(r.predicted))}</strong></td>` +
+          (showActual ? actualCell + fromCell : "") + `</tr>`;
+      }).join("") +
+      `</tbody></table></div></div>`;
+    $("predictRangeResult").innerHTML = html;
+  }catch(err){
+    $("predictRangeResult").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+  }
+  $("predictRangeBtn").disabled = false;
 });
 
 // ---------- RECOMMENDER ----------
@@ -7021,6 +7275,7 @@ function renderModelCards(){
   // (e.g. when switching between dataset tabs that each have their own
   // trained-model cards).
   Object.keys(charts).filter(id => id.startsWith("modelCardImportance-")).forEach(destroyChart);
+  Object.keys(charts).filter(id => id.startsWith("modelCardFcCanvas-") || id.startsWith("modelCardFcHistCanvas-") || id.startsWith("modelCardFcFutureCanvas-")).forEach(destroyChart);
 
   if(!all.length){
     list.innerHTML = `<p class="hint" style="margin-top:8px;">No models trained yet — go to the Training panel, pick a target column, and click <strong>Run AutoML</strong>.</p>`;
@@ -7083,6 +7338,50 @@ function renderModelCards(){
           <button class="sec model-card-batch-predict-btn" data-idx="${idx}">▶ Batch predict</button>
         </div>
         <div class="model-card-batch-result" id="model-card-batch-result-${idx}"></div>
+        ${m.problemType === "regression" ? `
+        <div class="subhead" style="margin-top:18px;margin-bottom:6px;">Forecast ${escapeHtml(m.target)} forward &amp; compare</div>
+        <p class="hint" style="margin:0 0 8px;">Aggregate <strong>${escapeHtml(m.target)}</strong> by a date/year column, project it forward, and view the current period next to the predicted one — as a line, bar, or pie.</p>
+        <div class="pred-row">
+          <div class="pred-field"><label>Date / year / numeric column</label><select class="model-card-fc-datecol" data-idx="${idx}"></select></div>
+          <div class="pred-field">
+            <label>Bucket by</label>
+            <select class="model-card-fc-period" data-idx="${idx}">
+              <option value="year">Year</option>
+              <option value="quarter">Quarter</option>
+              <option value="month">Month</option>
+              <option value="numeric">Numeric (any column)</option>
+            </select>
+          </div>
+          <div class="pred-field">
+            <label>Aggregate ${escapeHtml(m.target)} by</label>
+            <select class="model-card-fc-agg" data-idx="${idx}">
+              <option value="sum">Sum</option>
+              <option value="mean">Average</option>
+              <option value="median">Median</option>
+              <option value="min">Min</option>
+              <option value="max">Max</option>
+            </select>
+          </div>
+        </div>
+        <div class="pred-row">
+          <div class="pred-field"><label>Periods to project forward</label><input type="number" class="model-card-fc-periods" data-idx="${idx}" value="5" min="1" max="50"></div>
+          <div class="pred-field" style="flex:1;min-width:200px;">
+            <label>Or a specific range <span class="hint" style="font-weight:normal;">(overrides periods above)</span></label>
+            <input type="text" class="model-card-fc-custom" data-idx="${idx}" placeholder="e.g. 2022-2026">
+          </div>
+          <div class="pred-field">
+            <label>Show as</label>
+            <select class="model-card-fc-charttype" data-idx="${idx}">
+              <option value="line">Line (trend)</option>
+              <option value="bar">Bar</option>
+              <option value="pie">Pie</option>
+            </select>
+          </div>
+          <div class="pred-field"><button class="sec model-card-fc-run-btn" data-idx="${idx}" style="margin-top:13px;">▶ Forecast &amp; compare</button></div>
+        </div>
+        <div class="model-card-fc-result" id="model-card-fc-result-${idx}"></div>
+        <div class="model-card-fc-chart-row" id="model-card-fc-chart-row-${idx}" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;"></div>
+        ` : ""}
       </div>
     </div>`;
   }).join("");
@@ -7135,6 +7434,13 @@ function renderModelCards(){
       sel.disabled = false;
       sel.innerHTML = others.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join("");
     }
+  });
+
+  // Populate each regression card's "Forecast & compare" date column picker
+  // with every column of this dataset (same source list the global Trend &
+  // Forecast panel's date-column picker uses).
+  list.querySelectorAll(".model-card-fc-datecol").forEach(sel => {
+    sel.innerHTML = `<option value="">—</option>` + allColumns.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
   });
 
   // Wire predict buttons
@@ -7217,6 +7523,15 @@ function renderModelCards(){
           ? `<p class="hint" style="color:var(--bad);margin:6px 0;">This dataset is missing ${data.missing_feature_columns.map(escapeHtml).join(", ")} — those rows were filled blank before scoring, so results may be less reliable.</p>`
           : "";
 
+        // When the scored dataset already had real values for the target
+        // column, those are kept (not overwritten) and the prediction lands
+        // in its own `..._predicted` column instead -- so both are here to
+        // compare, same idea as the Forecast panel's historical-vs-predicted
+        // overlay, just as two plain columns you can chart any way you like.
+        const actualNote = data.has_actual
+          ? `<p class="hint" style="margin:6px 0;">This dataset already had real <strong>${escapeHtml(data.target)}</strong> values, so they were kept — predictions went into their own <strong>${escapeHtml(data.predicted_column)}</strong> column instead. Send the results to a new tab below, then build any chart in Visualize (pie, bar, scatter…) with <strong>${escapeHtml(data.target)}</strong> and <strong>${escapeHtml(data.predicted_column)}</strong> to compare them visually.</p>`
+          : "";
+
         // The preview carries every original column plus the prediction, so a
         // wide target dataset produced a table far wider than this card -- it
         // spilled out of the panel. The scroll wrapper (.batch-preview-wrap)
@@ -7234,11 +7549,18 @@ function renderModelCards(){
 
         result.innerHTML =
           `<p class="hint" style="margin:8px 0 6px;">Scored ${data.rows_predicted} row(s) with ${escapeHtml(model.bestModel || "the best model")}. Preview of the first ${data.preview.length}:</p>` +
-          missingNote + previewHtml +
+          missingNote + actualNote + previewHtml +
           `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
             <button class="sec model-card-batch-download-full" data-idx="${idx}">⬇ Download full CSV</button>
             ${data.submission_csv ? `<button class="sec model-card-batch-download-submission" data-idx="${idx}">⬇ Download submission CSV (${escapeHtml(data.id_column)}, ${escapeHtml(data.target)})</button>` : ""}
-           </div>`;
+           </div>
+           <div class="subhead" style="margin-top:14px;">Send to new tab — compare it visually</div>
+           <p class="hint" style="margin:0 0 8px;">Turns these results into a new dataset tab so you can build any chart in Visualize — pie, bar, scatter — to compare ${data.has_actual ? `<strong>${escapeHtml(data.target)}</strong> against <strong>${escapeHtml(data.predicted_column)}</strong>` : "the predictions against the rest of the data"}.</p>
+           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+             <input type="text" class="model-card-batch-tab-name" data-idx="${idx}" placeholder="Name for the new tab" style="flex:1;min-width:160px;" value="${escapeHtml((model.target || "predictions") + "_predicted")}">
+             <button class="sec model-card-batch-send-tab" data-idx="${idx}">↗ Send to new tab</button>
+           </div>
+           <div class="model-card-batch-tab-status" id="model-card-batch-tab-status-${idx}"></div>`;
 
         result.querySelector(".model-card-batch-download-full")?.addEventListener("click", () => {
           downloadTextFile(data.full_csv, `${model.target}_predictions_full.csv`, "text/csv");
@@ -7246,12 +7568,240 @@ function renderModelCards(){
         result.querySelector(".model-card-batch-download-submission")?.addEventListener("click", () => {
           downloadTextFile(data.submission_csv, `${model.target}_submission.csv`, "text/csv");
         });
+        result.querySelector(".model-card-batch-send-tab")?.addEventListener("click", async (ev) => {
+          const sendBtn = ev.currentTarget;
+          const nameInput = result.querySelector(".model-card-batch-tab-name");
+          const statusEl = $(`model-card-batch-tab-status-${idx}`);
+          const newName = (nameInput?.value || "").trim() || "predictions";
+
+          sendBtn.disabled = true;
+          sendBtn.textContent = "Creating tab…";
+          if(statusEl) statusEl.innerHTML = "";
+          try{
+            const tabBody = {target_session_id: targetSessionId, new_name: newName};
+            if(model.runId) tabBody.run_id = model.runId;
+            const tabRes = await fetch(`${API}/predict_batch_to_tab/${getSid()}`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify(tabBody),
+            });
+            const tabData = await tabRes.json();
+            if(!tabRes.ok){
+              const detail = Array.isArray(tabData.detail) ? "Please check the model and dataset." : tabData.detail;
+              throw new Error(detail || "Couldn't send the results to a new tab.");
+            }
+
+            // Same "new dataset tab" pattern as Filter & Split / pivot's send-to-tab.
+            const newId = "ds_" + Date.now();
+            datasets.push({id: newId, name: tabData.name, sessionId: tabData.session_id});
+            dsState[newId] = {
+              sessionId:        tabData.session_id,
+              allColumns:       tabData.columns,
+              profile:          null,
+              lastProfile:      null,
+              cleanLog:         null,
+              training:         null,
+              savedRuns:        [],
+              savedPredictions: [],
+              chatCleanLog:     [],
+            };
+            activeDs = newId;
+            resetPanels();
+            renderDsTabs();
+            autoSave();
+            await loadEDA(newId, tabData.session_id);
+            $("sessionTag").textContent = `${tabData.name} · ${tabData.shape.rows.toLocaleString()}×${tabData.shape.columns}`;
+
+            // The whole point of sending this over was to compare actual vs.
+            // predicted visually -- landing on EDA (the old behaviour) left
+            // you to find Visualise and set it up yourself. Go straight
+            // there instead, and when both columns exist, build the
+            // comparison chart automatically: a scatter (predicted vs.
+            // actual) for a numeric target, or a stacked bar (predicted
+            // breakdown within each actual class) for a classification one.
+            show("panelViz"); setStep(4);
+            if(dsState[newId]) dsState[newId].panelVizVisible = true;
+            loadVizSuggestions();
+            if(tabData.has_actual){
+              const chartType = data.problem_type === "classification" ? "stacked_bar" : "scatter";
+              const ctBtn = document.querySelector(`.ct-btn[data-type="${chartType}"]`);
+              if(ctBtn) selectChartType(ctBtn);
+              if($("vizColX")) $("vizColX").value = tabData.target;
+              if(chartType === "scatter" && $("vizColY")) $("vizColY").value = tabData.predicted_column;
+              if(chartType === "stacked_bar" && $("vizGroup")) $("vizGroup").value = tabData.predicted_column;
+              $("vizBtn")?.click();
+            }
+            autoSave();
+            scrollPanel("panelViz");
+          }catch(err){
+            if(statusEl) statusEl.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+          }finally{
+            sendBtn.disabled = false;
+            sendBtn.textContent = "↗ Send to new tab";
+          }
+        });
       }catch(err){
         result.innerHTML = `<div class="error-box">${err.message}</div>`;
       }
       btn.disabled = false;
     });
   });
+
+  // Wire each regression card's "Forecast & compare" button. Reuses the same
+  // /api/forecast/run endpoint as the global Trend & Forecast panel (see
+  // $("fcRunBtn") above), just with metric_col pinned to this card's own
+  // target column instead of a freely-chosen one -- "forecast the column
+  // this model predicts", not a general-purpose forecast tool.
+  list.querySelectorAll(".model-card-fc-run-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const idx    = parseInt(btn.dataset.idx, 10);
+      const model  = all[idx];
+      const card   = $(`model-card-${idx}`);
+      const result = $(`model-card-fc-result-${idx}`);
+      if(!model || !card || !result) return;
+
+      const dateCol = card.querySelector(".model-card-fc-datecol").value;
+      if(!dateCol){ result.innerHTML = `<div class="error-box">Pick a date/year/numeric column first.</div>`; $(`model-card-fc-chart-row-${idx}`).innerHTML = ""; return; }
+      const period = card.querySelector(".model-card-fc-period").value;
+      const agg    = card.querySelector(".model-card-fc-agg").value;
+      const customValues = _fcParseCustomValues(card.querySelector(".model-card-fc-custom").value);
+      if(customValues && period !== "year" && period !== "numeric"){
+        result.innerHTML = `<div class="error-box">A specific range only works with "Year" or "Numeric (any column)" bucketing — switch "Bucket by" above, or clear that field to use "periods to project forward" instead.</div>`;
+        return;
+      }
+      if(customValues && customValues.length > 50){
+        result.innerHTML = `<div class="error-box">Predict at most 50 values at a time (${customValues.length} given).</div>`;
+        return;
+      }
+
+      const body = {
+        date_col: dateCol,
+        period,
+        agg,
+        metric_col: model.target,
+        degree: 1,
+        periods_ahead: parseInt(card.querySelector(".model-card-fc-periods").value || "5", 10),
+      };
+      if(customValues) body.future_values = customValues;
+
+      result.innerHTML = `<p class="loading">Fitting trend</p>`;
+      $(`model-card-fc-chart-row-${idx}`).innerHTML = "";
+      btn.disabled = true;
+      try{
+        const res  = await fetch(`${API}/forecast/run/${getSid()}`, {
+          method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.detail || "Could not fit a forecast");
+        const warn = (data.warnings || []).map(w => `<div class="hint" style="color:var(--accent);">⚠ ${escapeHtml(w)}</div>`).join("");
+        const periodLabel = data.period === "numeric" ? "points" : `${escapeHtml(data.period)}s`;
+        result.innerHTML = `<div class="result-box">
+          <strong>${escapeHtml(data.degree === 2 ? "Quadratic" : "Linear")} trend</strong> over ${data.n_points} ${periodLabel}
+          · R² = <strong>${data.r2 == null ? "n/a" : data.r2}</strong>
+          <br><span style="font-size:11px;color:var(--ink-dim);">${escapeHtml(data.equation)}</span>
+          ${warn}
+        </div>`;
+        modelCardFcLastData[idx] = data; // cached so switching "Show as" below re-renders instantly, no refetch
+        renderModelCardFcChart(idx, data, card.querySelector(".model-card-fc-charttype").value);
+      }catch(err){
+        result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+      }
+      btn.disabled = false;
+    });
+  });
+
+  // Switching "Show as" re-renders the already-fetched forecast in the new
+  // chart type immediately, without hitting the API again.
+  list.querySelectorAll(".model-card-fc-charttype").forEach(sel => {
+    sel.addEventListener("change", () => {
+      const idx = parseInt(sel.dataset.idx, 10);
+      const data = modelCardFcLastData[idx];
+      if(data) renderModelCardFcChart(idx, data, sel.value);
+    });
+  });
+}
+
+// Cache of each model card's last-fetched forecast result, keyed by card
+// index, so toggling "Show as" (line/bar/pie) re-draws instantly instead of
+// re-running the trend fit on the server for a chart style change alone.
+const modelCardFcLastData = {};
+
+// Draws a regression model card's "Forecast & compare" result. "line" mode
+// mirrors the global Trend & Forecast panel's single combined chart
+// (historical → trend → future in one line). "bar"/"pie" instead draw two
+// separate charts side by side -- the current/historical periods on the
+// left, the predicted/future periods on the right -- since neither chart
+// type can show a continuous trend line the way "line" does, but sitting
+// them next to each other is exactly the "compare the current one with the
+// predicted one" view that was asked for.
+function renderModelCardFcChart(idx, data, chartType){
+  const row = $(`model-card-fc-chart-row-${idx}`);
+  if(!row) return;
+
+  if(chartType === "line"){
+    row.innerHTML = `<div class="model-card-chart-box" style="flex:1 1 100%;"><canvas id="modelCardFcCanvas-${idx}"></canvas></div>`;
+    const histLabels = data.historical.labels, histValues = data.historical.values;
+    const trendValues = data.trend.values;
+    const futureLabels = data.future.labels, futureValues = data.future.values;
+    const labels = histLabels.concat(futureLabels);
+    const pad = arr => arr.concat(Array(futureLabels.length).fill(null));
+    const padFront = arr => Array(histLabels.length).fill(null).concat(arr);
+    makeChart(`modelCardFcCanvas-${idx}`, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {label: "Historical", data: pad(histValues), borderColor: "#5fd4d6", backgroundColor: "#5fd4d620", borderWidth: 2.5, pointRadius: 2.5, tension: 0.25},
+          {label: "Trend", data: pad(trendValues), borderColor: "#ffb627", borderDash: [6,4], borderWidth: 2, pointRadius: 0, tension: 0.25},
+          {label: "Forecast", data: padFront(futureValues), borderColor: "#5fd98c", backgroundColor: "#5fd98c20", borderWidth: 2.5, pointRadius: 2.5, borderDash: [2,2], tension: 0.25},
+        ]
+      },
+      options: {
+        plugins: {legend: {labels: {color: "#8fa3bc", font: {family: "IBM Plex Mono", size: 10}}}},
+        scales: {
+          x: {ticks: {color:"#8fa3bc", font:{family:"IBM Plex Mono", size:9}, maxRotation:45}, grid:{color:"#1f3a5f"}},
+          y: {ticks: {color:"#8fa3bc"}, grid:{color:"#1f3a5f"}}
+        }
+      }
+    });
+    return;
+  }
+
+  // bar / pie: two boxes side by side, "Current" vs "Predicted"
+  row.innerHTML = `
+    <div style="flex:1 1 260px;min-width:220px;">
+      <p class="hint" style="margin:0 0 4px;text-align:center;">Current (historical)</p>
+      <div class="model-card-chart-box"><canvas id="modelCardFcHistCanvas-${idx}"></canvas></div>
+    </div>
+    <div style="flex:1 1 260px;min-width:220px;">
+      <p class="hint" style="margin:0 0 4px;text-align:center;">Predicted (forecast)</p>
+      <div class="model-card-chart-box"><canvas id="modelCardFcFutureCanvas-${idx}"></canvas></div>
+    </div>`;
+
+  const makeSide = (canvasId, labels, values) => {
+    const colors = labels.map((_, i) => vizFill(vizPaletteAt(i), "bb"));
+    if(chartType === "pie"){
+      makeChart(canvasId, {
+        type: "pie",
+        data: {labels, datasets: [{data: values, backgroundColor: colors}]},
+        options: {plugins: {legend: {labels: {color: "#8fa3bc", font:{size:9}}}}}
+      });
+    } else {
+      makeChart(canvasId, {
+        type: "bar",
+        data: {labels, datasets: [{data: values, backgroundColor: colors}]},
+        options: {
+          plugins: {legend: {display:false}},
+          scales: {
+            x: {ticks:{color:"#8fa3bc", font:{size:9}, maxRotation:45}, grid:{display:false}},
+            y: {ticks:{color:"#8fa3bc"}, grid:{color:"#1f3a5f"}, beginAtZero:true}
+          }
+        }
+      });
+    }
+  };
+  makeSide(`modelCardFcHistCanvas-${idx}`, data.historical.labels, data.historical.values);
+  makeSide(`modelCardFcFutureCanvas-${idx}`, data.future.labels, data.future.values);
 }
 
 // --- Import a model trained outside AutoDS -------------------------------

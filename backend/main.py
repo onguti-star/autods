@@ -3,6 +3,7 @@ import csv
 import io
 import html
 import ipaddress
+import itertools
 import logging
 import math
 import multiprocessing as mp
@@ -20,7 +21,7 @@ import json
 import uuid
 from pathlib import Path
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 import numpy as np
@@ -1273,6 +1274,110 @@ def split_column(session_id: str, req: SplitColumnRequest):
     session.snapshot_before_change()
     session.df, log_entry = _split_column_by_separator(
         session.df, req.column, req.separator, req.drop_original, req.new_column_prefix,
+    )
+    session.clear_current_training()
+    session.cleaning_log.append(log_entry)
+    session.save_to_disk()
+
+    profile = eda.profile_dataframe(session.df)
+    profile["cleaning_log"] = session.cleaning_log
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    return profile
+
+
+class ExtractColumnRequest(BaseModel):
+    column: str = Field(min_length=1)
+    pattern: str = Field(min_length=1, max_length=200)
+    new_column_names: list[str] = Field(default_factory=list)
+    drop_original: bool = False
+
+
+def _extract_columns_by_regex(df: pd.DataFrame, column: str, raw_pattern: str,
+                               new_column_names: list[str], drop_original: bool) -> tuple[pd.DataFrame, str]:
+    """
+    Pull one or more pieces out of a text column using a regex with capture
+    groups -- the structured-tool equivalent of a manual
+    `df['x'].str.extract(r'(\\d+)')` cell in a notebook. Different from
+    "Split column" above: that one breaks a column apart wherever a
+    separator appears; this one has no separator at all and instead applies
+    an arbitrary pattern straight to each value, with every capture group
+    `(...)` in the pattern becoming its own new column (e.g.
+    `(\\d+)([a-zA-Z]+)` on "90min" makes a number column and a unit column
+    from the same text, nothing between them to split on).
+    """
+    if column not in df.columns:
+        raise HTTPException(400, f"Column '{column}' not found.")
+
+    try:
+        compiled = re.compile(raw_pattern)
+    except re.error as e:
+        raise HTTPException(400, f"'{raw_pattern}' isn't a valid regular expression: {e}")
+
+    n_groups = compiled.groups
+    if n_groups == 0:
+        raise HTTPException(
+            400,
+            "The pattern needs at least one capture group -- wrap the part(s) you want "
+            "pulled out in parentheses, e.g. (\\d+) for a number or ([a-zA-Z]+) for letters."
+        )
+
+    series = df[column].astype(str)
+    try:
+        extracted = series.str.extract(raw_pattern, expand=True)
+    except Exception as e:
+        raise HTTPException(400, f"Could not apply '{raw_pattern}' to '{column}': {e}")
+
+    base = column
+    existing = set(df.columns)
+    names: list[str] = []
+    for i in range(n_groups):
+        given = new_column_names[i].strip() if i < len(new_column_names) else ""
+        candidate = given or f"{base}_extract_{i + 1}"
+        while candidate in existing or candidate in names:
+            candidate += "_"
+        names.append(candidate)
+    extracted.columns = names
+
+    # Mirrors the .astype(float) step people reach for by hand right after
+    # str.extract() -- if every matched value in a new column parses as a
+    # number, convert it, instead of leaving it as text for every row that
+    # matched.
+    converted = []
+    for c in names:
+        col = extracted[c]
+        matched = col.notna()
+        if not matched.any():
+            continue
+        as_num = pd.to_numeric(col, errors="coerce")
+        if as_num[matched].notna().all():
+            extracted[c] = as_num
+            converted.append(c)
+
+    n_total = len(df)
+    n_matched = int(extracted[names].notna().all(axis=1).sum())
+    if n_matched == 0:
+        raise HTTPException(400, f"'{raw_pattern}' never matched anything in '{column}' -- nothing to extract.")
+
+    out = pd.concat([df, extracted], axis=1)
+    if drop_original:
+        out = out.drop(columns=[column])
+
+    note = f"Extracted {n_groups} new column(s) from '{column}' with the pattern '{raw_pattern}': {', '.join(names)}."
+    note += f" Original column '{column}' removed." if drop_original else f" Original column '{column}' kept."
+    note += f" Matched {n_matched:,} of {n_total:,} row(s)" + ("." if n_matched == n_total else " -- the rest are blank.")
+    if converted:
+        note += f" {', '.join(converted)} converted to numbers automatically."
+    return out, note
+
+
+@app.post("/api/extract_column/{session_id}")
+def extract_column(session_id: str, req: ExtractColumnRequest):
+    session = _get_session_or_404(session_id)
+    session.snapshot_before_change()
+    session.df, log_entry = _extract_columns_by_regex(
+        session.df, req.column, req.pattern, req.new_column_names, req.drop_original,
     )
     session.clear_current_training()
     session.cleaning_log.append(log_entry)
@@ -2775,6 +2880,151 @@ def predict(session_id: str, req: PredictRequest):
     }
 
 
+class PredictRangeRequest(BaseModel):
+    columns: list[str] = Field(min_length=1, max_length=5)          # the features to vary, 1-5 of them
+    values: dict[str, list[float | str]]                            # column -> its list/range of values
+    mode: Literal["grid", "paired"] = "grid"                        # grid = every combination; paired = matched by position
+    fixed: dict[str, Any] = Field(default_factory=dict)             # optional overrides for the other features
+    run_id: str | None = None
+    model_name: str | None = None
+
+
+@app.post("/api/predict_range/{session_id}")
+def predict_range(session_id: str, req: PredictRangeRequest):
+    """
+    Vary one or more features over a list/range of values, predict the
+    target for every value (mode "grid": every combination across all
+    varied columns; mode "paired": the Nth value of each column together,
+    for an equal-length sweep like "2020+$10k, 2021+$12k, ...") with the
+    trained model, and return it as a plain table -- the varied values,
+    the prediction, and (if this training dataset already has real rows at
+    that exact combination) the actual target for comparison, with a row
+    count so a one-row match reads differently from an average over
+    hundreds. No chart: a table of exact numbers, since a chart can only
+    ever show an aggregated/rounded picture of the same figures.
+
+    Every feature column that isn't being varied is held fixed -- at its
+    mean (numeric) or most common value (categorical) from the training
+    data, unless the caller overrides it in `fixed` -- so a sweep is
+    possible without hand-typing every other column for every row.
+    """
+    session = _get_session_or_404(session_id)
+    pipe, model_name, problem_type, target, label_encoder, feature_columns, source_name = (
+        _resolve_trained_model(session, req.run_id, req.model_name)
+    )
+
+    columns = list(dict.fromkeys(req.columns))  # de-dupe, keep order
+    if len(columns) != len(req.columns):
+        raise HTTPException(400, "Each column can only be varied once -- pick a different column for each row.")
+    bad = [c for c in columns if c not in feature_columns]
+    if bad:
+        verb = "isn't" if len(bad) == 1 else "aren't"
+        raise HTTPException(
+            400,
+            f"{', '.join(bad)} {verb} a feature column of this model ({', '.join(feature_columns)})."
+        )
+    missing_values = [c for c in columns if not req.values.get(c)]
+    if missing_values:
+        raise HTTPException(400, f"Give at least one value for {', '.join(missing_values)}.")
+
+    # Build the combinations to score.
+    value_lists = [req.values[c] for c in columns]
+    if req.mode == "paired":
+        lengths = {len(v) for v in value_lists}
+        if len(lengths) > 1:
+            raise HTTPException(
+                400,
+                "\"Matched pairs\" needs the same number of values for every column "
+                f"(got {', '.join(f'{c}: {len(req.values[c])}' for c in columns)})."
+            )
+        combos = list(zip(*value_lists))
+    else:
+        combos = list(itertools.product(*value_lists))
+        if len(combos) > 200:
+            raise HTTPException(
+                400,
+                f"That's {len(combos):,} combinations -- predict at most 200 at a time. "
+                "Narrow the ranges, remove a column, or switch to \"Matched pairs\"."
+            )
+    if not combos:
+        raise HTTPException(400, "No values to predict.")
+    if len(combos) > 200:
+        raise HTTPException(400, f"Predict at most 200 combinations at a time ({len(combos):,} given).")
+
+    df = session.df
+    other_cols = [c for c in feature_columns if c not in columns]
+
+    fixed_row: dict[str, Any] = {}
+    for c in other_cols:
+        if c in req.fixed:
+            fixed_row[c] = req.fixed[c]
+        elif c in df.columns:
+            s = df[c]
+            if pd.api.types.is_numeric_dtype(s) and s.notna().any():
+                fixed_row[c] = float(s.mean())
+            else:
+                mode_val = s.mode()
+                fixed_row[c] = mode_val.iloc[0] if not mode_val.empty else None
+        else:
+            fixed_row[c] = None
+
+    rows = []
+    for combo in combos:
+        row = dict(fixed_row)
+        for c, v in zip(columns, combo):
+            row[c] = v
+        rows.append(row)
+    input_df = pd.DataFrame(rows)
+    for c in feature_columns:
+        if c not in input_df.columns:
+            input_df[c] = None
+    input_df = input_df[feature_columns]
+
+    try:
+        preds = pipe.predict(input_df)
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't score that range: {e}")
+    if problem_type == "classification" and label_encoder is not None:
+        preds = label_encoder.inverse_transform(preds.astype(int))
+
+    has_target = target in df.columns and all(c in df.columns for c in columns)
+    out_rows = []
+    for combo, p in zip(combos, preds):
+        entry: dict[str, Any] = {
+            "values": {c: _jsonable_value(v) for c, v in zip(columns, combo)},
+            "predicted": _jsonable_value(p.item() if hasattr(p, "item") else p),
+            "actual": None,
+            "n_actual_rows": 0,
+        }
+        if has_target:
+            mask = pd.Series(True, index=df.index)
+            for c, v in zip(columns, combo):
+                mask &= (df[c] == v)
+            matching = df[mask]
+            n = len(matching)
+            entry["n_actual_rows"] = int(n)
+            if n > 0:
+                actual_series = matching[target]
+                if problem_type == "classification":
+                    m = actual_series.mode()
+                    entry["actual"] = _jsonable_value(m.iloc[0]) if not m.empty else None
+                else:
+                    numeric_actual = pd.to_numeric(actual_series, errors="coerce")
+                    entry["actual"] = _jsonable_value(float(numeric_actual.mean())) if numeric_actual.notna().any() else None
+        out_rows.append(entry)
+
+    return {
+        "columns": columns,
+        "target": target,
+        "problem_type": problem_type,
+        "model_name": model_name,
+        "source_name": source_name,
+        "has_target": has_target,
+        "fixed": {k: _jsonable_value(v) for k, v in fixed_row.items()},
+        "rows": out_rows,
+    }
+
+
 # Column-name patterns that almost always mean "row identifier" rather than a
 # feature — used to auto-pick the id column for the Kaggle-style two-column
 # submission CSV in batch predict, without making the user hunt for it.
@@ -2794,21 +3044,15 @@ class BatchPredictRequest(BaseModel):
     model_name: str | None = None
 
 
-@app.post("/api/predict_batch/{model_session_id}")
-def predict_batch(model_session_id: str, req: BatchPredictRequest):
-    """Score every row of a *different* dataset (req.target_session_id) with
-    a model trained on model_session_id, and return the results as CSV —
-    the batch counterpart to /api/predict, which only ever takes up to 100
-    hand-typed rows against the model's own session. This is what makes a
-    train.csv / test.csv Kaggle-style split actually usable: train on one
-    dataset tab, then score another tab's rows with that model without
-    retyping anything.
+def _run_batch_predict(model_session, target_session, run_id: str | None, model_name: str | None):
+    """Shared scoring logic for /api/predict_batch and /api/predict_batch_to_tab.
+    Returns (full_df, meta) where full_df carries every original column from
+    the target dataset plus the prediction, and meta has the bookkeeping
+    (target name, predicted-column name, whether actuals were available,
+    etc.) both endpoints need.
     """
-    model_session = _get_session_or_404(model_session_id)
-    target_session = _get_session_or_404(req.target_session_id)
-
-    pipe, model_name, problem_type, target, label_encoder, feature_columns, source_name = (
-        _resolve_trained_model(model_session, req.run_id, req.model_name)
+    pipe, resolved_model_name, problem_type, target, label_encoder, feature_columns, source_name = (
+        _resolve_trained_model(model_session, run_id, model_name)
     )
 
     input_df = target_session.df.copy()
@@ -2825,17 +3069,64 @@ def predict_batch(model_session_id: str, req: BatchPredictRequest):
     if problem_type == "classification" and label_encoder is not None:
         preds = label_encoder.inverse_transform(preds.astype(int))
 
-    # "Full" output: every original column from the target dataset plus the
-    # prediction, in case the user wants the extra context (e.g. to sanity-
-    # check predictions against Age/Sex/Fare visually).
     full_df = input_df.copy()
-    full_df[target] = preds
+    has_actual = target in input_df.columns
+    if has_actual:
+        # The dataset being scored already has real values for `target`
+        # (e.g. a train/test split you made yourself, not a label-less
+        # Kaggle test.csv) -- those are the actuals to compare predictions
+        # against, so they must NOT be overwritten. Add the prediction
+        # under its own column instead, so both survive side by side and
+        # can be charted against each other (bar/scatter/pie/etc. in
+        # Visualize) exactly like the Forecast panel's historical-vs-
+        # predicted overlay, just for any model instead of only a trend fit.
+        predicted_col = f"{target}_predicted"
+        while predicted_col in full_df.columns:
+            predicted_col += "_2"
+        full_df[predicted_col] = preds
+    else:
+        # No ground truth in this dataset (the classic Kaggle test.csv
+        # case) -- filling the target column itself is exactly what makes
+        # a submission file, so keep that behaviour.
+        predicted_col = target
+        full_df[predicted_col] = preds
 
     id_column = _guess_id_column(list(input_df.columns))
     submission_csv = None
     if id_column:
-        submission_df = full_df[[id_column, target]]
+        submission_df = full_df[[id_column, predicted_col]]
+        if has_actual:
+            submission_df = submission_df.rename(columns={predicted_col: target})
         submission_csv = submission_df.to_csv(index=False)
+
+    meta = {
+        "target": target,
+        "predicted_column": predicted_col,
+        "has_actual": has_actual,
+        "problem_type": problem_type,
+        "model_name": resolved_model_name,
+        "source_name": source_name,
+        "missing_feature_columns": missing_cols,
+        "id_column": id_column,
+        "submission_csv": submission_csv,
+    }
+    return full_df, meta
+
+
+@app.post("/api/predict_batch/{model_session_id}")
+def predict_batch(model_session_id: str, req: BatchPredictRequest):
+    """Score every row of a *different* dataset (req.target_session_id) with
+    a model trained on model_session_id, and return the results as CSV —
+    the batch counterpart to /api/predict, which only ever takes up to 100
+    hand-typed rows against the model's own session. This is what makes a
+    train.csv / test.csv Kaggle-style split actually usable: train on one
+    dataset tab, then score another tab's rows with that model without
+    retyping anything.
+    """
+    model_session = _get_session_or_404(model_session_id)
+    target_session = _get_session_or_404(req.target_session_id)
+
+    full_df, meta = _run_batch_predict(model_session, target_session, req.run_id, req.model_name)
 
     preview_df = full_df.head(10)
     preview = [
@@ -2845,16 +3136,52 @@ def predict_batch(model_session_id: str, req: BatchPredictRequest):
 
     return {
         "ok": True,
-        "target": target,
-        "problem_type": problem_type,
-        "model_name": model_name,
-        "source_name": source_name,
+        "target": meta["target"],
+        "predicted_column": meta["predicted_column"],
+        "has_actual": meta["has_actual"],
+        "problem_type": meta["problem_type"],
+        "model_name": meta["model_name"],
+        "source_name": meta["source_name"],
         "rows_predicted": int(len(full_df)),
-        "missing_feature_columns": missing_cols,
-        "id_column": id_column,
+        "missing_feature_columns": meta["missing_feature_columns"],
+        "id_column": meta["id_column"],
         "full_csv": full_df.to_csv(index=False),
-        "submission_csv": submission_csv,
+        "submission_csv": meta["submission_csv"],
         "preview": preview,
+    }
+
+
+class BatchPredictToTabRequest(BatchPredictRequest):
+    new_name: str = Field(default="predictions", max_length=120)
+
+
+@app.post("/api/predict_batch_to_tab/{model_session_id}")
+def predict_batch_to_tab(model_session_id: str, req: BatchPredictToTabRequest):
+    """
+    Same scoring as /api/predict_batch, but turns the result into its own
+    dataset tab (same pattern as /api/pivot_to_tab and /api/filter) instead
+    of only a CSV download -- so the predictions can be visually compared
+    against the actuals using any chart type in Visualize (pie, bar,
+    scatter...), the same way the Forecast panel overlays historical vs.
+    predicted, but for a trained model's predictions on arbitrary columns.
+    """
+    model_session = _get_session_or_404(model_session_id)
+    target_session = _get_session_or_404(req.target_session_id)
+
+    full_df, meta = _run_batch_predict(model_session, target_session, req.run_id, req.model_name)
+
+    new_name = req.new_name.strip() or "predictions"
+    new_session = create_session(full_df, new_name + ".csv")
+
+    return {
+        "session_id": new_session.id,
+        "name": new_name,
+        "shape": {"rows": len(full_df), "columns": len(full_df.columns)},
+        "columns": list(full_df.columns),
+        "target": meta["target"],
+        "predicted_column": meta["predicted_column"],
+        "has_actual": meta["has_actual"],
+        "preview": _json_safe_records(full_df.head(5)),
     }
 
 
