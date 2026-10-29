@@ -682,7 +682,16 @@ def run_command_with_table(
     text: str,
     original_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, str, dict | None]:
-    corrected_text, corrections = _correct_keyword_typos(text.strip(), CLEAN_KEYWORDS)
+    # Protect the dataset's actual column-name words from typo correction. A
+    # valid column called "name" must not become the command keyword "named".
+    protected_column_words = {
+        part.lower()
+        for column in df.columns
+        for part in re.findall(r"[A-Za-z0-9]+", str(column))
+    }
+    corrected_text, corrections = _correct_keyword_typos(
+        text.strip(), CLEAN_KEYWORDS, protected_words=protected_column_words
+    )
     new_df, message, table = _run_command_impl_with_table(df, corrected_text, original_df)
     return new_df, _format_keyword_correction_note(corrections) + message, table
 
@@ -1301,7 +1310,17 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         reserved = {"rows", "row", "duplicates", "outliers", "missing", "null", "empty", "punctuation", "stopwords"}
         col = _match_col(col_text, columns)
         parsed_value = _parse_value_token(value_raw)
-        if col and value_raw.lower() not in reserved:
+        value_without_quotes = value_raw.strip(" '\"")
+        # Punctuation such as a comma means "remove this text from cells",
+        # not "drop rows whose value is a comma". Leave those commands for
+        # the text-cleaning handler below; accept numbers and ordinary words
+        # as exact row values.
+        is_scalar_value = bool(
+            re.fullmatch(r"-?\d+(?:\.\d+)?", value_without_quotes)
+            or re.fullmatch(r"[A-Za-z0-9_\-]+", value_without_quotes)
+            or (value_raw[:1] in "'\"" and value_raw[-1:] == value_raw[:1])
+        )
+        if col and value_raw.lower() not in reserved and is_scalar_value:
             series = df[col]
             if pd.api.types.is_numeric_dtype(series) and isinstance(parsed_value, (int, float)):
                 mask = pd.to_numeric(series, errors="coerce") == parsed_value

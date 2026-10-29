@@ -111,7 +111,11 @@ def _in_protected_span(pos: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= pos < end for start, end in spans)
 
 
-def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tuple[str, str]]]:
+def _correct_keyword_typos(
+    text: str,
+    keywords: set[str],
+    protected_words: set[str] | None = None,
+) -> tuple[str, list[tuple[str, str]]]:
     """Correct likely misspelled command words while leaving column/value text alone.
 
     This is intentionally conservative: it only corrects standalone words that are
@@ -127,6 +131,7 @@ def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tup
     prev_word: list[str] = [""]
     protected_streak: list[bool] = [False]  # protection carried across "and"
     protected_spans = _protected_value_spans(text)
+    protected_words = {str(word).lower() for word in (protected_words or set())}
 
     def replace(match: re.Match) -> str:
         word = match.group(0)
@@ -144,7 +149,10 @@ def _correct_keyword_typos(text: str, keywords: set[str]) -> tuple[str, list[tup
         )
         protected_streak[0] = is_protected
 
-        if lower in keywords or len(lower) < 4 or lower.isdigit():
+        # Dataset column names are user data, not command keywords. In
+        # particular, a column called "name" must never be autocorrected to
+        # the keyword "named" inside commands such as "remove comma in name".
+        if lower in protected_words or lower in keywords or len(lower) < 4 or lower.isdigit():
             return word
         if is_protected:
             return word
