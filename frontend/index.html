@@ -31,6 +31,41 @@ body{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-seri
    the sage-green used by the dark workbench palette. */
 html[data-theme="light"]{--bg:#f3f5f7;--panel:#ffffff;--panel-border:#cbd4dc;--ink:#1f2933;--ink-dim:#647381;--accent:#9a691b;--accent-dim:#80601f;--cyan:#111820;--good:#111820;--bad:#b34b4b;}
 html[data-theme="light"] body{background:var(--bg);}
+/* Light mode is intended for longer reading sessions. The dark theme's
+   compact, terminal-like sizing makes normal labels and help text too small
+   against a bright background, so give readable content a modest bump while
+   keeping tiny status badges and decorative metadata compact. */
+html[data-theme="light"] body{font-size:15px;}
+html[data-theme="light"] .panel h2{font-size:14px;}
+html[data-theme="light"] .subhead{font-size:13px;}
+html[data-theme="light"] .hint,
+html[data-theme="light"] .narrative,
+html[data-theme="light"] .clean-chat-msg,
+html[data-theme="light"] .modal-body,
+html[data-theme="light"] .saved-run-row,
+html[data-theme="light"] .saved-pred-row{font-size:14px;}
+html[data-theme="light"] button{font-size:13px;}
+html[data-theme="light"] button.tiny{font-size:11px;}
+html[data-theme="light"] select,
+html[data-theme="light"] input[type=text],
+html[data-theme="light"] input[type=number],
+html[data-theme="light"] textarea{font-size:13px;}
+html[data-theme="light"] table,
+html[data-theme="light"] .preview-table,
+html[data-theme="light"] .pv-table{font-size:13px;}
+html[data-theme="light"] th{font-size:11px;}
+html[data-theme="light"] .preview-table th .col-type{font-size:10px;}
+html[data-theme="light"] .preview-table td{font-size:13px;}
+html[data-theme="light"] .chat-msg,
+html[data-theme="light"] .fc-msg{font-size:14px;}
+html[data-theme="light"] .chat-msg.user{font-size:13px;}
+html[data-theme="light"] .chat-msg pre,
+html[data-theme="light"] .fc-msg pre{font-size:12.5px;}
+html[data-theme="light"] .clean-chat-input-row input{font-size:14px;}
+html[data-theme="light"] .clean-option .co-label,
+html[data-theme="light"] .clean-option .co-desc,
+html[data-theme="light"] .inline-option{font-size:12px;}
+html[data-theme="light"] .filter-value-list label{font-size:12px;}
 html[data-theme="light"] .step,
 html[data-theme="light"] .panel,
 html[data-theme="light"] .modal-box,
