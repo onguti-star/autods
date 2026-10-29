@@ -62,10 +62,24 @@ logger = logging.getLogger("autods.main")
 
 app = FastAPI(title="AutoDS")
 
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB
-MAX_REMOTE_BYTES = 200 * 1024 * 1024  # 200 MB
-MAX_DATAFRAME_ROWS = 5_500_000  # 5.5 million rows
-MAX_DATAFRAME_COLUMNS = 1_000  # 1000 columns
+def _env_int(name: str, default: int) -> int:
+    """Read a positive deployment limit while keeping desktop defaults."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Ignoring invalid integer environment variable %s=%r", name, raw)
+        return default
+
+
+# Defaults preserve local/desktop behaviour. Render can set the *_MB and
+# *_ROWS variables without requiring a separate code branch or deployment.
+MAX_UPLOAD_BYTES = _env_int("AUTODS_MAX_UPLOAD_MB", 200) * 1024 * 1024
+MAX_REMOTE_BYTES = _env_int("AUTODS_MAX_REMOTE_MB", 200) * 1024 * 1024
+MAX_DATAFRAME_ROWS = _env_int("AUTODS_MAX_ROWS", 5_500_000)
+MAX_DATAFRAME_COLUMNS = _env_int("AUTODS_MAX_COLUMNS", 1_000)
 
 
 # --- Bring-your-own-model import (see import_model below) -----------------
@@ -2460,7 +2474,7 @@ def train(session_id: str, req: TrainRequest):
     # a new one, so the user never loses a trained model when switching targets.
     if session.models and session.target and session.target != req.target:
         run_id = str(uuid.uuid4())
-        session.saved_runs[run_id] = {
+        session.add_saved_run(run_id, {
             "name": f"Auto-saved: {session.target}",
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "target": session.target,
@@ -2476,7 +2490,8 @@ def train(session_id: str, req: TrainRequest):
             # when this model finished training and is exactly what belongs to
             # session.models/session.best_model_name at this point.
             "feature_importance": session.feature_importance,
-        }
+            "auto_saved": True,
+        })
 
     # Starting a new run always replaces any previous one for this session.
     _cleanup_train_job(session_id)

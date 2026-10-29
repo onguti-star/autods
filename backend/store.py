@@ -153,7 +153,11 @@ def _dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class Session:
-    UNDO_LIMIT = 20   # cap history depth so long cleaning sessions don't grow memory unbounded
+    # These defaults preserve the desktop app's behaviour while allowing a
+    # small Render instance to tighten the bounds through environment vars.
+    UNDO_LIMIT = max(0, int(os.getenv("AUTODS_UNDO_LIMIT", "20")))
+    UNDO_MAX_BYTES = max(0, int(os.getenv("AUTODS_UNDO_MAX_MB", "64"))) * 1024 * 1024
+    MAX_AUTO_SAVED_RUNS = max(0, int(os.getenv("AUTODS_MAX_AUTO_SAVED_RUNS", "3")))
 
     def __init__(self, df: pd.DataFrame, filename: str, session_id: str | None = None):
         self.id = session_id or str(uuid.uuid4())
@@ -188,6 +192,7 @@ class Session:
                                                       # (reliable) instead of a POST + blob download (unreliable
                                                       # on several mobile browsers)
         self._undo_stack: list = []               # snapshots of df taken before each cleaning change
+        self._undo_bytes = 0
         self.saved_runs: dict = {}                # run_id -> saved training snapshot (see main.py /api/train_runs)
         self.saved_predictions: dict = {}         # prediction_id -> prediction result snapshot
         self.imported_models: dict = {}           # model_id -> {pipeline, problem_type, feature_columns,
@@ -232,9 +237,20 @@ class Session:
     def snapshot_before_change(self):
         """Call this right before mutating self.df, from any cleaning code path
         (structured 'Clean now', chat commands, type changes). Powers the Undo button."""
+        if self.UNDO_LIMIT <= 0 or self.UNDO_MAX_BYTES <= 0:
+            return
+        snapshot_bytes = int(self.df.memory_usage(index=True, deep=True).sum())
+        # Do not create a snapshot that can consume the entire configured undo
+        # budget by itself. This is especially important for large uploads.
+        if snapshot_bytes > self.UNDO_MAX_BYTES:
+            return
         self._undo_stack.append(self.df.copy())
-        if len(self._undo_stack) > self.UNDO_LIMIT:
-            self._undo_stack.pop(0)
+        self._undo_bytes += snapshot_bytes
+        while self._undo_stack and (
+            len(self._undo_stack) > self.UNDO_LIMIT or self._undo_bytes > self.UNDO_MAX_BYTES
+        ):
+            removed = self._undo_stack.pop(0)
+            self._undo_bytes -= int(removed.memory_usage(index=True, deep=True).sum())
 
     def save_to_disk(self):
         """Persist the current df state to disk (called after any mutation)."""
@@ -334,8 +350,25 @@ class Session:
         if not self._undo_stack:
             return False
         self.df = self._undo_stack.pop()
+        self._undo_bytes = sum(int(frame.memory_usage(index=True, deep=True).sum()) for frame in self._undo_stack)
         self.save_to_disk()
         return True
+
+    def add_saved_run(self, run_id: str, run: dict):
+        """Add a saved run and evict only the oldest automatic snapshots.
+
+        Named runs are user-owned and are never silently removed here. Automatic
+        snapshots are a safety net, so they have a small bounded history to
+        prevent fitted model pipelines accumulating indefinitely in RAM.
+        """
+        self.saved_runs[run_id] = run
+        auto_ids = [
+            rid for rid, saved in self.saved_runs.items()
+            if saved.get("auto_saved")
+        ]
+        while len(auto_ids) > self.MAX_AUTO_SAVED_RUNS:
+            oldest_id = auto_ids.pop(0)
+            self.saved_runs.pop(oldest_id, None)
 
     def _autosave_current_training(self):
         """If there's a trained model on the current data, snapshot it into
@@ -364,7 +397,7 @@ class Session:
                 return
 
         run_id = str(uuid.uuid4())
-        self.saved_runs[run_id] = {
+        self.add_saved_run(run_id, {
             "name": f"Auto-saved: {self.target}",
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "target": self.target,
@@ -376,7 +409,7 @@ class Session:
             "feature_columns": self.feature_columns,
             "feature_importance": self.feature_importance or [],
             "auto_saved": True,   # marks this as an automatic snapshot (not a user-named run)
-        }
+        })
 
     def clear_current_training(self, auto_preserve: bool = True):
         """Drop models tied to the previous current dataframe.
@@ -449,6 +482,7 @@ def get_session(session_id: str) -> "Session":
     s.cleaning_actions = meta.get("cleaning_actions", [])
     s.last_visualization = {}
     s._undo_stack = []
+    s._undo_bytes = 0
     s.saved_runs = {}
     s.imported_models = {}  # not persisted -- see the field comment in __init__
     s.saved_predictions = meta.get("saved_predictions", {})

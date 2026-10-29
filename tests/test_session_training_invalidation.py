@@ -83,6 +83,30 @@ def test_repeated_clear_does_not_duplicate_runs():
     assert len(auto_saved) == 1
 
 
+def test_automatic_saved_runs_are_bounded():
+    session = Session(pd.DataFrame({"x": [1, 2], "y": [3, 4]}), "data.csv")
+
+    for index in range(Session.MAX_AUTO_SAVED_RUNS + 2):
+        session.add_saved_run(
+            f"auto_{index}",
+            {"auto_saved": True, "name": f"Auto {index}"},
+        )
+
+    automatic = [run for run in session.saved_runs.values() if run.get("auto_saved")]
+    assert len(automatic) == Session.MAX_AUTO_SAVED_RUNS
+    assert "auto_0" not in session.saved_runs
+
+
+def test_undo_snapshots_respect_memory_budget(monkeypatch):
+    session = Session(pd.DataFrame({"value": list(range(100))}), "data.csv")
+    monkeypatch.setattr(Session, "UNDO_LIMIT", 20)
+    monkeypatch.setattr(Session, "UNDO_MAX_BYTES", 1)
+
+    session.snapshot_before_change()
+
+    assert not session.can_undo()
+
+
 def test_invalidate_training_on_schema_change_clears_stale_columns():
     """If a cleaned dataset renames or drops columns, any stale training state
     for the previous schema must be discarded immediately so re-training uses
