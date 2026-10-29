@@ -294,7 +294,7 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .chat-msg.bot{background:rgba(95,212,214,0.06);border-left:2px solid var(--cyan);}
 .chat-msg pre{margin:9px 0 0;padding:12px;overflow:auto;background:#05070a;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.55;color:var(--ink);}
 .chat-msg code{font-family:'IBM Plex Mono',monospace;}
-.chat-msg .code-lang{display:block;margin-bottom:6px;color:var(--accent);font-size:9px;text-transform:uppercase;letter-spacing:.6px;}
+.chat-msg .code-lang,.fc-msg .code-lang{display:block;margin-bottom:6px;color:var(--accent);font-size:9px;text-transform:uppercase;letter-spacing:.6px;}
 .code-keyword{color:#c586c0;}.code-builtin{color:#4ec9b0;}.code-function{color:#dcdcaa;}.code-string{color:#ce9178;}.code-number{color:#b5cea8;}.code-comment{color:#6a9955;font-style:italic;}
 html[data-theme="light"] .code-keyword{color:#8a2d8a;}html[data-theme="light"] .code-builtin{color:#087f6b;}html[data-theme="light"] .code-function{color:#795900;}html[data-theme="light"] .code-string{color:#a33b13;}html[data-theme="light"] .code-number{color:#3f6f1f;}html[data-theme="light"] .code-comment{color:#4f7b3d;}
 .command-action{color:#569cd6;font-weight:600;}.command-subject{color:#c586c0;}.command-number{color:#4ec9b0;}.command-operator{color:#dcdcaa;}
@@ -3176,8 +3176,8 @@ function drawCorrelation(corr){
     options:{plugins:{legend:{display:false},
         tooltip:{callbacks:{label:c=>`${L[c.raw.y]} × ${L[c.raw.x]}: ${(Number(M[c.raw.y][c.raw.x]) || 0).toFixed(3)}`}},
         corrValueLabels:{matrix:M, ink:inks, px:radius * 2}},
-      scales:{x:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{color:'#1f3a5f'}},
-              y:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{color:'#1f3a5f'}}}}});
+      scales:{x:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{display:false}},
+              y:{type:'linear',min:-0.5,max:L.length-0.5,ticks:{stepSize:1,callback:v=>L[v]||"",color:'#8fa3bc',font:{family:"IBM Plex Mono",size:8}},grid:{display:false}}}}});
   if(legend){ legend.innerHTML = corrScaleLegendHtml(); legend.classList.remove("hidden"); }
   populateCorrelationPicker(corr);
 }
@@ -3618,8 +3618,8 @@ function renderSimulationResult(data){
     options: {
       plugins: {legend: {display: false}},
       scales: {
-        x: {ticks: {color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45}, grid:{color:"#1f3a5f"}},
-        y: {ticks: {color:"#8fa3bc"}, grid:{color:"#1f3a5f"}}
+        x: {ticks: {color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9},maxRotation:45}, grid:{display:false}},
+        y: {ticks: {color:"#8fa3bc"}, grid:{color:"rgba(143,163,188,.14)"}}
       }
     }
   });
@@ -4726,7 +4726,7 @@ function clearCustomCharts(){
 // CHART RENDERING
 let vizTheme = localStorage.getItem("autods.viz.theme") || "dark";
 function vizTextColor(){ return vizTheme === "light" ? "#3d4a5c" : "#8fa3bc"; }
-function vizGridColor(){ return vizTheme === "light" ? "#dde3ec" : "#1f3a5f"; }
+function vizGridColor(){ return vizTheme === "light" ? "rgba(61,74,92,.12)" : "rgba(143,163,188,.14)"; }
 function vizBorderColor(){ return vizTheme === "light" ? "#ffffff" : "#0d1b2e"; }
 
 // ---------- CHART COLOURS ----------
@@ -4917,7 +4917,7 @@ function drawChart(canvasId, ch){
         pointHoverRadius:radius + 2.5,
         pointHoverBorderWidth:1.5}]},
       options:{plugins:{legend:{display:false}},
-        scales:{x:{title:{display:true,text:ch.x,color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}},
+        scales:{x:{title:{display:true,text:ch.x,color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{display:false}},
                 y:{title:{display:true,text:ch.y||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     return;
   }
@@ -4932,7 +4932,7 @@ function drawChart(canvasId, ch){
         pointBorderWidth:vizIsVivid() ? 1.2 : 1,
         pointHoverBorderWidth:2}]},
       options:{plugins:{legend:{display:false}},
-        scales:{x:{title:{display:true,text:ch.x,color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}},
+        scales:{x:{title:{display:true,text:ch.x,color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{display:false}},
                 y:{title:{display:true,text:ch.y||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     return;
   }
@@ -4952,7 +4952,7 @@ function drawChart(canvasId, ch){
       makeChart(canvasId,{type:"bar",
         data:{labels, datasets:[{label:"Sum",data:sums,backgroundColor:vizFill(ch.color||vizPaletteAt(0), "bb")}]},
         options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{display:false},tooltip:boxplotTooltipOptions(ch)},
-          scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{color:vizGridColor()}},
+          scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{display:false}},
                   y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     } else {
       // Statistical mode: Q1 / Median / Q3 as grouped bars
@@ -4966,7 +4966,7 @@ function drawChart(canvasId, ch){
           {label:"Q3",    data:q3s,    backgroundColor:vizFill(vizPaletteAt(2), "55")},
         ]},
         options:{interaction:{mode:"nearest",intersect:true},plugins:{legend:{labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}}},tooltip:boxplotTooltipOptions(ch)},
-          scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{color:vizGridColor()}},
+          scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9}},grid:{display:false}},
                   y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     }
     return;
@@ -4983,7 +4983,7 @@ function drawChart(canvasId, ch){
         pointBorderWidth:vizIsVivid()?1:0,
         pointRadius:ch.sampled?0:(vizIsVivid()?2.5:2),tension:0.3}]},
       options:{plugins:{legend:{display:false}},
-        scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:vizGridColor()}},
+        scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{display:false}},
                 y:{title:{display:true,text:ch.y_label||ch.y||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     return;
   }
@@ -5232,7 +5232,7 @@ function drawChart(canvasId, ch){
         pointBorderWidth:vizIsVivid()?1:0,
         pointRadius:vizIsVivid()?2.5:2,tension:0.3}]},
       options:{plugins:{legend:{display:false}},
-        scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{color:vizGridColor()}},
+        scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:12},grid:{display:false}},
                 y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     return;
   }
@@ -5324,7 +5324,7 @@ function drawChart(canvasId, ch){
     makeChart(canvasId,{type:"line",
       data:{labels:ch.labels,datasets:[{label:ch.x||"Density",data:ch.values,borderColor:densityColor,backgroundColor:vizWash(densityColor, "22"),borderWidth:vizIsVivid()?2.5:2,fill:true,pointRadius:0,tension:0.4}]},
       options:{plugins:{legend:{display:false}},
-        scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:10},grid:{color:vizGridColor()},title:{display:true,text:ch.x,color:vizTextColor()}},
+        scales:{x:{ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxTicksLimit:10},grid:{display:false},title:{display:true,text:ch.x,color:vizTextColor()}},
                 y:{ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
     return;
   }
@@ -5747,7 +5747,7 @@ function drawChart(canvasId, ch){
       options:{
         plugins:{legend:{display:true,position:"bottom",labels:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},boxWidth:12}}},
         scales:{
-          x:{stacked:true,title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:vizGridColor()}},
+          x:{stacked:true,title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{display:false}},
           y:{stacked:true,title:{display:true,text:ch.y_label||"Count",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}
         }
       }});
@@ -5762,7 +5762,7 @@ function drawChart(canvasId, ch){
       borderColor: vizIsVivid() ? vizEdgeColor() : "transparent",
       borderWidth: vizIsVivid() ? 1 : 0}]},
     options:{plugins:{legend:{display:false}},
-      scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{color:vizGridColor()}},
+      scales:{x:{title:{display:true,text:ch.x_label||ch.x||"",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor(),font:{family:"IBM Plex Mono",size:9},maxRotation:45},grid:{display:false}},
               y:{title:{display:true,text:ch.y_label||"Count",color:vizTextColor(),font:{size:9}},ticks:{color:vizTextColor()},grid:{color:vizGridColor()}}}}});
 }
 
@@ -6216,7 +6216,7 @@ function renderImportanceInto(canvasId, hintId, items){
   makeChart(canvasId,{type:"bar",
     data:{labels:items.map(i=>i.feature.split("__").pop()),datasets:[{data:items.map(i=>i.importance),backgroundColor:"#ffb627bb"}]},
     options:{indexAxis:'y',plugins:{legend:{display:false}},
-      scales:{x:{ticks:{color:"#8fa3bc"},grid:{color:"#1f3a5f"}},y:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}},grid:{display:false}}}}});
+      scales:{x:{ticks:{color:"#8fa3bc"},grid:{color:"rgba(143,163,188,.14)"}},y:{ticks:{color:"#8fa3bc",font:{family:"IBM Plex Mono",size:9}},grid:{display:false}}}}});
 }
 function renderImportance(items){ renderImportanceInto("importanceCanvas", "importanceHint", items); }
 
@@ -6327,8 +6327,8 @@ function renderUnsupervisedChart(canvasId, vizData){
         tooltip: {mode: 'nearest'}
       },
       scales: {
-        x: {title: {display: true, text: vizData.x_label || 'Feature 1', color: '#8fa3bc'}, ticks: {color: '#8fa3bc'}, grid: {color: '#1f3a5f'}},
-        y: {title: {display: true, text: vizData.y_label || 'Feature 2', color: '#8fa3bc'}, ticks: {color: '#8fa3bc'}, grid: {color: '#1f3a5f'}}
+        x: {title: {display: true, text: vizData.x_label || 'Feature 1', color: '#8fa3bc'}, ticks: {color: '#8fa3bc'}, grid: {color: 'rgba(143,163,188,.14)'}},
+        y: {title: {display: true, text: vizData.y_label || 'Feature 2', color: '#8fa3bc'}, ticks: {color: '#8fa3bc'}, grid: {color: 'rgba(143,163,188,.14)'}}
       }
     }
   });
@@ -6462,14 +6462,14 @@ $("analyzeClustersBtn").addEventListener("click", async () => {
             scales: {
               x: { 
                 ticks: {color: '#8fa3bc', font: {family: 'IBM Plex Mono', size: 9}}, 
-                grid: {color: '#1f3a5f'},
+                grid: {display:false},
                 title: {display: true, text: 'Number of Clusters (K)', color: '#8fa3bc'}
               },
               y: { 
                 type: 'linear',
                 position: 'left',
                 ticks: {color: '#8fa3bc'}, 
-                grid: {color: '#1f3a5f'},
+                grid: {color: 'rgba(143,163,188,.14)'},
                 title: {display: true, text: 'Inertia', color: '#5fd4d6'}
               },
               y1: { 
@@ -7237,8 +7237,8 @@ function renderFcChart(data){
     options: {
       plugins: {legend: {labels: {color: "#8fa3bc", font: {family: "IBM Plex Mono", size: 10}}}},
       scales: {
-        x: {ticks: {color:"#8fa3bc", font:{family:"IBM Plex Mono", size:9}, maxRotation:45}, grid:{color:"#1f3a5f"}},
-        y: {ticks: {color:"#8fa3bc"}, grid:{color:"#1f3a5f"}}
+        x: {ticks: {color:"#8fa3bc", font:{family:"IBM Plex Mono", size:9}, maxRotation:45}, grid:{display:false}},
+        y: {ticks: {color:"#8fa3bc"}, grid:{color:"rgba(143,163,188,.14)"}}
       }
     }
   });
@@ -7899,8 +7899,8 @@ function renderModelCardFcChart(idx, data, chartType){
       options: {
         plugins: {legend: {labels: {color: "#8fa3bc", font: {family: "IBM Plex Mono", size: 10}}}},
         scales: {
-          x: {ticks: {color:"#8fa3bc", font:{family:"IBM Plex Mono", size:9}, maxRotation:45}, grid:{color:"#1f3a5f"}},
-          y: {ticks: {color:"#8fa3bc"}, grid:{color:"#1f3a5f"}}
+          x: {ticks: {color:"#8fa3bc", font:{family:"IBM Plex Mono", size:9}, maxRotation:45}, grid:{display:false}},
+          y: {ticks: {color:"#8fa3bc"}, grid:{color:"rgba(143,163,188,.14)"}}
         }
       }
     });
@@ -7934,7 +7934,7 @@ function renderModelCardFcChart(idx, data, chartType){
           plugins: {legend: {display:false}},
           scales: {
             x: {ticks:{color:"#8fa3bc", font:{size:9}, maxRotation:45}, grid:{display:false}},
-            y: {ticks:{color:"#8fa3bc"}, grid:{color:"#1f3a5f"}, beginAtZero:true}
+            y: {ticks:{color:"#8fa3bc"}, grid:{color:"rgba(143,163,188,.14)"}, beginAtZero:true}
           }
         }
       });
@@ -9513,7 +9513,7 @@ html[data-theme="light"] #floatInputEditor .input-highlight{color:var(--ink);}
   const statusBar  = document.getElementById("floatStatus");
 
   function looksLikeCode(value){
-    return /```|\b(import|from|def|return|for|if|else|class|lambda|print)\b|\b(pd|np|df)\s*\.|[A-Za-z_]\w*\s*=/.test(value);
+    return /```|#.*$|\b(import|from|def|return|for|if|else|class|lambda|print)\b|\b(pd|np|df)\s*\.|[A-Za-z_]\w*\s*=(?!=)|[A-Za-z_]\w*\(/m.test(value);
   }
   function looksLikeCommand(value){
     return /\b(remove|delete|drop|keep|fill|replace|rename|create|add|split|extract|convert|trim|strip|reset|undo|clean|filter|show|find|calculate|predict)\b/i.test(value);
@@ -9521,11 +9521,14 @@ html[data-theme="light"] #floatInputEditor .input-highlight{color:var(--ink);}
   function syncInputHighlight(){
     if(!inputHighlight) return;
     const value = input.value || "";
-    // Plain questions stay plain. Once the user starts writing an expression,
-    // assignment, import, or code fence, the editor switches to token colors.
-    inputHighlight.innerHTML = looksLikeCommand(value)
-      ? highlightAssistantText(value)
-      : looksLikeCode(value) ? highlightCode(value) : escapeHtml(value);
+    // A real code signal (assignment, a call, an import/def, a comment, a
+    // fence) always wins — otherwise a stray word like "filter" inside a
+    // comment would knock the whole box out of code-coloring. Plain English
+    // commands only get command-coloring when nothing reads as code; plain
+    // questions stay uncolored.
+    inputHighlight.innerHTML = looksLikeCode(value)
+      ? highlightCode(value)
+      : looksLikeCommand(value) ? highlightAssistantText(value) : escapeHtml(value);
     inputHighlight.scrollTop = input.scrollTop;
     inputHighlight.scrollLeft = input.scrollLeft;
     input.style.height = "auto";

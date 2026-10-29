@@ -50,14 +50,17 @@ PyInstaller can't cross-compile, so build on the OS you want to target:
 ## Building all three with GitHub (free, no credit card)
 
 1. Push the project to GitHub (a public repository gets free build minutes).
-2. **Actions → Build desktop apps → Run workflow** builds Linux, Windows and
-   macOS versions; download them from the run's *Artifacts*.
+2. Every push to `main` builds Linux, Windows and macOS versions and refreshes
+   the rolling **latest** download. You can also use **Actions → Build desktop
+   apps → Run workflow** and download the run's *Artifacts*.
 3. To publish a release people can download:
 
        git tag v1.0.0
        git push origin v1.0.0
 
    The workflow attaches the three files to a GitHub Release automatically.
+   The `latest` release is refreshed from every pushed `main` commit; versioned
+   tags remain available as separate releases.
 
 ## Options
 

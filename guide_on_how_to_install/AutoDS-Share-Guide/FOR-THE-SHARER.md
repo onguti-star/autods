@@ -9,9 +9,10 @@ The project already has a GitHub Actions workflow (`.github/workflows/build-desk
 GitHub builds all three apps on its own machines, so you don't need a Windows or Mac.
 It works on a free account if the repository is public.
 
-**One-off test build** (no release): on GitHub open **Actions**, pick **Build desktop
-apps**, click **Run workflow**. About 15 to 25 minutes later the three builds appear as
-downloadable artifacts on that run.
+Every push to `main` builds all three apps and refreshes the rolling `latest`
+download. For a one-off test build, open **Actions**, pick **Build desktop apps**,
+and click **Run workflow**. About 15 to 25 minutes later the three builds appear
+as downloadable artifacts on that run.
 
 **A proper release** that peers can download:
 ```bash
@@ -75,6 +76,7 @@ folders), then commit.
 3. The Claude assistant's API key is stored in your user config folder, not in the
    project. Check there is no `.env` file and no key pasted into a source file:
    `grep -rniE "sk-ant|api_key *= *['\"]" backend desktop.py`.
-4. Bump the version in your tag (`v1.0.1`, `v1.1.0`) for each release so peers can tell
-   builds apart.
+4. Bump the version in your tag (`v1.0.1`, `v1.1.0`) for each versioned release so
+   peers can tell builds apart. The rolling `latest` release is refreshed from
+   `main` automatically.
 5. Tell peers which route to use: `START-HERE.md` is written for them.
