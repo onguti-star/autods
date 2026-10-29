@@ -677,7 +677,10 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, f"Split first word from '{source_col}' into '{first_col}' and '{rest_col}'."
 
     # ---- create new column with math expression ----
-    if any(term in ql for term in ("create", "add", "new column")):
+    # Match command words as words, not substrings. Without the word boundary,
+    # a source column such as ``year_added`` contains ``add`` and is mistaken
+    # for a create-column command.
+    if re.search(r"\b(?:create|add)\b", ql) or "new column" in ql:
         empty_col_name = _parse_empty_column_name(q)
         if empty_col_name:
             if empty_col_name in columns:

@@ -39,6 +39,15 @@ def test_drop_column_accepts_remove_delete_discard_and_erase_synonyms():
         assert list(result_df.columns) == ["amount"]
 
 
+def test_drop_column_name_containing_add_is_not_mistaken_for_add_command():
+    df = pd.DataFrame({"month_added": [1], "year_added": [2021], "amount": [10]})
+
+    result_df, message = run_command(df, "drop column year_added")
+
+    assert message == "Dropped column 'year_added'."
+    assert list(result_df.columns) == ["month_added", "amount"]
+
+
 def test_discard_rows_where_value_matches_remove_rows():
     df = pd.DataFrame({"status": ["paid", "cancelled", "paid"]})
 

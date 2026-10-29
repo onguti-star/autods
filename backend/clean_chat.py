@@ -1162,7 +1162,10 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         return new_df, msg
 
     # ---- create new column with math expression ----
-    if any(term in ql for term in ("create", "add", "new column")):
+    # Match command words as words, not substrings. Without the word boundary,
+    # a source column such as ``year_added`` contains ``add`` and is mistaken
+    # for a create-column command.
+    if re.search(r"\b(?:create|add)\b", ql) or "new column" in ql:
         # Pull an optional "before X" / "after X" clause out before any of the
         # patterns below run, so it doesn't get swallowed as part of an
         # expression or column name. Also treat "titled" the same as
