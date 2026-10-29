@@ -22,15 +22,50 @@
 </style>
 <script src="vendor/leaflet/leaflet.js"></script>
 <style>
-:root{--bg:#0d1b2e;--bg-grid:#16273f;--panel:#112239;--panel-border:#24405f;--ink:#e9eef5;--ink-dim:#8fa3bc;--accent:#ffb627;--accent-dim:#c98f1c;--cyan:#5fd4d6;--good:#5fd98c;--bad:#ef6f6f;}
+:root{--bg:#030507;--bg-grid:#030507;--panel:#080b0f;--panel-border:#1b252d;--ink:#e6ebee;--ink-dim:#8997a1;--accent:#d6a84f;--accent-dim:#a98339;--cyan:#83aaa3;--good:#9bc5a6;--bad:#e27777;--code-font:'Cascadia Code','JetBrains Mono','SFMono-Regular',Consolas,'Liberation Mono',monospace;}
 *{box-sizing:border-box;}html,body{margin:0;padding:0;}
-body{background-color:var(--bg);background-image:linear-gradient(var(--bg-grid) 1px,transparent 1px),linear-gradient(90deg,var(--bg-grid) 1px,transparent 1px);background-size:28px 28px;color:var(--ink);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;font-size:14px;}
+/* Solid graphite canvas: the former blue grid made the interface feel more
+   like a decorative dashboard than a focused data-science workbench. */
+body{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;font-size:14px;}
+/* In the light theme, use black as the structural/status accent instead of
+   the sage-green used by the dark workbench palette. */
+html[data-theme="light"]{--bg:#f3f5f7;--panel:#ffffff;--panel-border:#cbd4dc;--ink:#1f2933;--ink-dim:#647381;--accent:#9a691b;--accent-dim:#80601f;--cyan:#111820;--good:#111820;--bad:#b34b4b;}
+html[data-theme="light"] body{background:var(--bg);}
+html[data-theme="light"] .step,
+html[data-theme="light"] .panel,
+html[data-theme="light"] .modal-box,
+html[data-theme="light"] .bi-pane,
+html[data-theme="light"] .bi-tile:not(.chart-panel--map),
+html[data-theme="light"] .bi-kpi{background:var(--panel);}
+html[data-theme="light"] select,
+html[data-theme="light"] input[type=text],
+html[data-theme="light"] input[type=number],
+html[data-theme="light"] textarea,
+html[data-theme="light"] .filter-value-list,
+html[data-theme="light"] .preview-table th{background:#f8fafb;color:var(--ink);}
+html[data-theme="light"] .chat-msg pre,
+html[data-theme="light"] .fc-msg pre{background:#eef2f5;color:#26333d;}
+html[data-theme="light"] .chat-msg.user,
+html[data-theme="light"] .fc-msg.user{background:rgba(154,105,27,.09);}
+html[data-theme="light"] .chat-msg.bot,
+html[data-theme="light"] .fc-msg.bot{background:rgba(38,118,108,.07);}
+html[data-theme="light"] .bi-pane-head{background:#f1f4f6;}
+html[data-theme="light"] .bi-tile:hover{border-color:#9baab5;box-shadow:0 6px 22px rgba(42,55,66,.12);}
+html[data-theme="light"] .chart-panel{background:#fff;}
+html[data-theme="light"] .theme-toggle{background:transparent;color:var(--cyan);border-color:var(--panel-border);}
+html[data-theme="light"] .theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
+/* Editor-like typography for anything the user types or reads as code. */
+input,textarea,select,button,pre,code,.loading,.session-tag,.step,.subhead,
+.chat-msg,.fc-msg,#floatInput,#notesTextarea,#notesPreview{font-family:var(--code-font);}
+input[type=text],input[type=number],textarea,select,#floatInput,#notesTextarea{font-family:var(--code-font)!important;}
+html[data-theme="light"] #floatInput{background:#f8fafb;color:var(--ink);}
 ::selection{background:var(--accent);color:#1a1300;}
 header{padding:20px 34px 14px;border-bottom:1px solid var(--panel-border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
 .brand{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:19px;display:flex;align-items:center;gap:9px;}
 .brand .dot{width:8px;height:8px;background:var(--accent);border-radius:50%;box-shadow:0 0 8px var(--accent);}
 .brand small{color:var(--ink-dim);font-weight:400;font-size:11px;}
 .session-tag{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-dim);}
+.theme-toggle{font-family:var(--code-font);font-size:10px;padding:5px 11px;}
 main{width:100%;max-width:none;margin:0;padding:26px 34px 100px;}
 .stepper{display:flex;gap:3px;margin-bottom:24px;flex-wrap:wrap;}
 .step{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-dim);padding:5px 11px;border:1px solid var(--panel-border);background:var(--panel);display:flex;align-items:center;gap:5px;cursor:pointer;transition:border-color .15s;}
@@ -39,8 +74,8 @@ main{width:100%;max-width:none;margin:0;padding:26px 34px 100px;}
 .step.done{color:var(--good);border-color:#2a5a3a;}
 .step .n{font-weight:700;}
 .panel{position:relative;background:var(--panel);border:1px solid var(--panel-border);padding:22px;margin-bottom:20px;width:100%;box-sizing:border-box;}
-.panel::before{content:"";position:absolute;width:9px;height:9px;border-top:2px solid var(--accent-dim);border-left:2px solid var(--accent-dim);top:-1px;left:-1px;}
-.panel::after{content:"";position:absolute;width:9px;height:9px;border-bottom:2px solid var(--accent-dim);border-right:2px solid var(--accent-dim);bottom:-1px;right:-1px;}
+/* Keep panels clean and rectangular; no corner brackets or decorative boxes. */
+.panel::before,.panel::after{display:none;}
 .panel h2{font-family:'IBM Plex Mono',monospace;font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:0 0 14px;display:flex;align-items:center;gap:8px;}
 .panel h2 .idx{color:var(--accent);}
 .subhead{font-family:'IBM Plex Mono',monospace;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--ink-dim);margin:18px 0 10px;}
@@ -57,7 +92,7 @@ button.sec{background:transparent;color:var(--cyan);border:1px solid var(--panel
 button.sec:hover{border-color:var(--cyan);}
 button.dl{background:transparent;color:var(--good);border:1px solid var(--good);}
 button.dl:hover{background:rgba(95,217,140,0.08);}
-select,input[type=text],input[type=number]{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--ink);border:1px solid var(--panel-border);padding:7px 10px;font-size:12px;}
+select,input[type=text],input[type=number]{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--ink);border:1px solid var(--panel-border);padding:7px 10px;font-size:12px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--panel-border);}
 th{font-family:'IBM Plex Mono',monospace;color:var(--ink-dim);font-weight:500;text-transform:uppercase;font-size:10px;letter-spacing:.5px;}
@@ -114,7 +149,7 @@ html,body{overflow-x:hidden;}
 .pred-field label{font-size:9px;color:var(--ink-dim);font-family:'IBM Plex Mono',monospace;text-transform:uppercase;}
 button.tiny{padding:4px 8px;font-size:10px;}
 .filter-value-actions{display:flex;gap:6px;margin-bottom:4px;}
-.filter-value-list{max-height:150px;overflow-y:auto;border:1px solid var(--panel-border);padding:6px 8px;background:#0d1b2e;display:flex;flex-direction:column;gap:2px;}
+.filter-value-list{max-height:150px;overflow-y:auto;border:1px solid var(--panel-border);padding:6px 8px;background:#05070a;display:flex;flex-direction:column;gap:2px;}
 .filter-value-list label{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);text-transform:none;cursor:pointer;}
 .filter-value-list input[type=checkbox]{margin:0;cursor:pointer;}
 .filter-value-list .fv-truncated{color:var(--ink-dim);font-size:10px;margin-top:4px;}
@@ -257,9 +292,13 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .chat-msg{padding:8px 12px;margin-bottom:7px;font-size:13px;line-height:1.55;}
 .chat-msg.user{background:rgba(255,182,39,0.07);border-left:2px solid var(--accent);font-family:'IBM Plex Mono',monospace;font-size:12px;}
 .chat-msg.bot{background:rgba(95,212,214,0.06);border-left:2px solid var(--cyan);}
-.chat-msg pre{margin:9px 0 0;padding:12px;overflow:auto;background:#081421;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.55;color:var(--ink);}
+.chat-msg pre{margin:9px 0 0;padding:12px;overflow:auto;background:#05070a;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.55;color:var(--ink);}
 .chat-msg code{font-family:'IBM Plex Mono',monospace;}
 .chat-msg .code-lang{display:block;margin-bottom:6px;color:var(--accent);font-size:9px;text-transform:uppercase;letter-spacing:.6px;}
+.code-keyword{color:#c586c0;}.code-builtin{color:#4ec9b0;}.code-function{color:#dcdcaa;}.code-string{color:#ce9178;}.code-number{color:#b5cea8;}.code-comment{color:#6a9955;font-style:italic;}
+html[data-theme="light"] .code-keyword{color:#8a2d8a;}html[data-theme="light"] .code-builtin{color:#087f6b;}html[data-theme="light"] .code-function{color:#795900;}html[data-theme="light"] .code-string{color:#a33b13;}html[data-theme="light"] .code-number{color:#3f6f1f;}html[data-theme="light"] .code-comment{color:#4f7b3d;}
+.command-action{color:#569cd6;font-weight:600;}.command-subject{color:#c586c0;}.command-number{color:#4ec9b0;}.command-operator{color:#dcdcaa;}
+html[data-theme="light"] .command-action{color:#07599c;}html[data-theme="light"] .command-subject{color:#8a2d8a;}html[data-theme="light"] .command-number{color:#087f6b;}html[data-theme="light"] .command-operator{color:#795900;}
 .chat-table-wrap{overflow-x:auto;margin-top:9px;max-height:320px;overflow-y:auto;}
 .chat-table-wrap .preview-table{font-size:10px;}
 .chat-input-row{display:flex;gap:7px;}
@@ -283,8 +322,7 @@ button.tiny{padding:4px 8px;font-size:10px;}
 /* close confirmation modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;}
 .modal-box{background:var(--panel);border:1px solid var(--panel-border);padding:28px 32px;max-width:400px;width:90%;position:relative;}
-.modal-box::before{content:"";position:absolute;width:9px;height:9px;border-top:2px solid var(--accent-dim);border-left:2px solid var(--accent-dim);top:-1px;left:-1px;}
-.modal-box::after{content:"";position:absolute;width:9px;height:9px;border-bottom:2px solid var(--accent-dim);border-right:2px solid var(--accent-dim);bottom:-1px;right:-1px;}
+.modal-box::before,.modal-box::after{display:none;}
 .modal-title{font-family:'IBM Plex Mono',monospace;font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--bad);margin:0 0 10px;}
 .modal-body{font-size:13px;color:var(--ink-dim);margin-bottom:20px;line-height:1.6;}
 .modal-body strong{color:var(--ink);}
@@ -306,7 +344,7 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .src-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:5px 12px;border:1px solid var(--panel-border);cursor:pointer;color:var(--ink-dim);background:transparent;}
 .src-tab.active{color:var(--accent);border-color:var(--accent-dim);}
 .src-panel{display:none;}.src-panel.active{display:block;}
-textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--ink);border:1px solid var(--panel-border);padding:8px 10px;font-size:11px;width:100%;resize:vertical;}
+textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--ink);border:1px solid var(--panel-border);padding:8px 10px;font-size:11px;width:100%;resize:vertical;}
 .clean-options{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:14px;}
 .clean-option{display:flex;align-items:flex-start;gap:7px;padding:8px 10px;border:1px solid var(--panel-border);}
 .clean-option input[type=checkbox]{margin-top:2px;accent-color:var(--accent);flex-shrink:0;}
@@ -323,7 +361,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .corr-scale .cs-cell{flex:1;max-width:64px;height:22px;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;border:1px solid rgba(255,255,255,0.06);}
 .corr-legend .cl-note{margin:0;font-size:11.5px;color:var(--ink-dim);line-height:1.5;}
 .preview-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;}
-.preview-table th{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;padding:8px 12px;border:1px solid var(--panel-border);text-align:left;position:sticky;top:0;}
+.preview-table th{font-family:'IBM Plex Mono',monospace;background:#05070a;padding:8px 12px;border:1px solid var(--panel-border);text-align:left;position:sticky;top:0;}
 .preview-table th .col-name{color:var(--ink);font-weight:600;}
 .preview-table th .col-type{display:block;color:var(--accent);font-size:9px;font-weight:400;margin-top:2px;text-transform:uppercase;letter-spacing:.5px;}
 .preview-table td{padding:7px 12px;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;color:var(--ink-dim);}
@@ -386,7 +424,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 
 .bi-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:var(--bi-gap);margin-bottom:var(--bi-gap);}
 .bi-kpis:empty{display:none;}
-.bi-kpi{position:relative;background:#0f2036;border:1px solid var(--panel-border);border-left:3px solid var(--accent);border-radius:4px;padding:10px 12px 9px;min-width:0;overflow:hidden;}
+.bi-kpi{position:relative;background:#0b0f14;border:1px solid var(--panel-border);border-left:3px solid var(--accent);border-radius:4px;padding:10px 12px 9px;min-width:0;overflow:hidden;}
 .bi-kpi:nth-child(4n+2){border-left-color:var(--cyan);}
 .bi-kpi:nth-child(4n+3){border-left-color:var(--good);}
 .bi-kpi:nth-child(4n+4){border-left-color:#a78bfa;}
@@ -401,8 +439,8 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .bi-workspace.no-filters.no-build{grid-template-columns:minmax(0,1fr);}
 .bi-workspace.no-filters .bi-pane-filters,.bi-workspace.no-build .bi-pane-build{display:none;}
 
-.bi-pane{background:#0f2036;border:1px solid var(--panel-border);border-radius:4px;position:sticky;top:10px;max-height:calc(100vh - 20px);overflow:auto;}
-.bi-pane-head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--cyan);position:sticky;top:0;background:#0f2036;z-index:2;}
+.bi-pane{background:#0b0f14;border:1px solid var(--panel-border);border-radius:4px;position:sticky;top:10px;max-height:calc(100vh - 20px);overflow:auto;}
+.bi-pane-head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--cyan);position:sticky;top:0;background:#0b0f14;z-index:2;}
 .bi-pane-head .icon-btn{padding:2px 7px;font-size:12px;}
 .bi-pane-body{padding:12px;}
 .bi-field-label{font-family:'IBM Plex Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-dim);margin:0 0 6px;}
@@ -459,7 +497,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
 .bi-tiles[data-cols="3"] .bi-tile[data-wide]{--bi-def:8;}
 
 .bi-tile{grid-column:span var(--bi-span,var(--bi-def,6));position:relative;border:1px solid var(--panel-border);border-radius:4px;padding:8px 10px 10px;min-width:0;display:flex;flex-direction:column;transition:box-shadow .15s,border-color .15s;}
-.bi-tile:not(.chart-panel--map){background:#0f2036;}
+.bi-tile:not(.chart-panel--map){background:#0b0f14;}
 .bi-tile:hover{border-color:#2f5580;box-shadow:0 6px 22px rgba(3,9,18,0.5);}
 .bi-tile .viz-card-head,.bi-tile .chart-panel-head{margin:0 0 6px;align-items:center;gap:6px;padding-bottom:0;}
 .bi-tile.chart-panel--map .viz-card-head,.bi-tile.chart-panel--map .chart-panel-head{padding-bottom:8px;margin-bottom:8px;}
@@ -558,6 +596,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#0d1b2e;color:var(--in
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
     <div class="session-tag" id="sessionTag">no dataset loaded</div>
     <span class="autosave-badge" id="autosaveBadge">✓ saved</span>
+    <button class="sec theme-toggle" id="appThemeToggle" type="button" title="Switch between VS Code-style dark and light themes">☼ light</button>
     <button class="sec" id="clearReloadBtn" title="Wipe saved session and reload — use this after making code changes" onclick="clearAndReload()" style="font-size:10px;padding:5px 11px;border-color:var(--ink-dim);color:var(--ink-dim);">↺ fresh reload</button>
     <button class="sec" id="desktopQuitBtn" title="Stop AutoDS" style="display:none;font-size:10px;padding:5px 11px;border-color:var(--bad,#f07178);color:var(--bad,#f07178);">⏻ quit</button>
   </div>
@@ -2049,6 +2088,54 @@ function escapeHtml(value){
   }[ch]));
 }
 
+function highlightCode(source){
+  // Lightweight Python/SQL-style highlighting for assistant snippets. The
+  // lexer handles strings and comments before identifiers, so words inside a
+  // quoted value are never mistaken for executable keywords.
+  const keywords = new Set(["and","as","assert","async","await","break","class","continue","def","del","elif","else","except","finally","for","from","global","if","import","in","is","lambda","not","or","pass","raise","return","try","while","with","yield","True","False","None"]);
+  const builtins = new Set(["len","range","sum","min","max","mean","print","str","int","float","list","dict","set","round","enumerate","zip"]);
+  const token = /(#.*$|'''[\s\S]*?'''|"""[\s\S]*?"""|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|\b[A-Za-z_]\w*\b|\b\d+(?:\.\d+)?\b)/gm;
+  let html = "";
+  let last = 0;
+  let match;
+  while((match = token.exec(source)) !== null){
+    html += escapeHtml(source.slice(last, match.index));
+    const value = match[0];
+    let cls = "";
+    if(value.startsWith("#")) cls = "code-comment";
+    else if(value[0] === "'" || value[0] === '"') cls = "code-string";
+    else if(/^\d/.test(value)) cls = "code-number";
+    else if(keywords.has(value)) cls = "code-keyword";
+    else if(builtins.has(value)) cls = "code-builtin";
+    else if(/\b[A-Za-z_]\w*\b/.test(value) && /^\s*\(/.test(source.slice(token.lastIndex))) cls = "code-function";
+    html += cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value);
+    last = token.lastIndex;
+  }
+  return html + escapeHtml(source.slice(last));
+}
+
+function highlightAssistantText(source){
+  const actions = /^(remove|delete|drop|keep|fill|replace|rename|create|add|split|extract|convert|trim|strip|reset|undo|clean|filter|show|find|calculate|calculate|predict)$/i;
+  const subjects = /^(row|rows|column|columns|value|values|data|dataset|table|number|numbers|missing|null|duplicates?)$/i;
+  const operators = /^(where|with|from|in|to|into|by|is|are|less|greater|than|equal|equals|called|named)$/i;
+  const token = /\d+(?:\.\d+)?|[A-Za-z_][\w-]*/g;
+  let html = "";
+  let last = 0;
+  let match;
+  while((match = token.exec(source)) !== null){
+    html += escapeHtml(source.slice(last, match.index));
+    const value = match[0];
+    let cls = "";
+    if(/^\d/.test(value) || /^(one|two|three|four|five|six|seven|eight|nine|ten)$/i.test(value)) cls = "command-number";
+    else if(actions.test(value)) cls = "command-action";
+    else if(subjects.test(value)) cls = "command-subject";
+    else if(operators.test(value)) cls = "command-operator";
+    html += cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value);
+    last = token.lastIndex;
+  }
+  return html + escapeHtml(source.slice(last));
+}
+
 function renderAssistantContent(el, text){
   el.innerHTML = "";
   const pattern = /```(\w+)?\n([\s\S]*?)```/g;
@@ -2064,7 +2151,7 @@ function renderAssistantContent(el, text){
     const pre = document.createElement("pre");
     const code = document.createElement("code");
     const lang = match[1] || "code";
-    code.innerHTML = `<span class="code-lang">${escapeHtml(lang)}</span>${escapeHtml(match[2].trim())}`;
+    code.innerHTML = `<span class="code-lang">${escapeHtml(lang)}</span>${highlightCode(match[2].trim())}`;
     pre.appendChild(code);
     el.appendChild(pre);
     last = pattern.lastIndex;
@@ -9227,7 +9314,7 @@ document.addEventListener("DOMContentLoaded", () => {
   margin: 7px 0 0;
   padding: 10px;
   overflow: auto;
-  background: #081421;
+  background: #05070a;
   border: 1px solid var(--panel-border);
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
@@ -9255,6 +9342,11 @@ document.addEventListener("DOMContentLoaded", () => {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
 }
+#floatInputEditor{position:relative;flex:1;min-width:0;}
+#floatInputEditor .input-highlight{position:absolute;inset:0;overflow:hidden;pointer-events:none;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink);padding:8px 11px;font-family:var(--code-font);font-size:13px;line-height:1.45;}
+#floatInputEditor #floatInput{position:relative;width:100%;min-height:36px;resize:none;overflow:hidden;background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--ink);font-size:13px;line-height:1.45;}
+#floatInputEditor #floatInput::placeholder{color:var(--ink-dim);-webkit-text-fill-color:var(--ink-dim);}
+html[data-theme="light"] #floatInputEditor .input-highlight{color:var(--ink);}
 #floatInput:focus { outline: none; border-color: var(--accent); }
 #floatSendBtn {
   background: var(--accent);
@@ -9397,7 +9489,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   <!-- input -->
   <div id="floatInputRow">
-    <input id="floatInput" type="text" placeholder="Ask a question about your data…" autocomplete="off">
+    <div id="floatInputEditor">
+      <div id="floatInputHighlight" class="input-highlight" aria-hidden="true"></div>
+      <textarea id="floatInput" rows="1" placeholder="Ask a question about your data…" autocomplete="off" spellcheck="false"></textarea>
+    </div>
     <button id="floatSendBtn">Ask</button>
   </div>
 </div>
@@ -9412,9 +9507,33 @@ document.addEventListener("DOMContentLoaded", () => {
   const dot        = document.getElementById("fabDot");
   const chatWrap   = document.getElementById("floatChatWrap");
   const input      = document.getElementById("floatInput");
+  const inputHighlight = document.getElementById("floatInputHighlight");
   const sendBtn    = document.getElementById("floatSendBtn");
   const noDs       = document.getElementById("floatNoDs");
   const statusBar  = document.getElementById("floatStatus");
+
+  function looksLikeCode(value){
+    return /```|\b(import|from|def|return|for|if|else|class|lambda|print)\b|\b(pd|np|df)\s*\.|[A-Za-z_]\w*\s*=/.test(value);
+  }
+  function looksLikeCommand(value){
+    return /\b(remove|delete|drop|keep|fill|replace|rename|create|add|split|extract|convert|trim|strip|reset|undo|clean|filter|show|find|calculate|predict)\b/i.test(value);
+  }
+  function syncInputHighlight(){
+    if(!inputHighlight) return;
+    const value = input.value || "";
+    // Plain questions stay plain. Once the user starts writing an expression,
+    // assignment, import, or code fence, the editor switches to token colors.
+    inputHighlight.innerHTML = looksLikeCommand(value)
+      ? highlightAssistantText(value)
+      : looksLikeCode(value) ? highlightCode(value) : escapeHtml(value);
+    inputHighlight.scrollTop = input.scrollTop;
+    inputHighlight.scrollLeft = input.scrollLeft;
+    input.style.height = "auto";
+    input.style.height = Math.min(Math.max(input.scrollHeight, 34), 120) + "px";
+  }
+  input.addEventListener("input", syncInputHighlight);
+  input.addEventListener("scroll", syncInputHighlight);
+  syncInputHighlight();
 
   // ── open / close ──────────────────────────────────────
   let isOpen = false;
@@ -9458,6 +9577,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if(!sid){ checkDataset(); return; }
 
     input.value = "";
+    syncInputHighlight();
     addFloatMsg(q, "user");
 
     sendBtn.disabled = true;
@@ -10646,6 +10766,32 @@ function wrap(name, before, after){
 wrap("loadVizSuggestions", () => { resetFilter(true); renderKpis(); }, renderKpis);
 wrap("renderVizSuggestions", () => resetFilter(true), renderKpis);
 renderKpis();
+})();
+</script>
+<script>
+/* ---------- VS Code-style application theme ---------- */
+(function(){
+  const key = "autods.app.theme";
+  const button = document.getElementById("appThemeToggle");
+  let theme = "dark";
+  try{ theme = localStorage.getItem(key) || "dark"; }catch(e){}
+
+  function apply(){
+    document.documentElement.dataset.theme = theme;
+    if(button){
+      button.textContent = theme === "light" ? "☾ dark" : "☼ light";
+      button.classList.toggle("on", theme === "light");
+    }
+  }
+
+  if(button){
+    button.addEventListener("click", () => {
+      theme = theme === "light" ? "dark" : "light";
+      try{ localStorage.setItem(key, theme); }catch(e){}
+      apply();
+    });
+  }
+  apply();
 })();
 </script>
 <script id="desktopScript">
