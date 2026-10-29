@@ -226,7 +226,11 @@ button.tiny{padding:4px 8px;font-size:10px;}
 .cc-dots::after{content:"";animation:cc-pulse 1.2s steps(4,end) infinite;}
 @keyframes cc-pulse{0%{content:"";}25%{content:".";}50%{content:"..";}75%{content:"...";}100%{content:"..."}}
 .clean-chat-input-row{display:flex;gap:8px;margin-bottom:14px;}
-.clean-chat-input-row input{flex:1;background:var(--panel-bg,transparent);border:1px solid var(--panel-border);color:var(--ink);padding:9px 12px;font-family:inherit;font-size:13px;}
+.clean-chat-input-editor{position:relative;flex:1;min-width:0;}
+.clean-chat-input-editor .input-highlight{position:absolute;inset:0;overflow:hidden;pointer-events:none;white-space:pre;line-height:1.45;color:var(--ink);padding:9px 12px;font-family:var(--code-font);font-size:13px;}
+.clean-chat-input-row input{position:relative;width:100%;box-sizing:border-box;background:var(--panel-bg,transparent);border:1px solid var(--panel-border);color:var(--ink);padding:9px 12px;font-family:inherit;font-size:13px;}
+.clean-chat-input-row .clean-chat-input-editor input{background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--ink);font-family:var(--code-font);}
+.clean-chat-input-editor input::placeholder{color:var(--ink-dim);-webkit-text-fill-color:var(--ink-dim);}
 .clean-chat-input-row input:focus{outline:none;border-color:var(--accent);}
 .clean-chat-input-row button{white-space:nowrap;}
 .db-analysis-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px;margin-top:10px;}
@@ -1125,9 +1129,6 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       </div>
     </details>
 
-    <div class="subhead">Clean it yourself — chat</div>
-    <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email", "create a new column called revenue", or "fill revenue with price * quantity". Type "help" to see everything I understand.</p>
-
     <!-- Filter & Split — collapsible dropdown inside cleaning -->
     <details id="filterDropdown" style="margin-bottom:18px;">
       <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
@@ -1137,7 +1138,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
         <p class="hint" style="margin:0 0 14px;">
           Pick conditions to extract matching rows into a <strong>new dataset tab</strong> — original stays untouched.
-          You can also type it in the chat above: <code>split rows where gender is Male and age is 3 into new tab</code>
+          You can also type it in the chat below: <code>split rows where gender is Male and age is 3 into new tab</code>
         </p>
 
         <!-- Rename the current dataset tab -->
@@ -1186,9 +1187,15 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       </div>
     </details>
 
+    <div class="subhead">Clean it yourself — chat</div>
+    <p class="hint">Type a plain-English cleaning instruction, e.g. "remove duplicates of column email", "create a new column called revenue", or "fill revenue with price * quantity". Type "help" to see everything I understand.</p>
+
     <div class="clean-chat-log" id="cleanChatLog"></div>
     <div class="clean-chat-input-row">
-      <input type="text" id="cleanChatInput" placeholder="e.g. create a new column called revenue" autocomplete="off">
+      <div class="clean-chat-input-editor">
+        <div id="cleanChatInputHighlight" class="input-highlight" aria-hidden="true"></div>
+        <input type="text" id="cleanChatInput" placeholder="e.g. create a new column called revenue" autocomplete="off" spellcheck="false">
+      </div>
       <button id="cleanChatSendBtn">Send</button>
     </div>
     <div class="actions">
@@ -2150,9 +2157,9 @@ function highlightCode(source){
 }
 
 function highlightAssistantText(source){
-  const actions = /^(remove|delete|drop|keep|fill|replace|rename|create|add|split|extract|convert|trim|strip|reset|undo|clean|filter|show|find|calculate|calculate|predict)$/i;
-  const subjects = /^(row|rows|column|columns|value|values|data|dataset|table|number|numbers|missing|null|duplicates?)$/i;
-  const operators = /^(where|with|from|in|to|into|by|is|are|less|greater|than|equal|equals|called|named)$/i;
+  const actions = /^(remove|delete|drop|discard|erase|keep|fill|populate|update|replace|change|swap|set|rename|create|add|split|separate|extract|convert|trim|strip|reset|restore|undo|clean|filter|show|find|calculate|predict|sort|order|round|lowercase|uppercase|move|reorder|combine|merge|join)$/i;
+  const subjects = /^(row|rows|column|columns|value|values|data|dataset|table|number|numbers|missing|null|duplicates?|outliers?|decimal|decimals?|category|categorical|text|integer|float)$/i;
+  const operators = /^(where|with|from|in|to|into|by|before|after|at|on|of|for|as|is|are|less|greater|than|equal|equals|called|named|position|front|end|first|last)$/i;
   const token = /\d+(?:\.\d+)?|[A-Za-z_][\w-]*/g;
   let html = "";
   let last = 0;
@@ -3354,6 +3361,7 @@ async function sendCleanChat(){
   }
 
   input.value = "";
+  syncCleanChatHighlight();
   $("cleanChatSendBtn").disabled = true;
   $("cleanChatSendBtn").textContent = "Working…";
   $("cleanChatInput").disabled = true;
@@ -3432,6 +3440,18 @@ async function sendCleanChat(){
     input.focus();
   }
 }
+
+function syncCleanChatHighlight(){
+  const input = $("cleanChatInput");
+  const highlight = $("cleanChatInputHighlight");
+  if(!input || !highlight) return;
+  highlight.innerHTML = highlightAssistantText(input.value || "");
+  highlight.scrollLeft = input.scrollLeft;
+}
+
+$("cleanChatInput").addEventListener("input", syncCleanChatHighlight);
+$("cleanChatInput").addEventListener("scroll", syncCleanChatHighlight);
+syncCleanChatHighlight();
 
 $("cleanChatSendBtn").addEventListener("click", sendCleanChat);
 $("cleanChatInput").addEventListener("keydown", (e) => { if(e.key === "Enter") sendCleanChat(); });

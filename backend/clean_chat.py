@@ -640,66 +640,36 @@ def _parse_row_number_list(spec: str) -> list[int]:
 
 
 HELP_TEXT = (
-    "I understand plain-English cleaning commands. Try things like:\n"
-    "• remove duplicates\n"
-    "• remove duplicates of column age\n"
-    "• drop column notes  (also: remove / delete / discard / erase column notes)\n"
-    "• move price to the front  (also: to the end/back/last, to position 3, before cost, after quantity)\n"
-    "• rename column dob to date_of_birth  (also: rename dob into date_of_birth / rename dob as date_of_birth)\n"
-    "• create a new column called revenue  (creates an empty column)\n"
-    "• fill revenue with price * quantity  (also: populate / update / set)\n"
-    "• create column total as price * quantity  (math operations)\n"
-    "• add new column tax as price * 0.15\n"
-    "• new column profit = revenue - cost\n"
-    "• create column doubled as quantity * 2\n"
-    "• add $ to the front of price  (also: to the end of / after price — a suffix; also: insert, prepend, append)\n"
-    "• add _ after the letter e in course  (inserts after every matching letter/character in each value)\n"
-    "• add $ to the front of row 2 in price  (scope any of the above to just one row, 1-based like the '# Row' column)\n"
-    "• sort by age  (ascending by default; also: sort by course descending, order by total_payments z-a, "
-    "sort by course then age — numbers sort numerically, text sorts alphabetically, automatically)\n"
-    "• convert price to USD  (normalizes a column mixing currencies — '$1,200', '₦1550', '85 EUR' — into one "
-    "target currency; unmarked values are assumed to already be in the column's usual currency)\n"
-    "• combine first_name and last_name into full_name  (joins with a space by default)\n"
-    "• merge first_name, middle_name and last_name into full_name with a comma  (any number of columns; "
-    "also: concatenate / concat / join; separators: space, comma, dash, underscore, pipe, slash, tab, nothing)\n"
-    "• split first word from full_name into title and name  (also: split full_name into title and name)\n"
-    "• split sub_category into category_type  (one new column for the first word; the rest "
-    "stays in sub_category, e.g. 'Mountain Bike' → category_type='Mountain', sub_category='Bike')\n"
-    "• extract title from Name into Title  (pulls the title out of 'Last, Title. First' names)\n"
-    "• extract deck from Cabin into Deck  (first letter of a cabin code like 'C85')\n"
-    "• extract year from date into year  (e.g. '2021-09-10' → '2021')\n"
-    "• extract month from date into month  (e.g. '2021-09-10' → '09')\n"
-    "• extract day from date into day  (e.g. '2021-09-10' → '10')\n"
-    "• extract first letter from Cabin into Deck\n"
-    "• extract pattern ([A-Za-z]) from Cabin into Deck  (your own regex — first capture group is used)\n"
-    "• replace 2 with 0 in profit  (replaces exact values in a column)\n"
-    "• replace yes with 1 in discount_applied\n"
-    "• fill missing values in income with median  (mean / mode / zero / a specific value)\n"
-    "• remove rows where email is missing\n"
-    "• strip whitespace in name\n"
-    "• remove stopwords in review  (the, is, and, ...)\n"
-    "• remove punctuation in review\n"
-    "• remove urls in comments\n"
-    "• remove emails in comments\n"
-    "• remove numbers in description\n"
-    "• remove Mr. in name  (removes exact text from a column)\n"
-    "• lowercase email\n"
-    "• uppercase country_code\n"
-    "• remove outliers in salary\n"
-    "• remove rows where status is cancelled\n"
-    "• remove row 5  (deletes by row number counting from 1; also: remove rows 3, 7 and 12 / remove rows 2 to 5)\n"
-    "• keep only rows where country is Kenya\n"
-    "• check distinct status values and counts\n"
-    "• show default rate by grade\n"
-    "• average revenue and profit by region\n"
-    "• convert price to number  (or: integer / text / category / date / time / boolean)\n"
-    "• change ORDER_DATE to date / time\n"
-    "• round price to 2 decimal places  (also: round latitude to 2 dp / keep 2 decimals in longitude / round all numeric columns to 3 decimals)\n"
-    "• reset  (undoes every chat cleaning command and restores the original upload)\n"
-    "\n"
-    "Math operations: +, -, *, /, ** (power), % (modulo)\n"
-    "Examples: 'price * 1.2', 'quantity + 10', '(price - cost) / cost * 100'"
+    "Try one of these plain-English commands:\n"
+    "• Rows: remove row 5; remove rows where age is 30; drop 0.83 in age\n"
+    "• Columns: drop column notes; move age to position 2; rename dob to date\n"
+    "• Values: replace yes with 1 in approved; change male to female in gender\n"
+    "• New data: create column total as price * quantity; fill revenue with price * quantity\n"
+    "• Text: trim name; lowercase email; remove punctuation in comments\n"
+    "• Numbers: round price to 2 decimals; convert price to number\n"
+    "• Other: remove duplicates; sort by age; reset\n"
+    "Synonyms understood: drop/remove/delete, replace/change/set, move/reorder, "
+    "fill/populate/update, trim/strip, and category/categorical."
 )
+
+
+def _unknown_command_message(command: str, columns: list) -> str:
+    """Give a short, relevant repair suggestion instead of dumping every command."""
+    ql = command.lower()
+    mentioned = _find_columns_in_text(command, columns)
+    col = mentioned[0] if mentioned else (columns[0] if columns else "column_name")
+    if re.search(r"\b(drop|remove|delete|discard|erase)\b", ql):
+        return (
+            "I couldn't match that removal command. To remove rows with one value, try "
+            f"`drop VALUE in {col}` or `remove rows where {col} is VALUE`."
+        )
+    if re.search(r"\b(replace|change|swap|set|make)\b", ql):
+        return f"Try `replace OLD with NEW in {col}`."
+    if re.search(r"\b(move|reorder|position|place)\b", ql):
+        return f"Try `move {col} to position 2`, or `move {col} before OTHER_COLUMN`."
+    if re.search(r"\b(round|decimal|digits?)\b", ql):
+        return f"Try `round {col} to 2 decimal places`."
+    return "I couldn't match that command. Type `help` for the short command guide."
 
 
 def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = None) -> tuple[pd.DataFrame, str]:
@@ -1315,6 +1285,33 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
         if not col:
             return df, f"I couldn't find a column matching '{m.group(1).strip()}'. Available columns: {', '.join(columns)}."
         return df.drop(columns=[col]), f"Dropped column '{col}'."
+
+    # ---- drop rows matching one exact value in a column ----
+    # Accepts natural variants such as "drop 0.83 in age", "delete male from
+    # gender", and "remove value 0 from status". Keep this separate from the
+    # row-number and condition parsers so a decimal value is never mistaken
+    # for a row number or a column name.
+    m = re.search(
+        rf"\b{REMOVE_VERB_RE}\s+(?:the\s+)?(?:value\s+)?(.+?)\s+(?:in|from)\s+(?:the\s+)?(?:column\s+)?(.+?)\s*$",
+        q,
+        re.IGNORECASE,
+    )
+    if m:
+        value_raw, col_text = m.group(1).strip(), m.group(2).strip()
+        reserved = {"rows", "row", "duplicates", "outliers", "missing", "null", "empty", "punctuation", "stopwords"}
+        col = _match_col(col_text, columns)
+        parsed_value = _parse_value_token(value_raw)
+        if col and value_raw.lower() not in reserved:
+            series = df[col]
+            if pd.api.types.is_numeric_dtype(series) and isinstance(parsed_value, (int, float)):
+                mask = pd.to_numeric(series, errors="coerce") == parsed_value
+            else:
+                mask = series.astype(str).str.strip().str.casefold() == str(parsed_value).strip().casefold()
+            removed = int(mask.sum())
+            if removed == 0:
+                return df, f"No rows in '{col}' match {value_raw} — nothing removed."
+            new_df = df.loc[~mask].reset_index(drop=True)
+            return new_df, f"Removed {removed:,} row(s) where '{col}' was {value_raw}."
 
     # ---- move column (reorder) ----
     # Checked in this order: before/after a named column (most specific),
@@ -2039,6 +2036,4 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
             return df, f"No rows found where '{col}' is '{value}' — nothing kept (no change made)."
         return df[mask].reset_index(drop=True), f"Kept {kept:,} row(s) where '{col}' is '{value}'; removed the rest."
 
-    return df, (
-        "I didn't recognise that command. " + HELP_TEXT
-    )
+    return df, _unknown_command_message(q, columns)
