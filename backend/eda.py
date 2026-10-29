@@ -57,8 +57,15 @@ def _safe_json(val):
         return bool(val)
     if isinstance(val, (pd.Timestamp,)):
         return val.isoformat()
-    if pd.isna(val):
-        return None
+    # pd.isna(list/dict/array) returns an array, whose truth value is
+    # ambiguous. DataFrame cells can legally contain list-like objects, so
+    # only use the missing-value check for scalar values.
+    try:
+        missing = pd.isna(val)
+        if isinstance(missing, (bool, np.bool_)) and bool(missing):
+            return None
+    except (TypeError, ValueError):
+        pass
     return val
 
 

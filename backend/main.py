@@ -856,12 +856,18 @@ class CleanRequest(BaseModel):
 @app.post("/api/clean/{session_id}")
 def clean_data(session_id: str, req: CleanRequest):
     session = _get_session_or_404(session_id)
-    session.snapshot_before_change()
     clean_options = req.model_dump()
     cleaned_df, log = clean_module.clean_dataframe(session.df, clean_options)
-    session.df = cleaned_df
-    session.clear_current_training()
-    session.save_to_disk()
+    data_changed = not cleaned_df.equals(session.df)
+
+    # A no-op clean must not create an undo entry or invalidate a model that
+    # was trained on the same data. clean_dataframe commonly returns a copy,
+    # so object identity is not a reliable way to detect this case.
+    if data_changed:
+        session.snapshot_before_change()
+        session.df = cleaned_df
+        session.clear_current_training()
+        session.save_to_disk()
 
     # Merge the Clean Now log with any chat-cleaning already applied so the
     # report shows the full picture instead of wiping prior chat changes.
@@ -881,7 +887,7 @@ def clean_data(session_id: str, req: CleanRequest):
     profile["cleaning_log"] = log
     profile["narrative"] = narrate.narrate_eda(profile)
     profile["can_undo"] = session.can_undo()
-    profile["data_changed"] = True
+    profile["data_changed"] = data_changed
     return profile
 
 
@@ -3931,10 +3937,14 @@ def _json_safe_records(df: pd.DataFrame) -> list[dict]:
         for key, value in row.items():
             if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
                 cleaned_row[key] = None
-            elif pd.isna(value):
-                cleaned_row[key] = None
             else:
-                cleaned_row[key] = value
+                # pd.isna(list/dict/array) returns a vector, so don't use it
+                # directly as an `if` condition for list-like cell values.
+                try:
+                    missing = pd.isna(value)
+                    cleaned_row[key] = None if isinstance(missing, (bool, np.bool_)) and bool(missing) else value
+                except (TypeError, ValueError):
+                    cleaned_row[key] = value
         cleaned.append(cleaned_row)
     return cleaned
 
