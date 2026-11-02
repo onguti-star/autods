@@ -741,6 +741,15 @@ def run_database_analysis(
 
 def _looks_like_analysis_question(text: str) -> bool:
     q = _normalise_text(text)
+    # Frequency-based removal is a cleaning command, even though it contains
+    # analysis words such as "value count" and "less than". Let it reach the
+    # command parser below instead of returning a read-only count table.
+    if (
+        re.search(rf"\b{REMOVE_VERB_RE}\b", q)
+        and re.search(r"\brows?\b", q)
+        and re.search(r"\b(?:value\s+counts?|counts?|frequencies?|occurrences?)\b", q)
+    ):
+        return False
     tokens = set(q.split())
     analysis_terms = {
         "average", "avg", "mean", "median", "sum", "total", "rate", "percentage",
@@ -787,6 +796,43 @@ def _run_command_impl(df: pd.DataFrame, text: str, original_df: pd.DataFrame | N
 
     if ql in ("help", "?", "what can you do", "commands", "what commands"):
         return df, HELP_TEXT
+
+    # ---- remove rows whose value frequency is below a threshold ----
+    # Examples:
+    #   remove rows where value count is less than 10 in rating
+    #   remove rows where rating value count is fewer than 10
+    #   drop rows where the count of values in rating is below 10
+    frequency_patterns = [
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(?:the\s+)?value\s+count\s+is\s+(?:less\s+than|fewer\s+than|under|below|<)\s+(\d+)\s+(?:in|from)\s+(.+?)\s*$",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(.+?)\s+value\s+count\s+is\s+(?:less\s+than|fewer\s+than|under|below|<)\s+(\d+)\s*$",
+        rf"\b{REMOVE_VERB_RE}\s+rows?\s+where\s+(?:the\s+)?count\s+of\s+values?\s+in\s+(.+?)\s+is\s+(?:less\s+than|fewer\s+than|under|below|<)\s+(\d+)\s*$",
+    ]
+    for pattern in frequency_patterns:
+        frequency_match = re.search(pattern, ql)
+        if not frequency_match:
+            continue
+        groups = [group.strip() for group in frequency_match.groups()]
+        if pattern == frequency_patterns[0]:
+            threshold, col_text = int(groups[0]), groups[1]
+        else:
+            col_text, threshold = groups[0], int(groups[1])
+        col = _match_col(col_text, columns)
+        if not col:
+            return df, f"I couldn't find a column matching '{col_text}'. Available columns: {', '.join(columns)}."
+        if threshold < 1:
+            return df, "The frequency threshold must be at least 1."
+
+        frequencies = df[col].value_counts(dropna=True)
+        row_frequencies = df[col].map(frequencies).fillna(0)
+        keep_mask = row_frequencies >= threshold
+        removed = int((~keep_mask).sum())
+        if removed == 0:
+            return df, f"No rows had a '{col}' value occurring fewer than {threshold} time(s) — nothing removed."
+        new_df = df.loc[keep_mask].reset_index(drop=True)
+        return new_df, (
+            f"Removed {removed:,} row(s) whose '{col}' value occurred fewer than "
+            f"{threshold} time(s)."
+        )
 
     # ---- reset ----
     if re.search(r"\b(reset|undo|restore|start over|revert)\b", ql):

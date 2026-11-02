@@ -962,6 +962,25 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <div class="pred-field"><button class="sec" id="changeTypeBtn" style="margin-top:13px;">Change type</button></div>
     </div>
 
+    <details id="addRowsDropdown" style="margin:18px 0;">
+      <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);padding:8px 0;user-select:none;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:14px;">▶</span>
+        ＋ Add rows to this dataset
+      </summary>
+      <div style="border:1px solid var(--panel-border);padding:16px;margin-top:8px;">
+        <p class="hint" style="margin:0 0 12px;">Paste one or more CSV rows using the current column order. Leave the position blank to append at the end, or enter a row number to insert before it.</p>
+        <div class="pred-field">
+          <label>Rows (comma-separated values)</label>
+          <textarea id="addRowsInput" rows="4" placeholder="Alice, Nairobi, 34\nBrian, Mombasa, 29" style="width:100%;font-family:'IBM Plex Mono',monospace;font-size:12px;resize:vertical;"></textarea>
+        </div>
+        <div class="pred-row" style="margin-top:10px;align-items:end;">
+          <div class="pred-field"><label>Insert before row <span style="font-weight:400;color:var(--ink-dim);">(blank = append)</span></label><input type="number" id="addRowsPosition" min="1" step="1" placeholder="e.g. 3"></div>
+          <div class="pred-field"><button class="sec" id="addRowsBtn">Add rows</button></div>
+        </div>
+        <p class="hint" id="addRowsStatus" style="display:none;margin:10px 0 0;"></p>
+      </div>
+    </details>
+
     <div id="cleanPreviewSection" class="hidden" style="margin-top:24px;">
       <div class="subhead">Live data — current state <span id="cleanPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
       <p class="hint" style="margin-top:0;">This table updates after every cleaning operation so you can see exactly what changed.</p>
@@ -3455,6 +3474,38 @@ syncCleanChatHighlight();
 
 $("cleanChatSendBtn").addEventListener("click", sendCleanChat);
 $("cleanChatInput").addEventListener("keydown", (e) => { if(e.key === "Enter") sendCleanChat(); });
+
+$("addRowsBtn").addEventListener("click", async () => {
+  const sid = getSid();
+  const rows = $("addRowsInput").value.trim();
+  const positionText = $("addRowsPosition").value.trim();
+  const status = $("addRowsStatus");
+  if(!sid){ status.style.color = "var(--bad)"; status.textContent = "Load a dataset first."; status.style.display = "block"; return; }
+  if(!rows){ status.style.color = "var(--bad)"; status.textContent = "Paste at least one row first."; status.style.display = "block"; return; }
+  const position = positionText ? Number(positionText) : null;
+  if(positionText && (!Number.isInteger(position) || position < 1)){
+    status.style.color = "var(--bad)"; status.textContent = "The insert position must be a whole row number."; status.style.display = "block"; return;
+  }
+  const button = $("addRowsBtn");
+  button.disabled = true; button.textContent = "Adding…";
+  status.style.color = "var(--ink-dim)"; status.textContent = "Updating data…"; status.style.display = "block";
+  try{
+    const res = await fetch(`${API}/add_rows/${sid}`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({rows, position})
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not add rows.");
+    $("addRowsInput").value = "";
+    $("addRowsPosition").value = "";
+    showCleaningResult(data);
+    status.style.color = "var(--good)"; status.textContent = data.cleaning_log?.[0] || "Rows added.";
+  }catch(err){
+    status.style.color = "var(--bad)"; status.textContent = err.message || "Could not add rows.";
+  }finally{
+    button.disabled = false; button.textContent = "Add rows";
+  }
+});
 if($("dbAnalysisType")) $("dbAnalysisType").addEventListener("change", updateDatabaseAnalysisControls);
 if($("dbGroupCol")) $("dbGroupCol").addEventListener("change", updateDatabaseAnalysisQueryPreview);
 if($("dbUseBinning")) $("dbUseBinning").addEventListener("change", updateDatabaseAnalysisControls);

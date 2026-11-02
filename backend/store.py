@@ -436,6 +436,36 @@ class Session:
         self.label_encoder = None
         self.progress_messages = []
 
+    def invalidate_training_if_schema_changed(self) -> bool:
+        """Clear current training when its target/features no longer exist.
+
+        Cleaning and chat actions can replace ``self.df`` before the caller
+        knows whether the trained model is still compatible with it.  A model
+        trained with a dropped or renamed feature must not remain available as
+        if it could be used with the current dataframe.  ``clear_current_training``
+        keeps the old model in ``saved_runs`` first, so this invalidation does
+        not lose the user's work.
+
+        Returns ``True`` when training was invalidated and ``False`` when the
+        current training state is still compatible (or no training exists).
+        Column order is intentionally not treated as a schema change because
+        prediction code selects the recorded feature columns explicitly.
+        """
+        if not self.target and not self.models and not self.feature_columns:
+            return False
+
+        current_columns = set(self.df.columns)
+        schema_changed = (
+            self.target not in current_columns
+            or any(column not in current_columns for column in self.feature_columns)
+            or self.target in self.feature_columns
+        )
+        if not schema_changed:
+            return False
+
+        self.clear_current_training()
+        return True
+
 
 SESSIONS: Dict[str, "Session"] = {}
 

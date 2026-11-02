@@ -867,6 +867,89 @@ class CleanRequest(BaseModel):
     remove_outliers: bool = True
 
 
+class AddRowsRequest(BaseModel):
+    """Rows pasted as CSV values, in the dataset's existing column order."""
+    rows: str = Field(min_length=1, max_length=2_000_000)
+    position: int | None = Field(default=None, ge=1)
+
+
+@app.post("/api/add_rows/{session_id}")
+def add_rows(session_id: str, req: AddRowsRequest):
+    """Append or insert one or more CSV rows into the current dataset.
+
+    ``position`` is one-based and means "insert before this row".  Leaving it
+    blank appends the rows to the end.  The existing header/column names are
+    used, so pasted rows must contain exactly one value per current column.
+    """
+    session = _get_session_or_404(session_id)
+    columns = list(session.df.columns)
+    try:
+        added = pd.read_csv(
+            io.StringIO(req.rows.strip()),
+            header=None,
+            names=columns,
+            dtype=object,
+            keep_default_na=True,
+            skipinitialspace=True,
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse rows: {e}")
+
+    if added.empty:
+        raise HTTPException(400, "Provide at least one row to add.")
+
+    # pandas' names= form can silently pad short rows or discard extra fields;
+    # check the raw CSV shape first so no values disappear unnoticed.
+    try:
+        parsed_rows = list(csv.reader(io.StringIO(req.rows.strip())))
+    except csv.Error as e:
+        raise HTTPException(400, f"Could not parse rows: {e}")
+    bad_widths = sorted({len(row) for row in parsed_rows if len(row) != len(columns)})
+    if bad_widths:
+        raise HTTPException(
+            400,
+            f"Each row must contain exactly {len(columns)} comma-separated values "
+            f"({', '.join(map(str, columns))}).",
+        )
+
+    # Preserve numeric columns when values are pasted as text, while rejecting
+    # a non-empty value that would otherwise become a silent missing value.
+    for column in columns:
+        if pd.api.types.is_numeric_dtype(session.df[column]):
+            raw = added[column]
+            converted = pd.to_numeric(raw, errors="coerce")
+            invalid = raw.notna() & converted.isna()
+            if invalid.any():
+                raise HTTPException(400, f"Column '{column}' expects numeric values.")
+            added[column] = converted
+
+    insert_at = len(session.df) if req.position is None else req.position - 1
+    if insert_at > len(session.df):
+        raise HTTPException(
+            400,
+            f"Position {req.position} is out of range. Choose a row from 1 to "
+            f"{len(session.df) + 1}, or leave it blank to append.",
+        )
+
+    before = session.df.iloc[:insert_at]
+    after = session.df.iloc[insert_at:]
+    updated = pd.concat([before, added, after], ignore_index=True)
+    session.snapshot_before_change()
+    session.df = updated
+    session.clear_current_training()
+    session.save_to_disk()
+
+    profile = eda.profile_dataframe(session.df)
+    profile["cleaning_log"] = [
+        f"Added {len(added):,} row(s) "
+        + (f"before row {req.position}." if req.position is not None else "at the end.")
+    ]
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    return profile
+
+
 @app.post("/api/clean/{session_id}")
 def clean_data(session_id: str, req: CleanRequest):
     session = _get_session_or_404(session_id)

@@ -1531,7 +1531,11 @@ def _json_safe(value):
 def _value_counts_table(df: pd.DataFrame, col: str, limit: int = 50) -> dict | None:
     if col not in df.columns:
         return None
-    counts = df[col].value_counts(dropna=False).head(limit)
+    # pandas retains unused categories after filtering a categorical column.
+    # Their value_counts() entries are zero, but they are not values present in
+    # the current dataset and should not appear in the assistant's table.
+    counts = df[col].value_counts(dropna=False)
+    counts = counts[counts > 0].head(limit)
     if counts.empty:
         return None
     rows = []
