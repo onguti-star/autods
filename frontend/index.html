@@ -101,6 +101,9 @@ header{padding:20px 34px 14px;border-bottom:1px solid var(--panel-border);displa
 .brand small{color:var(--ink-dim);font-weight:400;font-size:11px;}
 .session-tag{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-dim);}
 .theme-toggle{font-family:var(--code-font);font-size:10px;padding:5px 11px;}
+.help-link{font-family:var(--code-font);font-size:10px;color:var(--accent);text-decoration:none;border:1px solid var(--accent-dim);padding:5px 10px;letter-spacing:.2px;}
+.help-link:hover{color:var(--ink);border-color:var(--accent);background:rgba(214,168,79,.08);}
+.help-row{margin-bottom:8px;}
 main{width:100%;max-width:none;margin:0;padding:26px 34px 100px;}
 .stepper{display:flex;gap:3px;margin-bottom:24px;flex-wrap:wrap;}
 .step{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-dim);padding:5px 11px;border:1px solid var(--panel-border);background:var(--panel);display:flex;align-items:center;gap:5px;cursor:pointer;transition:border-color .15s;}
@@ -641,6 +644,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
   </div>
 </header>
 <main>
+  <div class="help-row"><a class="help-link" href="help.html" target="_blank" rel="noopener">? how to use</a></div>
 <div class="ds-tabs" id="dsTabs">
     <div class="ds-tab add-btn" onclick="addDataset()">＋ New dataset</div>
   </div>

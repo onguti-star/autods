@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoDS — How to use</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#030507;--panel:#080b0f;--line:#1b252d;--ink:#e6ebee;--muted:#8997a1;--gold:#d6a84f;--cyan:#83aaa3;--code:'Cascadia Code','JetBrains Mono','SFMono-Regular',Consolas,monospace}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;line-height:1.55}a{color:var(--gold)}
+header{border-bottom:1px solid var(--line);padding:22px max(20px,calc((100% - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}.brand{font:700 18px var(--code);letter-spacing:.5px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--gold);box-shadow:0 0 8px var(--gold);margin-right:8px}.back{font:11px var(--code);text-decoration:none;border:1px solid var(--line);padding:7px 11px}.back:hover{border-color:var(--gold)}
+main{max-width:1120px;margin:auto;padding:48px 20px 90px}h1,h2,h3{font-family:var(--code);font-weight:600;line-height:1.25}h1{font-size:32px;margin:0 0 12px;color:var(--gold)}h2{font-size:19px;color:var(--cyan);border-bottom:1px solid var(--line);padding-bottom:9px;margin:46px 0 16px}h3{font-size:14px;color:var(--gold);margin:22px 0 7px}p{max-width:850px;color:#c7d0d5}.lead{font-size:17px;color:var(--ink);max-width:780px}.toc{display:flex;flex-wrap:wrap;gap:7px;margin:28px 0}.toc a{font:11px var(--code);text-decoration:none;border:1px solid var(--line);padding:7px 10px}.toc a:hover{border-color:var(--gold)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:12px}.card{border:1px solid var(--line);background:var(--panel);padding:15px}.card h3{margin-top:0}.card p{font-size:13px;margin-bottom:0}.note{border-left:2px solid var(--gold);padding:10px 14px;background:rgba(214,168,79,.06);margin:16px 0;max-width:900px}code,pre{font-family:var(--code);font-size:.9em}code{color:var(--gold);background:rgba(255,255,255,.05);padding:2px 4px}pre{white-space:pre-wrap;border:1px solid var(--line);background:#05070a;padding:13px;color:#dbe5e8;overflow:auto}table{border-collapse:collapse;width:100%;max-width:1000px;font-size:13px;margin:10px 0 20px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:9px 10px;vertical-align:top}th{font:11px var(--code);color:var(--muted);text-transform:uppercase}.muted{color:var(--muted)}ul{padding-left:22px;max-width:900px}li{margin:5px 0}footer{border-top:1px solid var(--line);padding:25px max(20px,calc((100% - 1120px)/2));color:var(--muted);font:11px var(--code)}
+@media(max-width:600px){main{padding-top:30px}h1{font-size:25px}h2{margin-top:34px}.lead{font-size:15px}}
+</style>
+</head>
+<body>
+<header><div class="brand"><span class="dot"></span>AUTODS <span class="muted">/ how to use</span></div><a class="back" href="index.html">← back to workspace</a></header>
+<main>
+<h1>How to use AutoDS</h1>
+<p class="lead">AutoDS is a local, end-to-end data-science workspace. Load a dataset, understand it, clean it with plain English, explore patterns visually, train models, and use the results to make predictions.</p>
+<div class="toc"><a href="#workflow">WORKFLOW</a><a href="#ingest">INGEST</a><a href="#profile">PROFILE</a><a href="#clean">CLEAN + KEYWORDS</a><a href="#visualise">VISUALISE</a><a href="#ml">MACHINE LEARNING</a><a href="#patterns">PATTERN RECOGNITION</a><a href="#assistant">ASK ASSISTANT</a><a href="#export">EXPORT</a></div>
+
+<h2 id="workflow">01 / The basic workflow</h2>
+<div class="grid"><div class="card"><h3>1. Ingest</h3><p>Upload a file, paste data, use a public URL, connect to a database, merge datasets, or split a column.</p></div><div class="card"><h3>2. Profile</h3><p>Review column types, missing values, distributions, duplicates, correlations, and automatic suggestions.</p></div><div class="card"><h3>3. Clean</h3><p>Use the controls or type a plain-English command. Every change is tracked and can be undone.</p></div><div class="card"><h3>4. Explore and model</h3><p>Build charts, run simulations, train supervised models, discover groups and anomalies, forecast, or recommend items.</p></div></div>
+<div class="note">AutoDS works on the currently selected dataset tab. When data changes, current training results are cleared so models cannot silently use stale data; saved runs remain available.</div>
+
+<h2 id="ingest">02 / Ingesting data</h2>
+<p>Supported file types include CSV, Excel (<code>.xlsx</code>), JSON, TSV, Parquet, and SQLite (<code>.db</code>). For CSV-like files, use automatic detection or choose a separator. If the first row is data rather than headers, turn off <strong>header row</strong>.</p>
+<p>You can also paste CSV/TSV text, load a public HTTP/HTTPS dataset URL, use a database connection, merge two loaded datasets, or split one text column into multiple columns.</p>
+<p class="muted">Tip: after loading, check the preview and detected column types before training. A date stored as text should be converted to date/time first.</p>
+
+<h2 id="profile">03 / Profile and understand</h2>
+<p>The automated profile summarises row and column counts, data types, missingness, unique values, descriptive statistics, distributions, duplicate rows, and numeric relationships. The assistant can answer questions about the active data and return tables where useful.</p>
+<p>Examples: <code>what is the average revenue?</code> · <code>show missing values</code> · <code>which columns correlate with price?</code> · <code>count customers by country</code> · <code>compare sales by region</code> · <code>show the distribution of age</code>.</p>
+
+<h2 id="clean">04 / Clean data with commands</h2>
+<p>In the Clean panel, type a command in ordinary English. Column names and values are taken from your dataset. AutoDS understands common synonyms and can correct likely keyword typos.</p>
+<table><thead><tr><th>Task</th><th>Example commands</th></tr></thead><tbody>
+<tr><td>Rows</td><td><code>remove row 5</code><br><code>remove rows where age is 30</code><br><code>drop 0.83 in age</code></td></tr>
+<tr><td>Columns</td><td><code>drop column notes</code><br><code>rename dob to date</code><br><code>move age to position 2</code><br><code>move age before income</code></td></tr>
+<tr><td>Values</td><td><code>replace yes with 1 in approved</code><br><code>change male to female in gender</code><br><code>fill missing revenue with 0</code></td></tr>
+<tr><td>New columns</td><td><code>create column total as price * quantity</code><br><code>fill revenue with price * quantity</code><br><code>copy email into contact</code></td></tr>
+<tr><td>Types and numbers</td><td><code>convert price to number</code><br><code>convert order_date to date / time</code><br><code>round price to 2 decimals</code></td></tr>
+<tr><td>Text</td><td><code>trim name</code><br><code>lowercase email</code><br><code>uppercase country</code><br><code>remove punctuation in comments</code></td></tr>
+<tr><td>Rows and order</td><td><code>remove duplicates</code><br><code>sort by age</code><br><code>keep rows where score is greater than 80</code><br><code>reset</code></td></tr>
+<tr><td>Extract or split</td><td><code>extract day from date into day</code><br><code>extract year from order_date into year</code><br><code>split full_name by space</code></td></tr>
+</tbody></table>
+<p><strong>Common keyword families:</strong> drop/remove/delete; replace/change/set; move/reorder; fill/populate/update; trim/strip; category/categorical; create/add; convert/change type; extract/pattern/regex; rows/records; missing/empty/null.</p>
+<p>Use the structured controls for filtering, changing a column type, handling missing values, removing duplicates, grouping and aggregating, or extracting with a regular expression. For regex extraction, use at least one capture group, for example <code>\d{4}-(\d{2})-\d{2}</code> to capture a month from <code>2021-09-10</code>.</p>
+
+<h2 id="visualise">05 / Visualise patterns</h2>
+<p>The Visualise panel suggests useful charts and also lets you build your own. Available chart types include histogram, bar, pie, box plot, scatter, line, bubble, stacked bar, area, heatmap, treemap, radar, violin, density, scatter map, density heatmap, choropleth map, word frequency, and word cloud.</p>
+<ul><li>Use <strong>scatter</strong> to inspect relationships between two numeric columns.</li><li>Use <strong>heatmap</strong> to see correlations across numeric columns.</li><li>Use <strong>line</strong> or <strong>area</strong> for trends over time or ordered values.</li><li>Use <strong>box plot</strong> and <strong>violin</strong> to compare distributions and spot outliers.</li><li>Use maps when latitude/longitude or geographic region data is present.</li><li>Use word frequency or word cloud for text columns.</li></ul>
+<p>You can keep several charts, add notes to charts, filter chart values, and download charts or the full report.</p>
+
+<h2 id="ml">06 / Machine learning</h2>
+<h3>Supervised learning: predict a target</h3><p>Choose a target column in Training and choose feature columns, or let AutoDS use the other suitable columns. AutoDS detects classification versus regression and compares several models on a held-out validation split.</p>
+<p>Depending on the data, the model panel may include linear/logistic baselines, Random Forest, Extra Trees, Gradient Boosting, Histogram Gradient Boosting, KNN, SGD, and optional XGBoost. Preprocessing handles numeric and categorical features, missing values, and encoding. Review the leaderboard, validation metric, confusion matrix or regression metrics, and feature importance before trusting a model.</p>
+<h3>Predict</h3><p>After training, enter one row in the prediction form or use <strong>Choose input range</strong> to score many combinations. Download a trained model as a <code>.pkl</code>, or import a compatible scikit-learn/XGBoost/LightGBM model for prediction-only use.</p>
+<h3>Forecast</h3><p>For a numeric time-like target, use <strong>Forecast &amp; compare</strong> from a model card. AutoDS compares original and projected values and can show a line, bar, or pie view. Forecasting is an estimate based on the available data, not a guarantee of future outcomes.</p>
+<h3>What-if simulation</h3><p>Choose an outcome and driver, then test a percentage or fixed change. AutoDS repeats the scenario across sampled rows and reports a likely range for the sum, mean, or median.</p>
+
+<h2 id="patterns">07 / Pattern recognition without a target</h2>
+<p>Use Unsupervised Learning when there is no answer column to predict and you want AutoDS to discover structure in the data.</p>
+<div class="grid"><div class="card"><h3>Clustering</h3><p>K-Means, hierarchical/agglomerative clustering, or DBSCAN groups similar rows. Review cluster sizes and the features that separate groups.</p></div><div class="card"><h3>Anomaly detection</h3><p>Isolation Forest, Local Outlier Factor, or similar methods identify rows that do not fit the normal pattern. Anomaly labels and scores can be used to investigate or filter unusual records.</p></div><div class="card"><h3>Dimensionality reduction</h3><p>PCA compresses many numeric columns into a few components while preserving as much variation as possible. A 2D view can reveal clusters and structure.</p></div><div class="card"><h3>Association rules</h3><p>Apriori-style analysis finds items or categories that occur together, using support, confidence, and lift. This is useful for market-basket and co-occurrence patterns.</p></div><div class="card"><h3>Recommendations</h3><p>Fit a content-based or collaborative/implicit model to recommend similar or unseen items. Provide user, item, and optional rating/interactions columns.</p></div></div>
+<div class="note">A pattern is evidence to investigate, not proof of causation. Check sample size, missing values, leakage, and whether the relationship makes sense in the real-world context.</div>
+
+<h2 id="assistant">08 / Ask the assistant</h2>
+<p>The assistant works locally on the active dataset. It can explain columns, calculate statistics, compare groups, find correlations, suggest charts, recommend cleaning steps, and generate analysis code for clustering, anomaly detection, or association rules.</p>
+<p>Try: <code>summarize the dataset</code> · <code>what should I fix next?</code> · <code>show the strongest correlations</code> · <code>make a scatter plot of income and spend</code> · <code>find outliers</code> · <code>analyze clusters</code> · <code>find association rules</code>.</p>
+
+<h2 id="export">09 / Save, export, and good practice</h2>
+<ul><li>Use dataset tabs to work with more than one loaded dataset.</li><li>Use undo/reset after cleaning when you need to compare with the original.</li><li>Download cleaned data, charts, an HTML report, or a notebook from the relevant panel.</li><li>Save model runs with a name when comparing experiments.</li><li>Before deploying or sharing results, validate on data the model has not seen and check for leakage, bias, and meaningful business context.</li></ul>
+<p class="muted">AutoDS is designed for exploration and rapid analysis. Always review automated cleaning, patterns, and model scores before making consequential decisions.</p>
+</main>
+<footer>AutoDS / automated data science console</footer>
+</body>
+</html>
