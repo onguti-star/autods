@@ -874,7 +874,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <button class="dl" onclick="dlNotebook()">📓 Notebook (.ipynb)</button>
     </div>
     <div style="margin-top:20px;">
-      <div class="subhead">Original data — unchanged <span id="origPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
+      <div class="subhead">Data preview — double-click a cell to edit <span id="origPreviewBadge" style="font-size:10px;font-weight:400;color:var(--accent);margin-left:8px;"></span></div>
       <div id="origRangeControl"></div>
       <div id="previewWrap" style="overflow-x:auto;"></div>
     </div>
@@ -3102,7 +3102,7 @@ function downloadTextFile(text, filename, mimeType){
   URL.revokeObjectURL(url);
 }
 
-function renderPreview(columns, rows, targetId = "previewWrap", startRowNum = 1){
+function renderPreview(columns, rows, targetId = "previewWrap", startRowNum = 1, editable = true){
   const wrap = $(targetId);
   if(!wrap) return;
   if(!rows || !rows.length){ if(targetId === "previewWrap") hide("previewWrap"); return; }
@@ -3116,12 +3116,66 @@ function renderPreview(columns, rows, targetId = "previewWrap", startRowNum = 1)
       columns.map(c => {
         const v = row[c.name];
         return v === null || v === undefined
-          ? `<td class="null-val">null</td>`
-          : `<td>${String(v).length > 30 ? String(v).slice(0,30)+"…" : v}</td>`;
+          ? `<td class="null-val" ${editable ? `data-edit-row="${startRowNum + i}" data-edit-column="${escapeHtml(c.name)}"` : ""}>null</td>`
+          : `<td ${editable ? `data-edit-row="${startRowNum + i}" data-edit-column="${escapeHtml(c.name)}"` : ""}>${escapeHtml(String(v).length > 30 ? String(v).slice(0,30)+"…" : String(v))}</td>`;
       }).join("") + `</tr>`;
   });
   html += "</tbody></table>";
   wrap.innerHTML = html;
+  if(editable) enableCellEditing(wrap);
+}
+
+function enableCellEditing(wrap){
+  if(wrap.dataset.cellEditingBound) return;
+  wrap.dataset.cellEditingBound = "1";
+  wrap.addEventListener("dblclick", e => {
+    const cell = e.target.closest("td[data-edit-row]");
+    if(!cell || cell.querySelector("input")) return;
+    const row = Number(cell.dataset.editRow), column = cell.dataset.editColumn;
+    const oldValue = cell.textContent === "null" ? "" : cell.textContent;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = oldValue;
+    input.style.cssText = "width:100%;min-width:90px;padding:4px 6px;font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--accent);";
+    cell.textContent = "";
+    cell.appendChild(input);
+    input.focus(); input.select();
+    let finished = false;
+    const finish = async save => {
+      if(finished) return; finished = true;
+      if(!save){
+        cell.textContent = oldValue || "null";
+        cell.classList.toggle("null-val", !oldValue);
+        return;
+      }
+      input.disabled = true;
+      try{
+        const res = await fetch(`${API}/edit_cell/${getSid()}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({row, column, value:input.value})});
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.detail || "Could not save that cell.");
+        renderCurrentPreviews(data);
+        if(typeof handleDataChanged === "function") handleDataChanged(data, {reloadViz:true});
+      }catch(err){
+        cell.textContent = oldValue || "null";
+        cell.classList.toggle("null-val", !oldValue);
+        if(typeof appendChatMessage === "function") appendChatMessage("(cell edit)", err.message, true);
+      }
+    };
+    input.addEventListener("keydown", ev => {
+      if(ev.key === "Enter") finish(true);
+      if(ev.key === "Escape") finish(false);
+    });
+    input.addEventListener("blur", () => finish(true));
+  });
+}
+
+function renderCurrentPreviews(profile){
+  if(!profile?.preview?.length) return;
+  renderPreview(profile.columns, profile.preview, "previewWrap");
+  if($("edaUpdatedSection") && !$('edaUpdatedSection').classList.contains("hidden")) renderUpdatedPreview(profile);
+  if($("cleanPreviewSection") && !$('cleanPreviewSection').classList.contains("hidden")) renderCleanPreview(profile);
+  const badge = $("origPreviewBadge");
+  if(badge) badge.textContent = `rows 1–${profile.preview.length} of ${profile.shape.rows.toLocaleString()}`;
 }
 
 // Small reusable "rows X to Y" control used above the original/updated/clean

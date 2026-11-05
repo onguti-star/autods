@@ -873,6 +873,66 @@ class AddRowsRequest(BaseModel):
     position: int | None = Field(default=None, ge=1)
 
 
+class EditCellRequest(BaseModel):
+    """One Excel-style cell edit. Row numbers are one-based, as shown in the UI."""
+    row: int = Field(ge=1)
+    column: str = Field(min_length=1, max_length=500)
+    value: Any = None
+
+
+@app.post("/api/edit_cell/{session_id}")
+def edit_cell(session_id: str, req: EditCellRequest):
+    session = _get_session_or_404(session_id)
+    if req.column not in session.df.columns:
+        raise HTTPException(400, f"Unknown column: {req.column}")
+    if req.row > len(session.df):
+        raise HTTPException(400, f"Row {req.row} is out of range (1–{len(session.df)}).")
+
+    column = req.column
+    dtype = session.df[column].dtype
+    raw = req.value
+    is_blank = raw is None or (isinstance(raw, str) and not raw.strip())
+    try:
+        if is_blank:
+            if pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_datetime64_any_dtype(dtype):
+                value = np.nan
+            else:
+                value = ""
+        elif pd.api.types.is_bool_dtype(dtype):
+            text = str(raw).strip().lower()
+            if text in {"true", "yes", "y", "1"}:
+                value = True
+            elif text in {"false", "no", "n", "0"}:
+                value = False
+            else:
+                raise ValueError("use true or false")
+        elif pd.api.types.is_integer_dtype(dtype):
+            number = float(raw)
+            if not number.is_integer():
+                raise ValueError("use a whole number")
+            value = int(number)
+        elif pd.api.types.is_float_dtype(dtype):
+            value = float(raw)
+        elif pd.api.types.is_datetime64_any_dtype(dtype):
+            value = pd.to_datetime(raw, errors="raise")
+        else:
+            value = str(raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(400, f"Invalid value for '{column}': {exc}")
+
+    session.snapshot_before_change()
+    session.df.iat[req.row - 1, session.df.columns.get_loc(column)] = value
+    session.clear_current_training()
+    session.save_to_disk()
+
+    profile = eda.profile_dataframe(session.df)
+    profile["narrative"] = narrate.narrate_eda(profile)
+    profile["can_undo"] = session.can_undo()
+    profile["data_changed"] = True
+    profile["edited_cell"] = {"row": req.row, "column": column}
+    return profile
+
+
 @app.post("/api/add_rows/{session_id}")
 def add_rows(session_id: str, req: AddRowsRequest):
     """Append or insert one or more CSV rows into the current dataset.
