@@ -822,6 +822,83 @@ def merge_datasets(req: MergeRequest):
     return resp
 
 
+# ---------- Data model / relationship discovery ----------
+
+class DataModelRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+@app.post("/api/data_model")
+def data_model(req: DataModelRequest):
+    """Describe loaded tables and infer likely key relationships.
+
+    This is intentionally advisory: a column is labelled a primary-key
+    candidate only when its non-null values are unique, and a relationship is
+    reported only when the child values overlap the parent values. Users can
+    confirm the model before using it for a merge or exporting it to SQL/BI.
+    """
+    sessions = [_get_session_or_404(sid) for sid in req.session_ids]
+    tables = []
+    for session in sessions:
+        df = session.df
+        columns = []
+        for name in df.columns:
+            series = df[name]
+            non_null = series.dropna()
+            unique = int(non_null.nunique())
+            columns.append({
+                "name": str(name),
+                "dtype": str(series.dtype),
+                "nullable": bool(series.isna().any()),
+                "unique": unique,
+                "rows": int(len(df)),
+                "primary_candidate": bool(len(non_null) > 0 and not series.isna().any() and unique == len(non_null)),
+            })
+        tables.append({
+            "session_id": session.id,
+            "name": Path(session.filename).stem,
+            "rows": int(len(df)),
+            "columns": columns,
+        })
+
+    relationships = []
+    for child in sessions:
+        for parent in sessions:
+            if child is parent:
+                continue
+            for child_col in child.df.columns:
+                child_values = child.df[child_col].dropna()
+                if child_values.empty:
+                    continue
+                for parent_col in parent.df.columns:
+                    child_name = str(child_col).lower()
+                    parent_name = str(parent_col).lower()
+                    parent_table_name = Path(parent.filename).stem.lower()
+                    same_name = child_name == parent_name
+                    conventional_id = child_name in {f"{parent_table_name}_id", f"{parent_table_name.rstrip('s')}_id"} and parent_name == "id"
+                    if not (same_name or conventional_id):
+                        continue
+                    parent_values = parent.df[parent_col].dropna()
+                    if parent_values.empty or parent_values.nunique() != len(parent_values):
+                        continue
+                    try:
+                        overlap = child_values.isin(set(parent_values)).mean()
+                    except TypeError:
+                        continue
+                    if overlap >= 0.5:
+                        relationships.append({
+                            "from_table": Path(child.filename).stem,
+                            "from_session_id": child.id,
+                            "from_column": str(child_col),
+                            "to_table": Path(parent.filename).stem,
+                            "to_session_id": parent.id,
+                            "to_column": str(parent_col),
+                            "coverage": round(float(overlap) * 100, 1),
+                            "cardinality": "many-to-one",
+                        })
+    return {"tables": tables, "relationships": relationships}
+
+
 # ---------- EDA ----------
 
 @app.get("/api/eda/{session_id}")

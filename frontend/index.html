@@ -386,6 +386,12 @@ html[data-theme="light"] .command-action{color:#07599c;}html[data-theme="light"]
 .src-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:5px 12px;border:1px solid var(--panel-border);cursor:pointer;color:var(--ink-dim);background:transparent;}
 .src-tab.active{color:var(--accent);border-color:var(--accent-dim);}
 .src-panel{display:none;}.src-panel.active{display:block;}
+.model-toolbar{display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:12px 0 16px;}
+.model-card{border:1px solid var(--panel-border);padding:12px;margin-bottom:10px;background:rgba(255,255,255,.015);}
+.model-card h3{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--accent);margin:0 0 8px;}
+.model-key{color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;}
+.model-relation{border-left:3px solid var(--cyan);padding:10px 12px;margin:8px 0;background:rgba(95,212,214,.05);font-family:'IBM Plex Mono',monospace;font-size:11px;}
+.model-code{width:100%;min-height:150px;font-size:11px;line-height:1.5;}
 textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--ink);border:1px solid var(--panel-border);padding:8px 10px;font-size:11px;width:100%;resize:vertical;}
 .clean-options{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:14px;}
 .clean-option{display:flex;align-items:flex-start;gap:7px;padding:8px 10px;border:1px solid var(--panel-border);}
@@ -657,6 +663,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <div class="step" id="step4" onclick="scrollPanel('panelViz')"><span class="n">04</span> Visualise</div>
       <div class="step" id="step5" onclick="scrollPanel('panelTrain')"><span class="n">05</span> Training</div>
       <div class="step" id="step6" onclick="scrollPanel('panelModelCards')"><span class="n">06</span> Models</div>
+      <div class="step" id="step7" onclick="openDataModel()"><span class="n">07</span> Data model</div>
     </div>
   </div>
 
@@ -860,6 +867,25 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
     </div>
 
     <div id="uploadStatus"></div>
+  </section>
+
+  <!-- DATA MODEL -->
+  <section class="panel hidden" id="panelDataModel">
+    <h2><span class="idx">07 /</span> Data model</h2>
+    <p class="hint">A Power BI-style relationship view for the datasets you have loaded. AutoDS suggests primary keys and foreign-key links from uniqueness, matching column names, and value overlap. Confirm the suggestions before using them in production.</p>
+    <div class="model-toolbar">
+      <button onclick="loadDataModel()">↻ Detect keys &amp; relationships</button>
+      <button class="sec" onclick="copyModelSql()">Copy SQL schema</button>
+      <button class="sec" onclick="copyPowerBiGuidance()">Copy Power BI guidance</button>
+    </div>
+    <div id="dataModelSummary" class="hint">Load at least one dataset to inspect its keys, or two datasets to discover relationships.</div>
+    <div id="dataModelTables"></div>
+    <div class="subhead">Relationships</div>
+    <div id="dataModelRelationships" class="hint">No relationships detected yet.</div>
+    <div class="subhead">SQL schema starter</div>
+    <textarea id="dataModelSql" class="model-code" readonly placeholder="Run detection to generate CREATE TABLE statements."></textarea>
+    <div class="subhead">Power BI modeling notes</div>
+    <div id="dataModelPowerBi" class="hint">The guidance will appear after detection.</div>
   </section>
 
   <!-- 02 PROFILE -->
@@ -2864,6 +2890,65 @@ async function uploadDb(){
     if(!res.ok) throw new Error(data.detail || "Database error");
     _onUploaded(data);
   }catch(err){ $("uploadStatus").innerHTML = `<div class="error-box">${err.message}</div>`; }
+}
+
+// ---------- DATA MODEL ----------
+function openDataModel(){
+  show("panelDataModel");
+  setStep(7);
+  loadDataModel();
+  scrollPanel("panelDataModel");
+}
+
+function modelSqlName(value){
+  return String(value || "table").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^\d+/, "_").slice(0, 60) || "table";
+}
+
+function sqlType(dtype){
+  const d = String(dtype || "").toLowerCase();
+  if(d.includes("int")) return "INTEGER";
+  if(d.includes("float") || d.includes("double") || d.includes("decimal")) return "DECIMAL";
+  if(d.includes("bool")) return "BOOLEAN";
+  if(d.includes("date") || d.includes("time")) return "TIMESTAMP";
+  return "TEXT";
+}
+
+let lastDataModel = null;
+async function loadDataModel(){
+  const ids = datasets.map(d => dsState[d.id]?.sessionId).filter(Boolean);
+  if(!ids.length){
+    $("dataModelSummary").textContent = "Load a dataset first.";
+    return;
+  }
+  $("dataModelSummary").innerHTML = `<p class="loading">Inspecting keys and relationships…</p>`;
+  try{
+    const res = await fetch(`${API}/data_model`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({session_ids:ids})});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not inspect the data model");
+    lastDataModel = data;
+    renderDataModel(data);
+  }catch(err){ $("dataModelSummary").innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`; }
+}
+
+function renderDataModel(data){
+  const keys = data.tables.reduce((n,t)=>n+t.columns.filter(c=>c.primary_candidate).length,0);
+  $("dataModelSummary").textContent = `${data.tables.length} table${data.tables.length===1?"":"s"} · ${keys} likely primary-key candidate${keys===1?"":"s"} · ${data.relationships.length} relationship${data.relationships.length===1?"":"s"}`;
+  $("dataModelTables").innerHTML = data.tables.map(t => `<div class="model-card"><h3>${escapeHtml(t.name)} <span style="color:var(--ink-dim);font-weight:400">· ${t.rows.toLocaleString()} rows</span></h3><div>${t.columns.map(c => `<span class="model-key" style="display:inline-block;margin:3px 14px 3px 0;color:${c.primary_candidate?'var(--good)':'var(--ink-dim)'}">${c.primary_candidate?'🔑 ':'• '}${escapeHtml(c.name)} <small>(${escapeHtml(c.dtype)})</small></span>`).join("")}</div></div>`).join("");
+  $("dataModelRelationships").innerHTML = data.relationships.length ? data.relationships.map(r => `<div class="model-relation">${escapeHtml(r.from_table)}.${escapeHtml(r.from_column)} <strong>→</strong> ${escapeHtml(r.to_table)}.${escapeHtml(r.to_column)} <span style="color:var(--ink-dim)">· many-to-one · ${r.coverage}% values matched</span></div>`).join("") : "No likely relationships found. Matching column names and overlapping values are needed for an automatic suggestion.";
+  const ddl = data.tables.map(t => {
+    const cols = t.columns.map(c => `  ${modelSqlName(c.name)} ${sqlType(c.dtype)}${c.primary_candidate?' PRIMARY KEY':''}`).join(",\n");
+    return `CREATE TABLE ${modelSqlName(t.name)} (\n${cols}\n);`;
+  }).join("\n\n") + (data.relationships.length ? "\n\n" + data.relationships.map(r => `ALTER TABLE ${modelSqlName(r.from_table)} ADD FOREIGN KEY (${modelSqlName(r.from_column)}) REFERENCES ${modelSqlName(r.to_table)} (${modelSqlName(r.to_column)});`).join("\n") : "");
+  $("dataModelSql").value = ddl;
+  $("dataModelPowerBi").innerHTML = `<p>Use the likely unique columns as the <strong>one</strong> side of a one-to-many relationship. In Power BI Model view, connect each matching child column to its parent key, keep cross-filter direction single where possible, and avoid many-to-many unless the data genuinely requires a bridge table.</p><p>For SQL, use the generated schema as a starting point, then add explicit <code>FOREIGN KEY</code> constraints for the relationships you confirm.</p>`;
+}
+
+function copyModelSql(){
+  if($("dataModelSql").value) navigator.clipboard?.writeText($("dataModelSql").value);
+}
+function copyPowerBiGuidance(){
+  const text = "Power BI: use unique columns on the one side; relate child foreign keys to parent primary keys; prefer single-direction filtering; use a bridge table for genuine many-to-many relationships.";
+  navigator.clipboard?.writeText(text);
 }
 
 // Convenience getter used by downstream code
