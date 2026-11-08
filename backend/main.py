@@ -76,9 +76,12 @@ def _env_int(name: str, default: int) -> int:
 
 # Defaults preserve local/desktop behaviour. Render can set the *_MB and
 # *_ROWS variables without requiring a separate code branch or deployment.
-MAX_UPLOAD_BYTES = _env_int("AUTODS_MAX_UPLOAD_MB", 200) * 1024 * 1024
-MAX_REMOTE_BYTES = _env_int("AUTODS_MAX_REMOTE_MB", 200) * 1024 * 1024
-MAX_DATAFRAME_ROWS = _env_int("AUTODS_MAX_ROWS", 5_500_000)
+# These defaults leave room for a 250 MB / 6 million-row dataset while still
+# keeping a guardrail against accidentally loading an unbounded file into RAM.
+# Deployments can tune them with the AUTODS_MAX_* environment variables.
+MAX_UPLOAD_BYTES = _env_int("AUTODS_MAX_UPLOAD_MB", 300) * 1024 * 1024
+MAX_REMOTE_BYTES = _env_int("AUTODS_MAX_REMOTE_MB", 300) * 1024 * 1024
+MAX_DATAFRAME_ROWS = _env_int("AUTODS_MAX_ROWS", 6_500_000)
 MAX_DATAFRAME_COLUMNS = _env_int("AUTODS_MAX_COLUMNS", 1_000)
 
 

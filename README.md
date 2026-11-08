@@ -23,8 +23,10 @@ importance, then make live predictions or download the trained model.
 Data and models live in server memory per session (a UUID) — fine for local/single-user use. For
 multi-user production you'd swap that for a database + object storage (see Roadmap).
 
-Current guardrails: uploads and remote URL datasets are capped at 200 MB, loaded datasets are capped
-at 5,500,000 rows and 1,000 columns, and URL ingestion only accepts public HTTP/HTTPS addresses.
+Current guardrails: uploads and remote URL datasets are capped at 300 MB, loaded datasets are capped
+at 6,500,000 rows and 1,000 columns, and URL ingestion only accepts public HTTP/HTTPS addresses.
+These limits can be tuned with `AUTODS_MAX_UPLOAD_MB`, `AUTODS_MAX_REMOTE_MB`,
+`AUTODS_MAX_ROWS`, and `AUTODS_MAX_COLUMNS`; loading still depends on available RAM.
 
 ## Run it locally
 
