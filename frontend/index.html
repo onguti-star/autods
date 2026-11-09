@@ -392,6 +392,19 @@ html[data-theme="light"] .command-action{color:#07599c;}html[data-theme="light"]
 .model-key{color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;}
 .model-relation{border-left:3px solid var(--cyan);padding:10px 12px;margin:8px 0;background:rgba(95,212,214,.05);font-family:'IBM Plex Mono',monospace;font-size:11px;}
 .model-code{width:100%;min-height:150px;font-size:11px;line-height:1.5;}
+.model-erd{position:relative;overflow:auto;min-height:180px;margin:14px 0 18px;padding:18px;background:rgba(255,255,255,.018);border:1px solid var(--panel-border);}
+.model-erd-grid{position:relative;z-index:2;display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:42px 86px;align-items:start;min-width:600px;}
+.model-erd-table{position:relative;border:1px solid var(--panel-border);background:var(--panel,#0e1a2b);box-shadow:0 5px 18px rgba(0,0,0,.16);font-family:'IBM Plex Mono',monospace;font-size:11px;}
+.model-erd-title{padding:9px 11px;background:rgba(95,212,214,.10);border-bottom:1px solid var(--panel-border);color:var(--cyan);font-weight:700;letter-spacing:.4px;}
+.model-erd-title small{float:right;color:var(--ink-dim);font-weight:400;letter-spacing:0;}
+.model-erd-column{display:flex;align-items:center;gap:7px;min-height:29px;padding:5px 10px;border-bottom:1px solid rgba(128,150,170,.16);color:var(--ink-dim);}
+.model-erd-column:last-child{border-bottom:0;}.model-erd-column.is-key{color:var(--good);}
+.model-erd-column .model-col-name{flex:1;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.model-erd-column .model-col-type{color:var(--ink-dim);font-size:9px;}
+.model-erd-lines{position:absolute;inset:0;z-index:1;pointer-events:none;overflow:visible;}
+.model-erd-line{fill:none;stroke:var(--cyan);stroke-width:1.5;stroke-opacity:.78;}.model-erd-dot{fill:var(--cyan);}
+.model-erd-legend{font-size:10px;color:var(--ink-dim);margin:-8px 0 16px;font-family:'IBM Plex Mono',monospace;}
+@media(max-width:700px){.model-erd-grid{grid-template-columns:245px;gap:28px;}.model-erd-lines{display:none;}}
 textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--ink);border:1px solid var(--panel-border);padding:8px 10px;font-size:11px;width:100%;resize:vertical;}
 .clean-options{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:14px;}
 .clean-option{display:flex;align-items:flex-start;gap:7px;padding:8px 10px;border:1px solid var(--panel-border);}
@@ -872,7 +885,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
   <!-- DATA MODEL -->
   <section class="panel hidden" id="panelDataModel">
     <h2><span class="idx">07 /</span> Data model</h2>
-    <p class="hint">A Power BI-style relationship view for the datasets you have loaded. AutoDS suggests primary keys and foreign-key links from uniqueness, matching column names, and value overlap. Confirm the suggestions before using them in production.</p>
+    <p class="hint">A MySQL-style schema view for the datasets you have loaded. Each dataset is shown as a table with its columns; connector lines show the matching key fields AutoDS found.</p>
     <div class="model-toolbar">
       <button onclick="loadDataModel()">↻ Detect keys &amp; relationships</button>
       <button class="sec" onclick="copyModelSql()">Copy SQL schema</button>
@@ -880,7 +893,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
     </div>
     <div id="dataModelSummary" class="hint">Load at least one dataset to inspect its keys, or two datasets to discover relationships.</div>
     <div id="dataModelTables"></div>
-    <div class="subhead">Relationships</div>
+    <div class="subhead">Key links</div>
     <div id="dataModelRelationships" class="hint">No relationships detected yet.</div>
     <div class="subhead">SQL schema starter</div>
     <textarea id="dataModelSql" class="model-code" readonly placeholder="Run detection to generate CREATE TABLE statements."></textarea>
@@ -2933,14 +2946,46 @@ async function loadDataModel(){
 function renderDataModel(data){
   const keys = data.tables.reduce((n,t)=>n+t.columns.filter(c=>c.primary_candidate).length,0);
   $("dataModelSummary").textContent = `${data.tables.length} table${data.tables.length===1?"":"s"} · ${keys} likely primary-key candidate${keys===1?"":"s"} · ${data.relationships.length} relationship${data.relationships.length===1?"":"s"}`;
-  $("dataModelTables").innerHTML = data.tables.map(t => `<div class="model-card"><h3>${escapeHtml(t.name)} <span style="color:var(--ink-dim);font-weight:400">· ${t.rows.toLocaleString()} rows</span></h3><div>${t.columns.map(c => `<span class="model-key" style="display:inline-block;margin:3px 14px 3px 0;color:${c.primary_candidate?'var(--good)':'var(--ink-dim)'}">${c.primary_candidate?'🔑 ':'• '}${escapeHtml(c.name)} <small>(${escapeHtml(c.dtype)})</small></span>`).join("")}</div></div>`).join("");
-  $("dataModelRelationships").innerHTML = data.relationships.length ? data.relationships.map(r => `<div class="model-relation">${escapeHtml(r.from_table)}.${escapeHtml(r.from_column)} <strong>→</strong> ${escapeHtml(r.to_table)}.${escapeHtml(r.to_column)} <span style="color:var(--ink-dim)">· many-to-one · ${r.coverage}% values matched</span></div>`).join("") : "No likely relationships found. Matching column names and overlapping values are needed for an automatic suggestion.";
+  const tableMarkup = data.tables.map((t, ti) => `<div class="model-erd-table" data-model-table="${ti}"><div class="model-erd-title">${escapeHtml(t.name)} <small>${t.rows.toLocaleString()} rows</small></div>${t.columns.map((c, ci) => `<div class="model-erd-column${c.primary_candidate?' is-key':''}" data-model-column="${ti}-${ci}"><span>${c.primary_candidate?'🔑':'•'}</span><span class="model-col-name">${escapeHtml(c.name)}</span><span class="model-col-type">${escapeHtml(c.dtype)}</span></div>`).join("")}</div>`).join("");
+  $("dataModelTables").innerHTML = `<div class="model-erd"><svg class="model-erd-lines" aria-hidden="true"></svg><div class="model-erd-grid">${tableMarkup}</div></div><div class="model-erd-legend">🔑 likely primary key · lines connect a child column to its matching parent key</div>`;
+  const tableIndex = new Map(data.tables.map((t, i) => [String(t.name), i]));
+  const colIndex = new Map(data.tables.flatMap((t, ti) => t.columns.map((c, ci) => [`${ti}|${String(c.name)}`, ci])));
+  const links = data.relationships.map(r => ({...r, fromTable: tableIndex.get(String(r.from_table)), toTable: tableIndex.get(String(r.to_table))})).filter(r => r.fromTable !== undefined && r.toTable !== undefined).map(r => ({...r, fromCol: colIndex.get(`${r.fromTable}|${String(r.from_column)}`), toCol: colIndex.get(`${r.toTable}|${String(r.to_column)}`)})).filter(r => r.fromCol !== undefined && r.toCol !== undefined);
+  requestAnimationFrame(() => drawModelLinks(links));
+  window.removeEventListener("resize", redrawModelLinks);
+  window.addEventListener("resize", redrawModelLinks);
+  $("dataModelRelationships").innerHTML = data.relationships.length ? `<div class="model-links-note">${data.relationships.length} connector${data.relationships.length===1?'':'s'} shown above · hover the table columns to read the exact key names.</div>` : "No likely relationships found. Matching column names and overlapping values are needed for an automatic suggestion.";
   const ddl = data.tables.map(t => {
     const cols = t.columns.map(c => `  ${modelSqlName(c.name)} ${sqlType(c.dtype)}${c.primary_candidate?' PRIMARY KEY':''}`).join(",\n");
     return `CREATE TABLE ${modelSqlName(t.name)} (\n${cols}\n);`;
   }).join("\n\n") + (data.relationships.length ? "\n\n" + data.relationships.map(r => `ALTER TABLE ${modelSqlName(r.from_table)} ADD FOREIGN KEY (${modelSqlName(r.from_column)}) REFERENCES ${modelSqlName(r.to_table)} (${modelSqlName(r.to_column)});`).join("\n") : "");
   $("dataModelSql").value = ddl;
   $("dataModelPowerBi").innerHTML = `<p>Use the likely unique columns as the <strong>one</strong> side of a one-to-many relationship. In Power BI Model view, connect each matching child column to its parent key, keep cross-filter direction single where possible, and avoid many-to-many unless the data genuinely requires a bridge table.</p><p>For SQL, use the generated schema as a starting point, then add explicit <code>FOREIGN KEY</code> constraints for the relationships you confirm.</p>`;
+}
+
+function redrawModelLinks(){
+  if(lastDataModel) renderModelLinesOnly(lastDataModel);
+}
+function drawModelLinks(links){
+  const canvas = document.querySelector('.model-erd');
+  if(!canvas) return;
+  const grid = canvas.querySelector('.model-erd-grid'), svg = canvas.querySelector('.model-erd-lines');
+  const width = Math.max(grid.scrollWidth, canvas.clientWidth), height = Math.max(grid.scrollHeight, canvas.clientHeight);
+  svg.setAttribute('width', width); svg.setAttribute('height', height); svg.style.width = `${width}px`; svg.style.height = `${height}px`; svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  const base = canvas.getBoundingClientRect();
+  svg.innerHTML = links.map(r => {
+    const a = canvas.querySelector(`[data-model-column="${r.fromTable}-${r.fromCol}"]`), b = canvas.querySelector(`[data-model-column="${r.toTable}-${r.toCol}"]`);
+    if(!a || !b) return '';
+    const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect(), sx=canvas.scrollLeft, sy=canvas.scrollTop, ay=ar.top-base.top+sy+ar.height/2, by=br.top-base.top+sy+br.height/2;
+    const rightward = ar.left <= br.left, ax=(rightward?ar.right:ar.left)-base.left+sx, bx=(rightward?br.left:br.right)-base.left+sx, bend=Math.max(28, Math.abs(bx-ax)*.35), c1=rightward?ax+bend:ax-bend, c2=rightward?bx-bend:bx+bend;
+    return `<path class="model-erd-line" d="M ${ax} ${ay} C ${c1} ${ay}, ${c2} ${by}, ${bx} ${by}"/><circle class="model-erd-dot" cx="${ax}" cy="${ay}" r="3"/><circle class="model-erd-dot" cx="${bx}" cy="${by}" r="3"/>`;
+  }).join('');
+}
+function renderModelLinesOnly(data){
+  const tableIndex = new Map(data.tables.map((t, i) => [String(t.name), i]));
+  const colIndex = new Map(data.tables.flatMap((t, ti) => t.columns.map((c, ci) => [`${ti}|${String(c.name)}`, ci])));
+  const links = data.relationships.map(r => ({...r, fromTable: tableIndex.get(String(r.from_table)), toTable: tableIndex.get(String(r.to_table))})).filter(r => r.fromTable !== undefined && r.toTable !== undefined).map(r => ({...r, fromCol: colIndex.get(`${r.fromTable}|${String(r.from_column)}`), toCol: colIndex.get(`${r.toTable}|${String(r.to_column)}`)})).filter(r => r.fromCol !== undefined && r.toCol !== undefined);
+  drawModelLinks(links);
 }
 
 function copyModelSql(){

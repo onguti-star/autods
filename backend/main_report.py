@@ -511,15 +511,14 @@ def _build_html_report(session, extra_charts=None) -> str:
             color: var(--pbi-dark);
         }
         .container {
-            max-width: 95vw;
-            width: 1500px;
-            margin: 0 auto;
+            /* The downloaded report should use the browser frame rather than
+               looking like a small card centred inside it. */
+            width: 100%;
+            max-width: none;
+            margin: 0;
             background-color: var(--pbi-canvas);
             padding: 0 0 50px;
             min-height: 100vh;
-        }
-        @media (max-width: 1600px) {
-            .container { width: 95vw; max-width: none; }
         }
         .report-header {
             background: linear-gradient(135deg, var(--pbi-dark) 0%, #3A3836 100%);
@@ -568,9 +567,10 @@ def _build_html_report(session, extra_charts=None) -> str:
             display: flex;
             align-items: flex-start;
             gap: 24px;
+            width: 100%;
             padding: 0 24px;
         }
-        .report-main { flex: 1 1 auto; min-width: 0; }
+        .report-main { flex: 1 1 auto; min-width: 0; width: 100%; }
         .toc {
             flex: 0 0 240px;
             position: sticky;
@@ -766,12 +766,13 @@ def _build_html_report(session, extra_charts=None) -> str:
         /* Chart tiles laid out as a dashboard grid, not a single stacked column */
         .chart-row {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr));
             gap: 22px;
             margin-bottom: 30px;
             align-items: stretch;
         }
         .chart-card {
+            min-width: 0;
             background-color: var(--pbi-card);
             border-radius: 8px;
             padding: 20px 22px 22px;
