@@ -432,7 +432,43 @@ def _build_report_filter_payload(df: pd.DataFrame, profile: dict, charts: list,
     }
 
 
-def _build_html_report(session, extra_charts=None) -> str:
+def _render_data_model_html(data_model: dict | None) -> str:
+    if not data_model or not data_model.get("tables"):
+        return ""
+    table_cards = []
+    for table in data_model.get("tables", []):
+        rows = []
+        for col in table.get("columns", []):
+            key = "🔑 " if col.get("primary_candidate") else ""
+            rows.append(
+                f"<tr><td>{key}{html.escape(str(col.get('name', '')))}</td>"
+                f"<td>{html.escape(str(col.get('dtype', '')))}</td></tr>"
+            )
+        table_cards.append(
+            f'<div class="model-report-table"><h4>{html.escape(str(table.get("name", "")))}'
+            f'<small>{int(table.get("rows", 0) or 0):,} rows</small></h4>'
+            f'<table class="table"><thead><tr><th>Column</th><th>Type</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
+        )
+    links = []
+    for rel in data_model.get("relationships", []):
+        links.append(
+            f'<li><code>{html.escape(str(rel.get("from_table", "")))}.'
+            f'{html.escape(str(rel.get("from_column", "")))}</code>'
+            f' <span class="model-report-arrow">→</span> '
+            f'<code>{html.escape(str(rel.get("to_table", "")))}.'
+            f'{html.escape(str(rel.get("to_column", "")))}</code></li>'
+        )
+    return (
+        '<h2 class="section-title" id="data-model">🗂️ Data Model</h2>'
+        '<p class="analysis-meta">Arrows point from child foreign keys to matching parent keys.</p>'
+        f'<div class="model-report-grid">{"".join(table_cards)}</div>'
+        '<h3 class="subsection-title">Key links</h3>'
+        f'<ul class="model-report-links">{"".join(links) or "<li>No relationships detected.</li>"}</ul>'
+    )
+
+
+def _build_html_report(session, extra_charts=None, data_model=None) -> str:
     """Build a styled HTML presentation report."""
     profile = eda.profile_dataframe(session.df)
     narrative = narrate.narrate_eda(profile)
@@ -635,6 +671,29 @@ def _build_html_report(session, extra_charts=None) -> str:
             margin-top: 22px;
             margin-bottom: 12px;
         }
+        .model-report-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 14px;
+            margin-bottom: 18px;
+        }
+        .model-report-table {
+            border: 1px solid var(--pbi-border);
+            background: var(--pbi-card);
+            padding: 12px;
+        }
+        .model-report-table h4 {
+            margin: 0 0 8px;
+            color: var(--pbi-teal-dark);
+        }
+        .model-report-table h4 small {
+            float: right;
+            color: var(--pbi-gray);
+            font-size: .75em;
+            font-weight: 400;
+        }
+        .model-report-links { padding-left: 22px; }
+        .model-report-arrow { color: var(--pbi-teal-dark); font-weight: 700; padding: 0 5px; }
 
         /* KPI "card" visuals */
         .summary-grid {
@@ -1028,6 +1087,7 @@ def _build_html_report(session, extra_charts=None) -> str:
             <h3>📋 Pages</h3>
             <ul>
                 <li><a href="#dataset">Dataset Overview</a></li>
+                <li><a href="#data-model">Data Model</a></li>
                 <li><a href="#original-preview">Original Data (First 15 Rows)</a></li>
                 <li><a href="#updated-preview">Updated Data (First 15 Rows)</a></li>""")
     if getattr(session, "notes", "").strip():
@@ -1094,6 +1154,8 @@ def _build_html_report(session, extra_charts=None) -> str:
             <div class="stat-value">{type_counts.get('text', 0):,}</div>
         </div>
         </div>""")
+
+    html_parts.append(_render_data_model_html(data_model))
 
     # Original Data Section — the raw, untouched data before any cleaning.
     # Placed near the top so it's the frozen "before" reference for the rest of the report.

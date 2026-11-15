@@ -865,6 +865,7 @@ def data_model(req: DataModelRequest):
         })
 
     relationships = []
+    relationship_keys = set()
     for child in sessions:
         for parent in sessions:
             if child is parent:
@@ -877,7 +878,11 @@ def data_model(req: DataModelRequest):
                     child_name = str(child_col).lower()
                     parent_name = str(parent_col).lower()
                     parent_table_name = Path(parent.filename).stem.lower()
-                    same_name = child_name == parent_name
+                    # Treat a descriptive FK such as primary_product_id as
+                    # the same key family as products.product_id.
+                    child_key = re.sub(r"^(primary|foreign)_", "", child_name)
+                    parent_key = re.sub(r"^(primary|foreign)_", "", parent_name)
+                    same_name = child_key == parent_key
                     conventional_id = child_name in {f"{parent_table_name}_id", f"{parent_table_name.rstrip('s')}_id"} and parent_name == "id"
                     if not (same_name or conventional_id):
                         continue
@@ -889,6 +894,13 @@ def data_model(req: DataModelRequest):
                     except TypeError:
                         continue
                     if overlap >= 0.5:
+                        relationship_key = (
+                            Path(child.filename).stem, str(child_col),
+                            Path(parent.filename).stem, str(parent_col),
+                        )
+                        if relationship_key in relationship_keys:
+                            continue
+                        relationship_keys.add(relationship_key)
                         relationships.append({
                             "from_table": Path(child.filename).stem,
                             "from_session_id": child.id,
@@ -899,6 +911,21 @@ def data_model(req: DataModelRequest):
                             "coverage": round(float(overlap) * 100, 1),
                             "cardinality": "many-to-one",
                         })
+    # If several tables expose the same unique key, keep the semantically
+    # closest parent for a given child column. For example,
+    # website_session_id should prefer website_sessions over an order table
+    # that happens to repeat the same unique session key.
+    best_relationships = {}
+    for relationship in relationships:
+        child_col = re.sub(r"^(primary|foreign)_", "", relationship["from_column"].lower())
+        child_root = child_col.removesuffix("_id")
+        parent_name = relationship["to_table"].lower().removesuffix("_nav").rstrip("s")
+        score = 2 if child_root.rstrip("s") in parent_name or parent_name in child_root.rstrip("s") else 1
+        key = (relationship["from_table"], relationship["from_column"])
+        previous = best_relationships.get(key)
+        if previous is None or score > previous[0]:
+            best_relationships[key] = (score, relationship)
+    relationships = [item[1] for item in best_relationships.values()]
     return {"tables": tables, "relationships": relationships}
 
 
@@ -2377,6 +2404,7 @@ def download_work(session_id: str):
 class ReportChartsRequest(BaseModel):
     charts: list = []   # chart objects the user built in "Build a custom chart",
                          # in the same shape returned by /api/visualize
+    data_model: dict | None = None
 
 
 @app.post("/api/stage_charts/{session_id}")
@@ -2421,7 +2449,7 @@ def download_html_with_custom_charts(session_id: str, req: ReportChartsRequest):
         # plain GET) can still fall back to it instead of generic
         # auto-suggestions — see _build_html_report's fallback chain.
         session.staged_charts = req.charts
-    report = _build_html_report(session, extra_charts=req.charts).encode("utf-8")
+    report = _build_html_report(session, extra_charts=req.charts, data_model=req.data_model).encode("utf-8")
     buf = io.BytesIO(report)
     name = session.filename.rsplit(".", 1)[0]
     return StreamingResponse(

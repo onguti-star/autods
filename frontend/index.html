@@ -402,7 +402,8 @@ html[data-theme="light"] .command-action{color:#07599c;}html[data-theme="light"]
 .model-erd-column .model-col-name{flex:1;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .model-erd-column .model-col-type{color:var(--ink-dim);font-size:9px;}
 .model-erd-lines{position:absolute;inset:0;z-index:1;pointer-events:none;overflow:visible;}
-.model-erd-line{fill:none;stroke:var(--cyan);stroke-width:1.5;stroke-opacity:.78;}.model-erd-dot{fill:var(--cyan);}
+.model-erd-line{fill:none;stroke:var(--cyan);stroke-width:1.5;stroke-opacity:.78;marker-end:url(#model-erd-arrow);}.model-erd-dot{fill:var(--cyan);}
+.model-erd-child-dot{fill:var(--panel,#0e1a2b);stroke:var(--cyan);stroke-width:1.5;}
 .model-erd-legend{font-size:10px;color:var(--ink-dim);margin:-8px 0 16px;font-family:'IBM Plex Mono',monospace;}
 @media(max-width:700px){.model-erd-grid{grid-template-columns:245px;gap:28px;}.model-erd-lines{display:none;}}
 textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--ink);border:1px solid var(--panel-border);padding:8px 10px;font-size:11px;width:100%;resize:vertical;}
@@ -423,9 +424,13 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
 .corr-legend .cl-note{margin:0;font-size:11.5px;color:var(--ink-dim);line-height:1.5;}
 .preview-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;}
 .preview-table th{font-family:'IBM Plex Mono',monospace;background:#05070a;padding:8px 12px;border:1px solid var(--panel-border);text-align:left;position:sticky;top:0;}
+.preview-table th{position:relative;}
+.preview-table .col-resizer{position:absolute;top:0;right:-1px;width:11px;height:100%;cursor:col-resize;z-index:3;touch-action:none;}
+.preview-table .col-resizer:hover,.preview-table .col-resizer.is-resizing{background:var(--accent);opacity:.8;}
+.preview-table.is-resizing{cursor:col-resize;user-select:none;}
 .preview-table th .col-name{color:var(--ink);font-weight:600;}
 .preview-table th .col-type{display:block;color:var(--accent);font-size:9px;font-weight:400;margin-top:2px;text-transform:uppercase;letter-spacing:.5px;}
-.preview-table td{padding:7px 12px;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;color:var(--ink-dim);}
+.preview-table td{padding:7px 12px;border:1px solid var(--panel-border);font-family:'IBM Plex Mono',monospace;color:var(--ink-dim);overflow:hidden;text-overflow:ellipsis;}
 .preview-table td.null-val{color:#3a4f6a;font-style:italic;}
 .preview-table tr:hover td{background:rgba(95,212,214,0.04);}
 .preview-table tr:nth-child(even) td{background:rgba(0,0,0,0.1);}
@@ -658,7 +663,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
     <div class="session-tag" id="sessionTag">no dataset loaded</div>
     <span class="autosave-badge" id="autosaveBadge">✓ saved</span>
     <button class="sec theme-toggle" id="appThemeToggle" type="button" title="Switch between VS Code-style dark and light themes">☼ light</button>
-    <button class="sec" id="clearReloadBtn" title="Wipe saved session and reload — use this after making code changes" onclick="clearAndReload()" style="font-size:10px;padding:5px 11px;border-color:var(--ink-dim);color:var(--ink-dim);">↺ fresh reload</button>
+    <button class="sec" id="clearReloadBtn" title="Wipe saved session and reload" onclick="clearAndReload()" style="font-size:10px;padding:5px 11px;border-color:var(--ink-dim);color:var(--ink-dim);">↺ fresh reload</button>
     <button class="sec" id="desktopQuitBtn" title="Stop AutoDS" style="display:none;font-size:10px;padding:5px 11px;border-color:var(--bad,#f07178);color:var(--bad,#f07178);">⏻ quit</button>
   </div>
 </header>
@@ -671,12 +676,12 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
     <div class="stepper" style="flex:1;margin-bottom:0;">
       <div class="step active" id="step1" onclick="scrollPanel('panelUpload')"><span class="n">01</span> Ingest</div>
-      <div class="step" id="step2" onclick="scrollPanel('panelEDA')"><span class="n">02</span> Profile</div>
-      <div class="step" id="step3" onclick="scrollPanel('panelClean')"><span class="n">03</span> Clean</div>
-      <div class="step" id="step4" onclick="scrollPanel('panelViz')"><span class="n">04</span> Visualise</div>
-      <div class="step" id="step5" onclick="scrollPanel('panelTrain')"><span class="n">05</span> Training</div>
-      <div class="step" id="step6" onclick="scrollPanel('panelModelCards')"><span class="n">06</span> Models</div>
-      <div class="step" id="step7" onclick="openDataModel()"><span class="n">07</span> Data model</div>
+      <div class="step" id="step2" onclick="openDataModel()"><span class="n">02</span> Data model</div>
+      <div class="step" id="step3" onclick="scrollPanel('panelEDA')"><span class="n">03</span> Profile</div>
+      <div class="step" id="step4" onclick="scrollPanel('panelClean')"><span class="n">04</span> Clean</div>
+      <div class="step" id="step5" onclick="scrollPanel('panelViz')"><span class="n">05</span> Visualise</div>
+      <div class="step" id="step6" onclick="scrollPanel('panelTrain')"><span class="n">06</span> Training</div>
+      <div class="step" id="step7" onclick="scrollPanel('panelModelCards')"><span class="n">07</span> Models</div>
     </div>
   </div>
 
@@ -884,7 +889,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
 
   <!-- DATA MODEL -->
   <section class="panel hidden" id="panelDataModel">
-    <h2><span class="idx">07 /</span> Data model</h2>
+    <h2><span class="idx">02 /</span> Data model</h2>
     <p class="hint">A MySQL-style schema view for the datasets you have loaded. Each dataset is shown as a table with its columns; connector lines show the matching key fields AutoDS found.</p>
     <div class="model-toolbar">
       <button onclick="loadDataModel()">↻ Detect keys &amp; relationships</button>
@@ -2088,32 +2093,20 @@ function tryRestoreSession(){
 }
 
 // ============================
-// FRESH RELOAD (dev helper)
+// FRESH RELOAD
 // ============================
 function clearAndReload(){
-  const ok = confirm("Fresh reload clears this tab's locally saved AutoDS state, including uploaded-session links and current UI progress, and closes every open dataset session on the server. Continue?");
+  const ok = confirm("Fresh reload clears all saved AutoDS state, including the loaded dataset. Continue?");
   if(!ok) return;
 
-  // Tell the backend to drop every open session's files, so a fresh reload
-  // actually frees the data/disk instead of just forgetting about it on the
-  // frontend and leaving orphaned CSVs behind on every click.
-  //
-  // keepalive:true is required here — location.reload() below fires right
-  // after this loop, and without it the browser is allowed to abort these
-  // fetches mid-flight when the page starts unloading, silently dropping
-  // the DELETE before it ever reaches the server. keepalive tells the
-  // browser to still send the request even though the page is navigating
-  // away (same mechanism navigator.sendBeacon uses).
+  // Delete the backend copies too; otherwise a later request could restore a
+  // dataset that the frontend had forgotten.
   datasets.forEach(d => {
-    const sid = dsState[d.id]?.sessionId;
+    const sid = dsState[d.id]?.sessionId || d.sessionId;
     if(sid){
       fetch(`${API}/session/${sid}`, { method: "DELETE", keepalive: true }).catch(() => {});
     }
   });
-
-  // Also sweep any orphaned session files left behind by earlier tabs/tests
-  // that never got closed properly (crashed page, closed browser, old bug),
-  // instead of waiting for the server's own 7-day cleanup window.
   fetch(`${API}/session/purge`, { method: "POST", keepalive: true }).catch(() => {});
 
   try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
@@ -2459,7 +2452,7 @@ function clearAnalysisUI(){
 }
 
 function resetPanels(){
-  ["panelEDA","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards","panelForecast"].forEach(hide);
+  ["panelEDA","panelDataModel","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards","panelForecast"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -2469,7 +2462,7 @@ function resetPanels(){
 
 function restoreDataset(state){
   resetPanels();
-  show("panelEDA"); show("panelAssistant"); setStep(2);
+  show("panelEDA"); show("panelAssistant"); setStep(3);
 
   // Always sync the allColumns global to this dataset before doing anything else.
   // If allColumns is stale (from a previous tab), targetSelect will show wrong
@@ -2633,17 +2626,17 @@ function restoreDataset(state){
 
   // Set the stepper to the most advanced step the user had reached
   if((state.modelCards && state.modelCards.length) || state.training){
-    setStep(6);
+    setStep(7);
   } else if(state.panelTrainVisible){
-    setStep(5);
+    setStep(6);
   } else if(state.panelSimVisible){
-    setStep(4);
+    setStep(5);
   } else if(state.panelVizVisible){
-    setStep(4);
+    setStep(5);
   } else if(cleanPanelNeeded || state.panelCleanVisible){
-    setStep(3);
+    setStep(4);
   } else if(state.profile){
-    setStep(2);
+    setStep(3);
   }
 }
 
@@ -2702,9 +2695,10 @@ async function dlPresentation(){
   const sid = getState().sessionId;
   if(!sid) return;
   try{
+    if(!lastDataModel) await loadDataModel();
     await _downloadViaBlob(
       `${API}/download_html/${sid}`,
-      {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({charts: customChartSpecs})},
+      {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({charts: customChartSpecs, data_model: lastDataModel})},
       "autods_report.html"
     );
   }catch(err){ alert(`Couldn't download the report: ${err.message}`); }
@@ -2744,7 +2738,7 @@ function _onUploaded(data){
   $("sessionTag").textContent = `${name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
   $("uploadStatus").innerHTML = loadedMessage;
   renderDsTabs();
-  setStep(2); show("panelAssistant");
+  setStep(3); show("panelAssistant");
   loadEDA(activeDs, data.session_id);
 }
 
@@ -2908,7 +2902,7 @@ async function uploadDb(){
 // ---------- DATA MODEL ----------
 function openDataModel(){
   show("panelDataModel");
-  setStep(7);
+  setStep(2);
   loadDataModel();
   scrollPanel("panelDataModel");
 }
@@ -2947,7 +2941,7 @@ function renderDataModel(data){
   const keys = data.tables.reduce((n,t)=>n+t.columns.filter(c=>c.primary_candidate).length,0);
   $("dataModelSummary").textContent = `${data.tables.length} table${data.tables.length===1?"":"s"} · ${keys} likely primary-key candidate${keys===1?"":"s"} · ${data.relationships.length} relationship${data.relationships.length===1?"":"s"}`;
   const tableMarkup = data.tables.map((t, ti) => `<div class="model-erd-table" data-model-table="${ti}"><div class="model-erd-title">${escapeHtml(t.name)} <small>${t.rows.toLocaleString()} rows</small></div>${t.columns.map((c, ci) => `<div class="model-erd-column${c.primary_candidate?' is-key':''}" data-model-column="${ti}-${ci}"><span>${c.primary_candidate?'🔑':'•'}</span><span class="model-col-name">${escapeHtml(c.name)}</span><span class="model-col-type">${escapeHtml(c.dtype)}</span></div>`).join("")}</div>`).join("");
-  $("dataModelTables").innerHTML = `<div class="model-erd"><svg class="model-erd-lines" aria-hidden="true"></svg><div class="model-erd-grid">${tableMarkup}</div></div><div class="model-erd-legend">🔑 likely primary key · lines connect a child column to its matching parent key</div>`;
+  $("dataModelTables").innerHTML = `<div class="model-erd"><svg class="model-erd-lines" aria-hidden="true"></svg><div class="model-erd-grid">${tableMarkup}</div></div><div class="model-erd-legend">🔑 likely primary key · arrows point from child foreign keys to matching parent keys</div>`;
   const tableIndex = new Map(data.tables.map((t, i) => [String(t.name), i]));
   const colIndex = new Map(data.tables.flatMap((t, ti) => t.columns.map((c, ci) => [`${ti}|${String(c.name)}`, ci])));
   const links = data.relationships.map(r => ({...r, fromTable: tableIndex.get(String(r.from_table)), toTable: tableIndex.get(String(r.to_table))})).filter(r => r.fromTable !== undefined && r.toTable !== undefined).map(r => ({...r, fromCol: colIndex.get(`${r.fromTable}|${String(r.from_column)}`), toCol: colIndex.get(`${r.toTable}|${String(r.to_column)}`)})).filter(r => r.fromCol !== undefined && r.toCol !== undefined);
@@ -2973,12 +2967,12 @@ function drawModelLinks(links){
   const width = Math.max(grid.scrollWidth, canvas.clientWidth), height = Math.max(grid.scrollHeight, canvas.clientHeight);
   svg.setAttribute('width', width); svg.setAttribute('height', height); svg.style.width = `${width}px`; svg.style.height = `${height}px`; svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   const base = canvas.getBoundingClientRect();
-  svg.innerHTML = links.map(r => {
+  svg.innerHTML = `<defs><marker id="model-erd-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--cyan)"/></marker></defs>` + links.map(r => {
     const a = canvas.querySelector(`[data-model-column="${r.fromTable}-${r.fromCol}"]`), b = canvas.querySelector(`[data-model-column="${r.toTable}-${r.toCol}"]`);
     if(!a || !b) return '';
     const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect(), sx=canvas.scrollLeft, sy=canvas.scrollTop, ay=ar.top-base.top+sy+ar.height/2, by=br.top-base.top+sy+br.height/2;
     const rightward = ar.left <= br.left, ax=(rightward?ar.right:ar.left)-base.left+sx, bx=(rightward?br.left:br.right)-base.left+sx, bend=Math.max(28, Math.abs(bx-ax)*.35), c1=rightward?ax+bend:ax-bend, c2=rightward?bx-bend:bx+bend;
-    return `<path class="model-erd-line" d="M ${ax} ${ay} C ${c1} ${ay}, ${c2} ${by}, ${bx} ${by}"/><circle class="model-erd-dot" cx="${ax}" cy="${ay}" r="3"/><circle class="model-erd-dot" cx="${bx}" cy="${by}" r="3"/>`;
+    return `<path class="model-erd-line" d="M ${ax} ${ay} C ${c1} ${ay}, ${c2} ${by}, ${bx} ${by}"/><circle class="model-erd-child-dot" cx="${ax}" cy="${ay}" r="3"/>`;
   }).join('');
 }
 function renderModelLinesOnly(data){
@@ -3237,9 +3231,14 @@ function renderPreview(columns, rows, targetId = "previewWrap", startRowNum = 1,
   if(!wrap) return;
   if(!rows || !rows.length){ if(targetId === "previewWrap") hide("previewWrap"); return; }
   const typeColor = t => t.includes("int") ? "#5fd4d6" : t.includes("float") ? "#ffb627" : t.includes("bool") ? "#5fd98c" : "#a78bfa";
-  let html = `<table class="preview-table"><thead><tr>
-    <th><span class="col-name">#</span><span class="col-type">row</span></th>` +
-    columns.map(c => `<th><span class="col-name">${c.name}</span><span class="col-type" style="color:${typeColor(c.dtype)}">${c.dtype}</span></th>`).join("") +
+  const widthKey = `${activeDs || "global"}:${targetId}`;
+  const savedWidths = previewColumnWidths[widthKey] || {};
+  const widthStyle = i => savedWidths[i] ? ` style="width:${savedWidths[i]}px"` : "";
+  let html = `<table class="preview-table"><colgroup>` +
+    [0, ...columns.map((_, i) => i + 1)].map(i => `<col data-preview-col="${i}"${widthStyle(i)}>`).join("") +
+    `</colgroup><thead><tr>
+    <th data-preview-col="0"${widthStyle(0)}><span class="col-name">#</span><span class="col-type">row</span><span class="col-resizer" aria-label="Resize row number column"></span></th>` +
+    columns.map((c, i) => `<th data-preview-col="${i + 1}"${widthStyle(i + 1)}><span class="col-name">${escapeHtml(c.name)}</span><span class="col-type" style="color:${typeColor(c.dtype)}">${escapeHtml(c.dtype)}</span><span class="col-resizer" aria-label="Resize ${escapeHtml(c.name)} column"></span></th>`).join("") +
     `</tr></thead><tbody>`;
   rows.forEach((row, i) => {
     html += `<tr><td style="color:var(--ink-dim);text-align:center;">${startRowNum + i}</td>` +
@@ -3247,12 +3246,66 @@ function renderPreview(columns, rows, targetId = "previewWrap", startRowNum = 1,
         const v = row[c.name];
         return v === null || v === undefined
           ? `<td class="null-val" ${editable ? `data-edit-row="${startRowNum + i}" data-edit-column="${escapeHtml(c.name)}"` : ""}>null</td>`
-          : `<td ${editable ? `data-edit-row="${startRowNum + i}" data-edit-column="${escapeHtml(c.name)}"` : ""}>${escapeHtml(String(v).length > 30 ? String(v).slice(0,30)+"…" : String(v))}</td>`;
+          : `<td ${editable ? `data-edit-row="${startRowNum + i}" data-edit-column="${escapeHtml(c.name)}"` : ""}>${escapeHtml(String(v))}</td>`;
       }).join("") + `</tr>`;
   });
   html += "</tbody></table>";
   wrap.innerHTML = html;
+  enableColumnResizing(wrap, wrap.querySelector(".preview-table"), widthKey);
   if(editable) enableCellEditing(wrap);
+}
+
+// Excel-like drag handles on preview-table headers. Widths are remembered for
+// the current dataset and preview, so editing or changing the displayed rows
+// does not immediately undo the user's chosen column sizes.
+const previewColumnWidths = {};
+function enableColumnResizing(wrap, table, widthKey){
+  if(!table) return;
+  table.querySelectorAll(".col-resizer").forEach(handle => {
+    handle.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const th = handle.closest("th");
+      const colIndex = Number(th.dataset.previewCol);
+      const col = table.querySelector(`col[data-preview-col="${colIndex}"]`);
+      const startX = event.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      const minWidth = colIndex === 0 ? 46 : 72;
+      // Freeze the browser's automatic table sizing before dragging. Without
+      // this, the table can immediately redistribute the width and make the
+      // user's drag appear to have no effect.
+      const cols = [...table.querySelectorAll("col[data-preview-col]")];
+      const tableWidth = Math.max(table.getBoundingClientRect().width, table.scrollWidth);
+      cols.forEach(c => {
+        const index = Number(c.dataset.previewCol);
+        const header = table.querySelector(`th[data-preview-col="${index}"]`);
+        if(header) c.style.width = `${header.getBoundingClientRect().width}px`;
+      });
+      table.style.tableLayout = "fixed";
+      table.style.width = `${tableWidth}px`;
+      handle.classList.add("is-resizing");
+      table.classList.add("is-resizing");
+      handle.setPointerCapture?.(event.pointerId);
+      const move = ev => {
+        const width = Math.max(minWidth, Math.round(startWidth + ev.clientX - startX));
+        if(col) col.style.width = `${width}px`;
+        th.style.width = `${width}px`;
+        table.style.width = `${Math.max(tableWidth, tableWidth + width - startWidth)}px`;
+        previewColumnWidths[widthKey] = {...(previewColumnWidths[widthKey] || {}), [colIndex]: width};
+      };
+      const stop = () => {
+        handle.classList.remove("is-resizing");
+        table.classList.remove("is-resizing");
+        handle.releasePointerCapture?.(event.pointerId);
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", stop);
+        handle.removeEventListener("pointercancel", stop);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", stop);
+      handle.addEventListener("pointercancel", stop);
+    });
+  });
 }
 
 function enableCellEditing(wrap){
@@ -3480,7 +3533,7 @@ $("corrColA").addEventListener("change", updateCorrelationPair);
 $("corrColB").addEventListener("change", updateCorrelationPair);
 
 $("goCleanBtn").addEventListener("click", () => {
-  show("panelClean"); setStep(3); scrollPanel("panelClean");
+  show("panelClean"); setStep(4); scrollPanel("panelClean");
   if(dsState[activeDs]){ dsState[activeDs].panelCleanVisible = true; autoSave(); }
 });
 
@@ -3707,7 +3760,7 @@ if($("dbAnalysisRunBtn")) $("dbAnalysisRunBtn").addEventListener("click", runDat
 
 function openCleaningTools(){
   show("panelClean");
-  setStep(3);
+  setStep(4);
   scrollPanel("panelClean");
 }
 
@@ -3852,14 +3905,14 @@ $("extractColBtn").addEventListener("click", async () => {
 });
 
 $("goVizBtn").addEventListener("click", () => {
-  show("panelViz"); setStep(4); scrollPanel("panelViz"); loadVizSuggestions();
+  show("panelViz"); setStep(5); scrollPanel("panelViz"); loadVizSuggestions();
   if(dsState[activeDs]){ dsState[activeDs].panelVizVisible = true; autoSave(); }
 });
 
 $("goSimBtn").addEventListener("click", () => {
   show("panelViz");
   if($("simDropdown")) $("simDropdown").open = true;
-  setStep(4);
+  setStep(5);
   scrollPanel("simDropdown");
   populateSimulationSelects();
   if(dsState[activeDs]){ dsState[activeDs].panelSimVisible = true; autoSave(); }
