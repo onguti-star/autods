@@ -265,6 +265,7 @@ class Session:
         restore) and the undo stack (snapshots of df, not worth the disk
         space for an undo history nobody can see across a restart anyway)."""
         return {
+            "filename": self.filename,
             "staged_charts": self._staged_charts,
             "notes": self._notes,
             "cleaning_log": self.cleaning_log,
@@ -496,7 +497,9 @@ def get_session(session_id: str) -> "Session":
     # (staged charts, notes, cleaning history, geo matches) comes back too.
     s = Session.__new__(Session)
     s.id = session_id
-    s.filename = "restored.parquet"
+    # Keep the original display/table name across a backend restart.  The
+    # data-model endpoint uses this name for conventional *_id -> id matching.
+    s.filename = meta.get("filename", "restored.csv")
     s.df = df
     s.original_df = original_df
     s.target = None
@@ -540,6 +543,29 @@ def delete_session(session_id: str):
     """Remove a session from memory and disk."""
     SESSIONS.pop(session_id, None)
     _delete_session_files(session_id)
+
+
+def clear_all_sessions() -> int:
+    """Remove every dataset session from memory and disk.
+
+    This is intentionally different from ``purge_stale_session_files``:
+    a fresh reload is an explicit user request to clear active sessions too,
+    not just orphaned files.
+    """
+    removed = len(SESSIONS)
+    SESSIONS.clear()
+    try:
+        for fname in os.listdir(_SESSION_DIR):
+            if not (fname.endswith(".csv") or fname.endswith("_meta.json")):
+                continue
+            try:
+                os.remove(os.path.join(_SESSION_DIR, fname))
+                removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
 
 
 def evict_idle_sessions(max_idle_hours: int = 24) -> int:

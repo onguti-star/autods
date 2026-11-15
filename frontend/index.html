@@ -2008,10 +2008,15 @@ function setDatasetState(id, patch){ dsState[id] = {...(dsState[id]||{}), ...pat
 const STORAGE_KEY = "autods_session_v1";
 let _autoSaveTimer = null;
 let _autosaveBadgeTimer = null;
+let _clearingForReload = false;
 
-function autoSave(){
+function autoSave(immediate = false){
   // Debounce: batch rapid state changes into one write
   clearTimeout(_autoSaveTimer);
+  if(immediate){
+    _doAutoSave();
+    return;
+  }
   _autoSaveTimer = setTimeout(_doAutoSave, 600);
 }
 
@@ -2070,6 +2075,16 @@ function _flashSaveBadge(){
   _autosaveBadgeTimer = setTimeout(() => badge.classList.remove("show"), 2000);
 }
 
+// localStorage writes are synchronous, so flush the latest in-memory state
+// while the page is being discarded. This covers normal close/reload and
+// sleep, while critical session creation below saves immediately for sudden
+// power loss (which cannot fire pagehide).
+window.addEventListener("pagehide", () => {
+  if(_clearingForReload) return;
+  clearTimeout(_autoSaveTimer);
+  _doAutoSave();
+});
+
 // ============================
 // AUTO-RESTORE (on page load)
 // ============================
@@ -2095,21 +2110,26 @@ function tryRestoreSession(){
 // ============================
 // FRESH RELOAD
 // ============================
-function clearAndReload(){
+async function clearAndReload(){
   const ok = confirm("Fresh reload clears all saved AutoDS state, including the loaded dataset. Continue?");
   if(!ok) return;
 
-  // Delete the backend copies too; otherwise a later request could restore a
-  // dataset that the frontend had forgotten.
-  datasets.forEach(d => {
-    const sid = dsState[d.id]?.sessionId || d.sessionId;
-    if(sid){
-      fetch(`${API}/session/${sid}`, { method: "DELETE", keepalive: true }).catch(() => {});
-    }
-  });
-  fetch(`${API}/session/purge`, { method: "POST", keepalive: true }).catch(() => {});
-
+  // Clear active backend sessions as one operation and wait for it before
+  // reloading. Per-dataset fire-and-forget deletes could race location.reload,
+  // leaving sessions that the next page could still restore.
+  _clearingForReload = true;
+  clearTimeout(_autoSaveTimer);
+  datasets.length = 0;
+  activeDs = null;
+  Object.keys(dsState).forEach(id => delete dsState[id]);
+  const button = document.getElementById("clearReloadBtn");
+  if(button){ button.disabled = true; button.textContent = "↺ clearing…"; }
   try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
+  try{
+    await fetch(`${API}/session/clear-all`, { method: "POST" });
+  }catch(e){
+    console.warn("Could not clear backend sessions before reload:", e);
+  }
   location.reload();
 }
 
@@ -2733,7 +2753,10 @@ function _onUploaded(data){
   ["panelClean","panelViz","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
   datasets.find(d => d.id === activeDs).name = name;
   setState({sessionId: data.session_id, allColumns: data.columns, savedRuns: [], savedPredictions: [], training: null, profile: null, cleanLog: null, simulationResult: null});
-  autoSave(); // capture dataset name change (datasets array is not watched by setState)
+  // The session id is the handle needed to recover the dataset after a
+  // browser/backend restart. Save it synchronously so a power loss cannot
+  // strand the newly uploaded session behind the normal debounce window.
+  autoSave(true); // capture dataset name change (datasets array is not watched by setState)
   clearPredictionsUI();
   $("sessionTag").textContent = `${name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
   $("uploadStatus").innerHTML = loadedMessage;

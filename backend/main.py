@@ -54,6 +54,7 @@ from .store import (
     create_session,
     get_session,
     delete_session,
+    clear_all_sessions,
     purge_stale_session_files,
     evict_idle_sessions,
 )
@@ -4172,6 +4173,13 @@ def purge_sessions_endpoint():
     reload" button a way to clear those out on demand, right when the user
     asks for it, instead of waiting out the week-long grace period."""
     removed = purge_stale_session_files(max_age_days=0)
+    return {"ok": True, "removed": removed}
+
+
+@app.post("/api/session/clear-all")
+def clear_all_sessions_endpoint():
+    """Clear every active and persisted dataset session for this backend."""
+    removed = clear_all_sessions()
     return {"ok": True, "removed": removed}
 
 
