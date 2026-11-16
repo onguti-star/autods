@@ -15,6 +15,7 @@ sys.path.insert(0, PROJECT_ROOT)
 os.environ["PYTHONPATH"] = PROJECT_ROOT + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 import uvicorn
+from backend.config import SERVER_HOST, SERVER_PORT
 
 import argparse
 
@@ -25,8 +26,8 @@ args = parser.parse_args()
 if __name__ == "__main__":
     uvicorn.run(
         "backend.main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=SERVER_HOST,
+        port=SERVER_PORT,
         reload=args.dev,
         reload_dirs=[BACKEND_DIR] if args.dev else None,
     )

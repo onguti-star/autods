@@ -15,6 +15,7 @@ sys.path.insert(0, PROJECT_ROOT)
 os.environ["PYTHONPATH"] = PROJECT_ROOT + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 import uvicorn
+from backend.config import SERVER_HOST, SERVER_PORT
 
 import argparse
 
@@ -30,8 +31,8 @@ if __name__ == "__main__":
         # is skipped in --dev mode as a result; restart without --dev to use it.
         uvicorn.run(
             "backend.main:app",
-            host="0.0.0.0",
-            port=8000,
+            host=SERVER_HOST,
+            port=SERVER_PORT,
             reload=True,
             reload_dirs=[BACKEND_DIR],
         )
@@ -49,4 +50,4 @@ if __name__ == "__main__":
         except Exception as exc:
             print(f"Claude assistant not loaded: {exc}")
 
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

@@ -41,6 +41,9 @@ python3 backend/run.py
 Then open **http://localhost:8000** in your browser — the backend serves the frontend directly,
 so there's nothing else to start.
 
+The server listens on `AUTODS_HOST` and `AUTODS_PORT` when set (defaults: `0.0.0.0` and
+`8000`). For example, `AUTODS_PORT=9000 python3 backend/run.py`.
+
 `backend/main.py` uses package-relative imports, so starting Uvicorn as
 `main:app` from inside `backend/` will fail with `ImportError: attempted relative
 import with no known parent package`. Use `python3 backend/run.py` from the

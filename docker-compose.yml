@@ -3,10 +3,12 @@ services:
     build: .
     restart: unless-stopped
     environment:
+      - AUTODS_HOST=0.0.0.0
+      - AUTODS_PORT=8000
       # Comma-separated list of origins allowed to call this API — set this
       # to your Netlify URL (e.g. "https://my-app.netlify.app"), or the
       # browser will block the requests even though the server is reachable.
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://CHANGE-ME.netlify.app}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
     volumes:
       - ./data/sessions:/app/.sessions
     expose:
@@ -18,6 +20,8 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    environment:
+      - AUTODS_DOMAIN=${AUTODS_DOMAIN:-localhost}
     ports:
       - "80:80"
       - "443:443"

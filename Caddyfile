@@ -3,6 +3,6 @@
 # is 123.45.67.89, use "123-45-67-89.sslip.io" here — it's a real public DNS
 # name that resolves to your IP, so Caddy can still get a real Let's Encrypt
 # certificate for it automatically. No account or setup needed on your end.
-CHANGE-ME.sslip.io {
+{$AUTODS_DOMAIN:localhost} {
     reverse_proxy backend:8000
 }

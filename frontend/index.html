@@ -1975,20 +1975,25 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
 
 <script>
 // Set this when the frontend and backend are hosted on DIFFERENT origins
-// (e.g. this file on Netlify, the API on your own VPS) -- e.g.
-//   const API_BASE = "https://autods-yuqz.onrender.com";
+// (e.g. this file on Netlify, the API on your own VPS).
 // Leave it "" (the default) when the backend serves this same file itself,
 // which is how local dev and single-server deployments already work --
 // nothing else needs to change for those.
-// Same-origin ("") when running locally -- the FastAPI backend serves this page itself,
-// so it works with no internet. Falls back to the hosted backend only when this file
-// is served from the public website (Netlify etc.).
+// Same-origin ("") is the safest default: the FastAPI backend serves this page itself,
+// and deployments can provide a separate API explicitly with `?api=...`,
+// `localStorage.autodsApiBase`, or `window.AUTODS_API_BASE` before this script runs.
 const API_BASE = (function () {
   const h = location.hostname;
-  if (location.protocol === "file:") return "http://localhost:8000"; // index.html opened directly
+  if (location.protocol === "file:") {
+    const port = new URLSearchParams(location.search).get("port") || "8000";
+    return `http://localhost:${port}`;
+  } // index.html opened directly
   if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" ||
       /^192\.168\./.test(h) || /^10\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)) return "";
-  return "https://autods-yuqz.onrender.com";
+  const configured = window.AUTODS_API_BASE ||
+    new URLSearchParams(location.search).get("api") ||
+    localStorage.getItem("autodsApiBase") || "";
+  return configured.replace(/\/$/, "");
 })();
 const API = API_BASE + "/api";
 // Multi-dataset state

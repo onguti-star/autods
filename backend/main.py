@@ -832,6 +832,12 @@ class DataModelRequest(BaseModel):
     session_ids: list[str] = Field(min_length=1, max_length=50)
 
 
+def _key_family(name: str) -> str:
+    """Return the semantic family of a conventional ID column."""
+    value = re.sub(r"^(primary|foreign)_", "", str(name).strip().lower())
+    return value.removesuffix("_id")
+
+
 @app.post("/api/data_model")
 def data_model(req: DataModelRequest):
     """Describe loaded tables and infer likely key relationships.
@@ -878,13 +884,18 @@ def data_model(req: DataModelRequest):
                 for parent_col in parent.df.columns:
                     child_name = str(child_col).lower()
                     parent_name = str(parent_col).lower()
-                    parent_table_name = Path(parent.filename).stem.lower()
-                    # Treat a descriptive FK such as primary_product_id as
-                    # the same key family as products.product_id.
-                    child_key = re.sub(r"^(primary|foreign)_", "", child_name)
-                    parent_key = re.sub(r"^(primary|foreign)_", "", parent_name)
+                    child_key = _key_family(child_name)
+                    parent_key = _key_family(parent_name)
                     same_name = child_key == parent_key
-                    conventional_id = child_name in {f"{parent_table_name}_id", f"{parent_table_name.rstrip('s')}_id"} and parent_name == "id"
+                    # A matching value is not enough. The referenced column
+                    # must share the normalized key family. A generic `id`
+                    # parent is allowed only when the child key names that
+                    # parent table, avoiding value-only matches.
+                    parent_table_name = Path(parent.filename).stem.lower()
+                    table_stem = parent_table_name.rstrip("s")
+                    conventional_id = parent_name == "id" and child_name in {
+                        f"{parent_table_name}_id", f"{table_stem}_id"
+                    }
                     if not (same_name or conventional_id):
                         continue
                     parent_values = parent.df[parent_col].dropna()
@@ -918,10 +929,9 @@ def data_model(req: DataModelRequest):
     # that happens to repeat the same unique session key.
     best_relationships = {}
     for relationship in relationships:
-        child_col = re.sub(r"^(primary|foreign)_", "", relationship["from_column"].lower())
-        child_root = child_col.removesuffix("_id")
-        parent_name = relationship["to_table"].lower().removesuffix("_nav").rstrip("s")
-        score = 2 if child_root.rstrip("s") in parent_name or parent_name in child_root.rstrip("s") else 1
+        child_root = _key_family(relationship["from_column"])
+        parent_name = _key_family(relationship["to_column"])
+        score = 2 if child_root == parent_name else 1
         key = (relationship["from_table"], relationship["from_column"])
         previous = best_relationships.get(key)
         if previous is None or score > previous[0]:
