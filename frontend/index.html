@@ -732,7 +732,10 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <div class="dropzone" id="dropzone">
         <div class="big">Drop a file here, or click to browse</div>
         <div class="small">.csv · .xlsx · .json · .tsv · .parquet · .db</div>
-        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.json,.tsv,.txt,.parquet,.db,.sqlite,.sqlite3"/>
+        <!-- Mobile file providers do not consistently honour extension-only
+             accept lists and may hide CSV/XLSX files. Show the normal picker;
+             the backend still validates the filename and supported format. -->
+        <input type="file" id="fileInput" accept="*/*"/>
       </div>
       <p class="hint" id="fileSepHint" style="display:none;margin-top:6px;">
         Data looking wrong (everything in one column, or oddly split)? Pick the correct separator above —
