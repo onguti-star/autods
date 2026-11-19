@@ -2734,8 +2734,6 @@ def train(session_id: str, req: TrainRequest):
     if not feature_columns:
         raise HTTPException(400, "Choose at least one X/feature column besides the target Y column.")
     model_names = list(dict.fromkeys(req.model_names or [])) or None
-    if model_names is not None and len(model_names) < 2:
-        raise HTTPException(400, "Select at least two models to compare, or clear the selection to use AutoML.")
 
     # Automatically preserve the current training as a saved run before starting
     # a new one, so the user never loses a trained model when switching targets.

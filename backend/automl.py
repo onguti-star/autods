@@ -1029,14 +1029,21 @@ def train_all(
     if model_names is not None:
         requested = list(dict.fromkeys(model_names))
         unavailable = [name for name in requested if name not in candidates]
-        if unavailable:
+        # The UI intentionally starts with every model checked. Classification
+        # and regression, and normal versus fast large-data panels, do not
+        # share exactly the same candidate names. Ignore checked models that
+        # cannot apply here; keep the useful choices and fail only if none
+        # remain. This lets users simply uncheck unwanted models.
+        candidates = {name: candidates[name] for name in requested if name in candidates}
+        if not candidates:
+            unavailable_text = ", ".join(unavailable) if unavailable else ", ".join(requested)
             raise ValueError(
-                "Selected model(s) are not available for this dataset size/type: "
-                + ", ".join(unavailable)
+                "None of the selected models are available for this dataset size/type: "
+                + unavailable_text
             )
-        if len(requested) < 2:
-            raise ValueError("Select at least two models to compare, or clear the selection to use AutoML.")
-        candidates = {name: candidates[name] for name in requested}
+        selected_all_models = set(candidates) == set(requested) or model_names is None
+    else:
+        selected_all_models = True
 
     # For imbalanced datasets notify via progress callback
     if is_imbalanced and progress_callback:
@@ -1084,7 +1091,7 @@ def train_all(
     successful_results = [r for r in results if "error" not in r]
     # An explicit comparison should contain exactly the user's candidates;
     # don't add the optional ensemble as a surprise third model.
-    if model_names is None and len(successful_results) >= 2:
+    if selected_all_models and len(successful_results) >= 2:
         top_base = sorted(successful_results, key=lambda r: r["primary_score"], reverse=True)[:3]
         base_estimators = [(r["model"], r["fitted"]) for r in top_base]
         

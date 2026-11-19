@@ -1583,9 +1583,9 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <span>Thorough mode — tune hyperparameters and add a stacked ensemble (slower, more accurate; best for datasets under ~10k rows, e.g. Kaggle-style competitions)</span>
     </label>
     <div class="pred-field" style="margin-top:12px;">
-      <label>Compare selected models <span class="hint" style="font-weight:normal;">(optional — choose two or more; the best validation score becomes the winner)</span></label>
+      <label>Choose models <span class="hint" style="font-weight:normal;">(all selected by default — uncheck the models you do not want; the best selected model becomes the winner)</span></label>
       <div id="modelChoiceCheckboxes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;padding:10px;border:1px solid var(--line);border-radius:6px;max-height:190px;overflow:auto;"></div>
-      <p class="hint" style="margin:6px 0 0;">Leave all unchecked to use the full AutoML model panel. The final test set is kept separate from model selection.</p>
+      <p class="hint" style="margin:6px 0 0;"><button class="sec" id="clearTrainingModelsBtn" type="button" style="padding:4px 8px;margin-right:6px;">Select all models</button>Models that do not apply to this dataset type or size are skipped automatically. The final test set is kept separate from model selection.</p>
     </div>
     
     <div class="pred-row" style="margin-top:14px;">
@@ -4353,13 +4353,21 @@ const selectableTrainingModels = [
 function populateModelChoices(){
   const wrap = $("modelChoiceCheckboxes");
   if(!wrap) return;
-  const previous = new Set([...wrap.querySelectorAll('input[name="trainingModel"]:checked')].map(o => o.value));
+  const existingInputs = [...wrap.querySelectorAll('input[name="trainingModel"]')];
+  const hasExistingChoices = existingInputs.length > 0;
+  const previous = hasExistingChoices
+    ? new Set(existingInputs.filter(o => o.checked).map(o => o.value))
+    : new Set(selectableTrainingModels);
   wrap.innerHTML = selectableTrainingModels.map(name => `
     <label class="inline-option" style="margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
       <input type="checkbox" name="trainingModel" value="${escapeHtml(name)}" ${previous.has(name) ? "checked" : ""}>
       <span>${escapeHtml(name)}</span>
     </label>`).join("");
 }
+
+$("clearTrainingModelsBtn")?.addEventListener("click", () => {
+  document.querySelectorAll('input[name="trainingModel"]').forEach(input => { input.checked = true; });
+});
 
 $("targetSelect")?.addEventListener("change", populateTrainingFeatures);
 
@@ -6293,10 +6301,6 @@ $("trainBtn").addEventListener("click", async () => {
   }
   if(!featureColumns.length){
     $("trainStatus").innerHTML = `<div class="error-box">Choose at least one X / feature column besides the target.</div>`;
-    return;
-  }
-  if(modelNames.length === 1){
-    $("trainStatus").innerHTML = `<div class="error-box">Choose at least two models to compare, or clear the model selection to use full AutoML.</div>`;
     return;
   }
 
