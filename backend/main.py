@@ -2610,6 +2610,7 @@ class TrainRequest(BaseModel):
     target: str = Field(min_length=1)
     feature_columns: list[str] | None = None
     use_pca: bool = False
+    model_names: list[str] | None = None
 
 
 # session_id -> {"process", "manager", "progress", "result_queue", "target"}
@@ -2645,7 +2646,7 @@ def _watchdog_timeout(session_id: str, pid: int):
             pass
 
 
-def _train_worker(df, target: str, feature_columns: list[str], use_pca: bool, progress_list, result_queue):
+def _train_worker(df, target: str, feature_columns: list[str], use_pca: bool, model_names: list[str] | None, progress_list, result_queue):
     """Runs in a child process. Talks back to the parent only via progress_list/result_queue."""
     import time
     import traceback
@@ -2670,7 +2671,8 @@ def _train_worker(df, target: str, feature_columns: list[str], use_pca: bool, pr
 
     try:
         problem_type, leaderboard, fitted, best_name, label_encoder, best_importance = automl.train_all(
-            df, target, use_pca=use_pca, feature_columns=feature_columns, progress_callback=_report
+            df, target, use_pca=use_pca, feature_columns=feature_columns,
+            model_names=model_names, progress_callback=_report
         )
 
         elapsed_total = time.time() - worker_start
@@ -2731,6 +2733,9 @@ def train(session_id: str, req: TrainRequest):
         raise HTTPException(400, f"Invalid training feature column(s): {', '.join(invalid_features)}")
     if not feature_columns:
         raise HTTPException(400, "Choose at least one X/feature column besides the target Y column.")
+    model_names = list(dict.fromkeys(req.model_names or [])) or None
+    if model_names is not None and len(model_names) < 2:
+        raise HTTPException(400, "Select at least two models to compare, or clear the selection to use AutoML.")
 
     # Automatically preserve the current training as a saved run before starting
     # a new one, so the user never loses a trained model when switching targets.
@@ -2774,7 +2779,7 @@ def train(session_id: str, req: TrainRequest):
 
     process = ctx.Process(
         target=_train_worker,
-        args=(session.df.copy(), req.target, feature_columns, req.use_pca, progress, result_queue),
+        args=(session.df.copy(), req.target, feature_columns, req.use_pca, model_names, progress, result_queue),
         daemon=True,
     )
     process.start()
@@ -2790,6 +2795,7 @@ def train(session_id: str, req: TrainRequest):
         "result_queue": result_queue,
         "target": req.target,
         "feature_columns": feature_columns,
+        "model_names": model_names,
         "cancel_requested": False,
         "timed_out": False,
         "n_rows": len(session.df),

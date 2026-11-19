@@ -855,6 +855,7 @@ def train_all(
     progress_callback=None,
     *,
     feature_columns: list[str] | None = None,
+    model_names: list[str] | None = None,
 ) -> Tuple[str, list, dict, str, object, list]:
     """
     Returns: (problem_type, leaderboard, fitted_pipelines_by_name, best_name,
@@ -1021,6 +1022,22 @@ def train_all(
             else _regression_models()
         )
 
+    # An optional user-selected panel lets the UI compare only the requested
+    # candidates.  Keep the default (None) as full AutoML for backwards
+    # compatibility, and validate against the active panel so fast/large-data
+    # runs cannot silently train a different model than the user selected.
+    if model_names is not None:
+        requested = list(dict.fromkeys(model_names))
+        unavailable = [name for name in requested if name not in candidates]
+        if unavailable:
+            raise ValueError(
+                "Selected model(s) are not available for this dataset size/type: "
+                + ", ".join(unavailable)
+            )
+        if len(requested) < 2:
+            raise ValueError("Select at least two models to compare, or clear the selection to use AutoML.")
+        candidates = {name: candidates[name] for name in requested}
+
     # For imbalanced datasets notify via progress callback
     if is_imbalanced and progress_callback:
         try:
@@ -1065,7 +1082,9 @@ def train_all(
     # --- Stacking Ensemble Step ---
     # Take top 3 successful non-ensemble models and fit a meta-learner stack
     successful_results = [r for r in results if "error" not in r]
-    if len(successful_results) >= 2:
+    # An explicit comparison should contain exactly the user's candidates;
+    # don't add the optional ensemble as a surprise third model.
+    if model_names is None and len(successful_results) >= 2:
         top_base = sorted(successful_results, key=lambda r: r["primary_score"], reverse=True)[:3]
         base_estimators = [(r["model"], r["fitted"]) for r in top_base]
         

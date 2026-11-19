@@ -325,9 +325,16 @@ def _detect_coordinate_columns(df: pd.DataFrame) -> dict:
     for col in df.columns:
         col_lower = col.lower().strip()
         if col_lower in LAT_NAMES:
-            lat_candidates.append(col)
+            # Exact names are strong evidence, but still require at least one
+            # in-range numeric value so a text column named "latitude" cannot
+            # produce a blank/broken map.
+            values = pd.to_numeric(df[col], errors="coerce").dropna()
+            if len(values) and values.between(-90, 90).any():
+                lat_candidates.append(col)
         elif col_lower in LON_NAMES:
-            lon_candidates.append(col)
+            values = pd.to_numeric(df[col], errors="coerce").dropna()
+            if len(values) and values.between(-180, 180).any():
+                lon_candidates.append(col)
         # Only auto-detect from value ranges for columns with geo-sounding names
         # Avoid grabbing generic 'x', 'y' or any numeric column by value alone
         elif pd.api.types.is_numeric_dtype(df[col]) and any(hint in col_lower for hint in ('lat', 'lon', 'lng', 'coord', 'geo')):
@@ -370,7 +377,14 @@ def _scatter_map_data(df: pd.DataFrame, lat_col: str, lon_col: str,
         if c not in needed:
             needed.append(c)
 
-    sub = df[needed].dropna(subset=[lat_col, lon_col])
+    sub = df[needed].copy()
+    sub[lat_col] = pd.to_numeric(sub[lat_col], errors="coerce")
+    sub[lon_col] = pd.to_numeric(sub[lon_col], errors="coerce")
+    # Leaflet cannot display coordinates outside the geographic bounds. Drop
+    # those rows instead of allowing one bad value to distort the map view.
+    sub = sub[
+        sub[lat_col].between(-90, 90) & sub[lon_col].between(-180, 180)
+    ].dropna(subset=[lat_col, lon_col])
     if len(sub) > max_points:
         sub = sub.sample(max_points, random_state=42)
 

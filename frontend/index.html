@@ -1582,6 +1582,11 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
       <input type="checkbox" id="thoroughTraining">
       <span>Thorough mode — tune hyperparameters and add a stacked ensemble (slower, more accurate; best for datasets under ~10k rows, e.g. Kaggle-style competitions)</span>
     </label>
+    <div class="pred-field" style="margin-top:12px;">
+      <label>Compare selected models <span class="hint" style="font-weight:normal;">(optional — choose two or more; the best validation score becomes the winner)</span></label>
+      <div id="modelChoiceCheckboxes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;padding:10px;border:1px solid var(--line);border-radius:6px;max-height:190px;overflow:auto;"></div>
+      <p class="hint" style="margin:6px 0 0;">Leave all unchecked to use the full AutoML model panel. The final test set is kept separate from model selection.</p>
+    </div>
     
     <div class="pred-row" style="margin-top:14px;">
       <div class="pred-field"><label>Target column</label><select id="targetSelect"></select></div>
@@ -4313,6 +4318,7 @@ function populateSelects(){
     $("targetSelect").value = targetToSelect;
   }
   populateTrainingFeatures();
+  populateModelChoices();
   // Populate PCA color column dropdown with categorical/text columns
   populatePcaColorCol();
 }
@@ -4331,6 +4337,28 @@ function populateTrainingFeatures(){
         <span>${escapeHtml(c)}</span>
       </label>`)
     .join("");
+}
+
+// These are the display names used by backend/automl.py.  The backend still
+// validates them against the active problem type and fast/large-data panel.
+// Keeping the choices here makes model comparison explicit without changing
+// the existing full-AutoML default.
+const selectableTrainingModels = [
+  "Logistic Regression", "Linear Classifier (Fast)", "Ridge Regression",
+  "Random Forest", "Extra Trees", "Extra Trees (Fast)",
+  "Gradient Boosting", "Histogram Gradient Boosting", "Histogram Gradient Boosting (Fast)",
+  "K-Nearest Neighbors", "LightGBM", "LightGBM (Fast)", "CatBoost", "XGBoost", "XGBoost (Fast)"
+];
+
+function populateModelChoices(){
+  const wrap = $("modelChoiceCheckboxes");
+  if(!wrap) return;
+  const previous = new Set([...wrap.querySelectorAll('input[name="trainingModel"]:checked')].map(o => o.value));
+  wrap.innerHTML = selectableTrainingModels.map(name => `
+    <label class="inline-option" style="margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+      <input type="checkbox" name="trainingModel" value="${escapeHtml(name)}" ${previous.has(name) ? "checked" : ""}>
+      <span>${escapeHtml(name)}</span>
+    </label>`).join("");
 }
 
 $("targetSelect")?.addEventListener("change", populateTrainingFeatures);
@@ -5740,7 +5768,9 @@ function drawChart(canvasId, ch){
         // CARTO's hosted basemaps, which now require an API key and stamp
         // an "API KEY REQUIRED" watermark across every tile without one).
         mapDiv.style.background = "#eef1f5";
-        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+        // ArcGIS street tiles use an English-oriented global label set and
+        // avoid the local-language label switching seen with OSM tiles.
+        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
           attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 19, maxNativeZoom: 16, opacity: 1
         }).addTo(map);
         L.control.attribution({position: "bottomleft", prefix: false}).addTo(map);
@@ -6014,8 +6044,11 @@ function drawChart(canvasId, ch){
     box.appendChild(mapDiv);
 
     const map = L.map(mapDiv, {preferCanvas: true}).setView([0, 0], 2);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors", maxZoom: 19
+    // Use the same English-oriented basemap as the choropleth renderer. OSM
+    // labels can follow local-language names, which made some maps appear in
+    // Chinese even though the app UI is English.
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+      attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors", maxZoom: 19, maxNativeZoom: 16
     }).addTo(map);
 
     if(ch.type === "heatmap_map"){
@@ -6246,6 +6279,7 @@ $("trainBtn").addEventListener("click", async () => {
   const featureColumns = [...document.querySelectorAll('input[name="trainingFeature"]:checked')].map(o => o.value);
   const usePca = $("usePcaForTraining").checked;
   const thorough = $("thoroughTraining").checked;
+  const modelNames = [...document.querySelectorAll('input[name="trainingModel"]:checked')].map(o => o.value);
   if(!sid || !target) return;
 
   // Belt-and-braces: never send a target that isn't actually a column on the
@@ -6259,6 +6293,10 @@ $("trainBtn").addEventListener("click", async () => {
   }
   if(!featureColumns.length){
     $("trainStatus").innerHTML = `<div class="error-box">Choose at least one X / feature column besides the target.</div>`;
+    return;
+  }
+  if(modelNames.length === 1){
+    $("trainStatus").innerHTML = `<div class="error-box">Choose at least two models to compare, or clear the model selection to use full AutoML.</div>`;
     return;
   }
 
@@ -6278,7 +6316,7 @@ $("trainBtn").addEventListener("click", async () => {
   setTrainingInProgress(true);
 
   try{
-    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, feature_columns: featureColumns, use_pca: usePca, thorough})});
+    const startRes = await fetch(`${API}/train/${sid}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target, feature_columns: featureColumns, use_pca: usePca, thorough, model_names: modelNames.length ? modelNames : null})});
     if(!startRes.ok){
       const errData = await startRes.json().catch(()=>({}));
       throw new Error(errData.detail || "Could not start training");
