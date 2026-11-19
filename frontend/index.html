@@ -2756,6 +2756,16 @@ async function dlNotebook(){
 }
 
 // ---------- UPLOAD HELPERS ----------
+async function _readApiJson(res, action){
+  const raw = await res.text();
+  try {
+    return JSON.parse(raw);
+  } catch(_){
+    const preview = raw.replace(/\s+/g, " ").slice(0, 160);
+    throw new Error(`${action} received a non-JSON response (${res.status}) from ${API}. Check that the Vercel API URL points to your Render service. Response: ${preview}`);
+  }
+}
+
 function _onUploaded(data){
   const name = data.filename;
   const loadedMessage = `<p style="color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;">✓ Loaded ${data.shape.rows.toLocaleString()} rows × ${data.shape.columns} columns</p>`;
@@ -2795,7 +2805,7 @@ async function handleUpload(file){
   fd.append("has_header", $("fileNoHeader") && $("fileNoHeader").checked ? "false" : "true");
   try{
     const res = await fetch(`${API}/upload`, {method:"POST", body:fd});
-    const data = await res.json();
+    const data = await _readApiJson(res, "Upload");
     if(!res.ok) throw new Error(data.detail || "Upload failed");
     _onUploaded(data);
     const isDelimited = /\.(csv|txt|tsv)$/i.test(file.name);
