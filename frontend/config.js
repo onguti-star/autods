@@ -1,0 +1,3 @@
+// Deployment configuration for the static Vercel frontend.
+// Keep the backend URL here so shared links do not require ?api=....
+window.AUTODS_API_BASE = "https://autods-yuqz.onrender.com";
