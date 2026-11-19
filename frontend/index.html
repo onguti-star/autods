@@ -4339,37 +4339,37 @@ function populateTrainingFeatures(){
     .join("");
 }
 
-// These are the display names used by backend/automl.py.  The backend still
-// validates them against the active problem type and fast/large-data panel.
-// Keeping the choices here makes model comparison explicit without changing
-// the existing full-AutoML default.
-const selectableTrainingModels = [
-  "Logistic Regression", "Linear Classifier (Fast)", "Ridge Regression",
-  "Random Forest", "Extra Trees", "Extra Trees (Fast)",
-  "Gradient Boosting", "Histogram Gradient Boosting", "Histogram Gradient Boosting (Fast)",
-  "K-Nearest Neighbors", "LightGBM", "LightGBM (Fast)", "CatBoost", "XGBoost", "XGBoost (Fast)"
-];
-
-function populateModelChoices(){
+async function populateModelChoices(){
   const wrap = $("modelChoiceCheckboxes");
   if(!wrap) return;
-  const existingInputs = [...wrap.querySelectorAll('input[name="trainingModel"]')];
-  const hasExistingChoices = existingInputs.length > 0;
-  const previous = hasExistingChoices
-    ? new Set(existingInputs.filter(o => o.checked).map(o => o.value))
-    : new Set(selectableTrainingModels);
-  wrap.innerHTML = selectableTrainingModels.map(name => `
-    <label class="inline-option" style="margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
-      <input type="checkbox" name="trainingModel" value="${escapeHtml(name)}" ${previous.has(name) ? "checked" : ""}>
-      <span>${escapeHtml(name)}</span>
-    </label>`).join("");
+  const target = $("targetSelect")?.value;
+  const sid = getSid();
+  if(!target || !sid) return;
+  try {
+    const res = await fetch(`${API}/train/${sid}/models?target=${encodeURIComponent(target)}`);
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || "Could not load available models");
+    const selectableTrainingModels = data.models || [];
+    const existingInputs = [...wrap.querySelectorAll('input[name="trainingModel"]')];
+    const hasExistingChoices = existingInputs.length > 0;
+    const previous = hasExistingChoices
+      ? new Set(existingInputs.filter(o => o.checked).map(o => o.value))
+      : new Set(selectableTrainingModels);
+    wrap.innerHTML = selectableTrainingModels.map(name => `
+      <label class="inline-option" style="margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:5px;cursor:pointer;">
+        <input type="checkbox" name="trainingModel" value="${escapeHtml(name)}" ${previous.has(name) ? "checked" : ""}>
+        <span>${escapeHtml(name)}</span>
+      </label>`).join("");
+  } catch (_) {
+    wrap.innerHTML = `<span class="hint">Could not load the model list. Leave the selection empty to use AutoML.</span>`;
+  }
 }
 
 $("clearTrainingModelsBtn")?.addEventListener("click", () => {
   document.querySelectorAll('input[name="trainingModel"]').forEach(input => { input.checked = true; });
 });
 
-$("targetSelect")?.addEventListener("change", populateTrainingFeatures);
+$("targetSelect")?.addEventListener("change", () => { populateTrainingFeatures(); populateModelChoices(); });
 
 function numericColumnNames(){
   const profile = getState().lastProfile || getState().profile;
@@ -6117,6 +6117,25 @@ function drawChart(canvasId, ch){
       const allLatLons = ch.points.map(p => [p.lat, p.lon]);
       const bounds = L.latLngBounds(allLatLons);
       if(bounds.isValid()) map.fitBounds(bounds, {padding: [30, 30]});
+
+      // Numeric map colours (for example revenue) need an explicit legend;
+      // otherwise the shades are visible but their meaning is ambiguous.
+      const numericColourPoints = ch.points.filter(pt => Number.isFinite(Number(pt.color_value)));
+      if(numericColourPoints.length){
+        const values = numericColourPoints.map(pt => Number(pt.color_value));
+        const minValue = Math.min(...values), maxValue = Math.max(...values);
+        const fmtMapValue = v => Number(v).toLocaleString(undefined, {maximumFractionDigits: 2});
+        const legend = L.control({position:"bottomright"});
+        legend.onAdd = () => {
+          const d = L.DomUtil.create("div");
+          d.style.cssText = "background:rgba(15,25,44,0.92);padding:8px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#c8d8e8;min-width:150px;";
+          d.innerHTML = `<div style="margin-bottom:5px;color:#fff;">${escapeHtml(ch.color_col || "Value")}</div>
+            <div style="height:10px;border-radius:3px;background:linear-gradient(90deg,#00b4d8,#90be6d,#f9c74f,#f94144);"></div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;"><span>${fmtMapValue(minValue)}</span><span>${fmtMapValue(maxValue)}</span></div>`;
+          return d;
+        };
+        legend.addTo(map);
+      }
 
       // Add colour legend if categorical
       if(Object.keys(colorCats).length > 1 && Object.keys(colorCats).length <= 8){

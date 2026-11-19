@@ -848,6 +848,24 @@ def _fast_regression_models() -> dict:
     return models
 
 
+def available_model_names(df: pd.DataFrame, target: str) -> list[str]:
+    """Return the candidate names that apply to this dataset's active panel."""
+    if target not in df.columns:
+        raise ValueError(f"Column '{target}' not found.")
+    y = df[target].dropna()
+    if y.empty:
+        raise ValueError(f"Target column '{target}' has no non-missing values.")
+    problem_type = infer_problem_type(y)
+    use_fast = len(y) > FAST_MODELS_THRESHOLD
+    if problem_type == "classification":
+        n_classes = y.astype(str).nunique()
+        candidates = (_fast_classification_models(n_classes) if use_fast
+                      else _classification_models(n_classes))
+    else:
+        candidates = _fast_regression_models() if use_fast else _regression_models()
+    return list(candidates)
+
+
 def train_all(
     df: pd.DataFrame,
     target: str,

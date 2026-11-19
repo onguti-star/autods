@@ -2613,6 +2613,15 @@ class TrainRequest(BaseModel):
     model_names: list[str] | None = None
 
 
+@app.get("/api/train/{session_id}/models")
+def available_train_models(session_id: str, target: str):
+    session = _get_session_or_404(session_id)
+    try:
+        return {"models": automl.available_model_names(session.df, target)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 # session_id -> {"process", "manager", "progress", "result_queue", "target"}
 # Training runs in its OWN OS process (not a thread) so it can actually be
 # killed on cancel -- scikit-learn/xgboost .fit() calls can't be interrupted

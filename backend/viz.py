@@ -403,6 +403,7 @@ def _scatter_map_data(df: pd.DataFrame, lat_col: str, lon_col: str,
                 return f"#{r:02x}{g:02x}{b:02x}"
             color_map = {i: _hex(row[color_col]) for i, row in sub.iterrows()}
 
+    numeric_color = bool(color_col and color_col in sub.columns and pd.api.types.is_numeric_dtype(sub[color_col]))
     points = []
     for i, r in sub.iterrows():
         pt = {"lat": float(r[lat_col]), "lon": float(r[lon_col])}
@@ -413,6 +414,8 @@ def _scatter_map_data(df: pd.DataFrame, lat_col: str, lon_col: str,
                 pt["color"] = color_map.get(i, "#5fd4d6")
             else:
                 pt["color"] = str(r[color_col])
+            if numeric_color and pd.notna(r[color_col]):
+                pt["color_value"] = float(r[color_col])
         # Popup: all extra columns as key→value pairs
         popup = {}
         for c in popup_cols:
@@ -427,6 +430,7 @@ def _scatter_map_data(df: pd.DataFrame, lat_col: str, lon_col: str,
         "points": points,
         "lat_col": lat_col,
         "lon_col": lon_col,
+        "color_col": color_col,
         "popup_cols": popup_cols,
     }
 
@@ -712,7 +716,10 @@ def chart_data(df: pd.DataFrame, x: str, chart_type: str,
     if chart_type == "scatter_map":
         if not y or y not in df.columns:
             raise ValueError("Scatter map needs latitude and longitude columns.")
-        return _scatter_map_data(df, x, y, group)
+        # For maps, the optional Group field is the colour/value field. A
+        # numeric choice such as revenue is rendered as a continuous shade;
+        # latitude/longitude already define the point positions.
+        return _scatter_map_data(df, x, y, color_col=group)
 
     if chart_type == "heatmap_map":
         # Was only ever produced as a pre-built auto-suggestion (see
@@ -870,7 +877,9 @@ def suggest_visuals(df: pd.DataFrame, max_suggestions: int = 3, has_geojson: boo
         try:
             num_cols_for_map = [c for c in numeric_cols if c not in {coords["lat"], coords["lon"]}]
             size_col  = num_cols_for_map[0] if num_cols_for_map else None
-            color_col = categorical_cols[0] if categorical_cols else (num_cols_for_map[1] if len(num_cols_for_map) > 1 else size_col)
+            value_hints = ("revenue", "sales", "profit", "income", "amount", "value", "gdp", "population")
+            hinted_numeric = next((c for c in num_cols_for_map if any(h in c.lower() for h in value_hints)), None)
+            color_col = hinted_numeric or (num_cols_for_map[1] if len(num_cols_for_map) > 1 else size_col)
 
             map_data = _scatter_map_data(df, coords["lat"], coords["lon"],
                                          size_col=size_col, color_col=color_col)
