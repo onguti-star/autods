@@ -451,6 +451,11 @@ def main() -> None:
     url = f"http://127.0.0.1:{port}/"
     # Only this app's own pages may call the API.
     os.environ.setdefault("ALLOWED_ORIGINS", f"http://127.0.0.1:{port},http://localhost:{port}")
+    # Local machines usually have more memory available than the hosted
+    # service. Keep one undo snapshot for larger datasets by default, while
+    # allowing users to override either value through the environment.
+    os.environ.setdefault("AUTODS_UNDO_MAX_MB", "512")
+    os.environ.setdefault("AUTODS_UNDO_LIMIT", "20")
 
     import uvicorn
     from backend import desktop_api
