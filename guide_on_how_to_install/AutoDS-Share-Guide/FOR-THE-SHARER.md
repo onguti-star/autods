@@ -73,9 +73,8 @@ folders), then commit.
 
 1. Run the tests: `python -m pytest tests/ -q`.
 2. Make sure no private data is in the folder. Search for the datasets you tested with.
-3. The Claude assistant's API key is stored in your user config folder, not in the
-   project. Check there is no `.env` file and no key pasted into a source file:
-   `grep -rniE "sk-ant|api_key *= *['\"]" backend desktop.py`.
+3. Check there is no `.env` file or private API key pasted into a source file:
+   `grep -rniE "api_key *= *['\"]" backend desktop.py`.
 4. Bump the version in your tag (`v1.0.1`, `v1.1.0`) for each versioned release so
    peers can tell builds apart. The rolling `latest` release is refreshed from
    `main` automatically.

@@ -26,9 +26,7 @@ args = parser.parse_args()
 if __name__ == "__main__":
     if args.dev:
         # --reload starts uvicorn's own subprocess from the "backend.main:app"
-        # string below, so the router patch a few lines down (which only runs
-        # in *this* process) wouldn't reach it. The optional Claude assistant
-        # is skipped in --dev mode as a result; restart without --dev to use it.
+        # string below, so it runs in a fresh process with the same app config.
         uvicorn.run(
             "backend.main:app",
             host=SERVER_HOST,
@@ -38,16 +36,5 @@ if __name__ == "__main__":
         )
     else:
         from backend.main import app
-
-        # Optional, additional online assistant (Claude) -- adds its own
-        # /api/claude/* routes if backend/claude_assistant.py is present.
-        # Needs no setup and does nothing until an API key is saved in the
-        # app; everything else about AutoDS works exactly the same without it.
-        try:
-            from backend import claude_assistant
-            if not any(getattr(r, "path", "").startswith("/api/claude") for r in app.router.routes):
-                app.router.routes[:0] = list(claude_assistant.router.routes)
-        except Exception as exc:
-            print(f"Claude assistant not loaded: {exc}")
 
         uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)
