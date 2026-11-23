@@ -677,6 +677,53 @@ def run_command(df: pd.DataFrame, text: str, original_df: pd.DataFrame | None = 
     return new_df, message
 
 
+def _canonicalize_clean_command(text: str, columns: list) -> str:
+    """Make common English paraphrases look like the parser's canonical forms.
+
+    The cleaning parser deliberately stays offline and deterministic, so this is
+    a small semantic normalization layer rather than a guess at the user's data.
+    It handles polite wording, equivalent verbs, and a few safe word-order
+    variants while leaving column names and literal values untouched.
+    """
+    q = re.sub(r"\s+", " ", str(text).strip())
+    q = re.sub(
+        r"^(?:please\s+|kindly\s+|can you\s+|could you\s+|would you\s+|i want you to\s+)+",
+        "",
+        q,
+        flags=re.IGNORECASE,
+    )
+
+    # Equivalent action words used in ordinary conversation.
+    q = re.sub(r"\b(?:get\s+rid\s+of|take\s+out|eliminate|throw\s+away)\b", "remove", q, flags=re.IGNORECASE)
+    q = re.sub(r"\b(?:arrange|organise|organize)\b", "sort", q, flags=re.IGNORECASE)
+    q = re.sub(r"\bchange\s+the\s+name\s+of\b", "rename", q, flags=re.IGNORECASE)
+
+    # Safe word-order variants. Column names come from the actual dataset, so
+    # these rewrites do not mistake arbitrary values for a column reference.
+    col_alt = "|".join(sorted((re.escape(str(c)) for c in columns), key=len, reverse=True))
+    if col_alt:
+        q = re.sub(
+            rf"\b(round)\s+(?:to|at)\s+(\d+\s*(?:decimal\s+places?|decimals?|dec|dp|digits?))\s+(?:in|for|on)\s+({col_alt})\b",
+            r"\1 \3 to \2",
+            q,
+            flags=re.IGNORECASE,
+        )
+        q = re.sub(
+            rf"\b(fill|populate|update)\s+(?:missing|empty|blank)\s+(?:values?\s+)?with\s+(.+?)\s+(?:in|for|on)\s+({col_alt})\b",
+            r"\1 missing values in \3 with \2",
+            q,
+            flags=re.IGNORECASE,
+        )
+        q = re.sub(
+            rf"\b(ascending|descending)\s+(?:sort|ordering)\s+(?:of|for|by)\s+({col_alt})\b",
+            r"sort \2 \1",
+            q,
+            flags=re.IGNORECASE,
+        )
+
+    return q
+
+
 def run_command_with_table(
     df: pd.DataFrame,
     text: str,
@@ -692,6 +739,7 @@ def run_command_with_table(
     corrected_text, corrections = _correct_keyword_typos(
         text.strip(), CLEAN_KEYWORDS, protected_words=protected_column_words
     )
+    corrected_text = _canonicalize_clean_command(corrected_text, list(df.columns))
     new_df, message, table = _run_command_impl_with_table(df, corrected_text, original_df)
     return new_df, _format_keyword_correction_note(corrections) + message, table
 

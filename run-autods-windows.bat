@@ -34,8 +34,18 @@ if not exist ".venv\Scripts\python.exe" (
 if not exist ".venv\.autods_deps_ok" (
   echo Installing packages ^(first run takes several minutes^) ...
   ".venv\Scripts\python.exe" -m pip install --upgrade pip >nul
-  ".venv\Scripts\python.exe" -m pip install -r backend\requirements.txt
+  rem CatBoost has no wheel for some new Python versions, so install the core
+  rem requirements first and treat CatBoost as an optional accelerator.
+  findstr /V /I /C:"catboost" backend\requirements.txt > ".venv\requirements-windows.txt"
+  ".venv\Scripts\python.exe" -m pip install -r ".venv\requirements-windows.txt"
   if errorlevel 1 ( echo Package install failed. & pause & exit /b 1 )
+  for /f %%V in ('".venv\Scripts\python.exe" -c "import sys; print(sys.version_info.minor)"') do set "PYMINOR=%%V"
+  if !PYMINOR! LEQ 13 (
+    ".venv\Scripts\python.exe" -m pip install "catboost>=1.2.0,<2.0"
+    if errorlevel 1 echo CatBoost is unavailable; AutoDS will use its other models.
+  ) else (
+    echo Skipping CatBoost on Python !PYMINOR! because no compatible wheel is available.
+  )
   ".venv\Scripts\python.exe" -m pip install "pywebview>=5.3"
   if errorlevel 1 ( echo Window library install failed. & pause & exit /b 1 )
   echo ok> ".venv\.autods_deps_ok"
