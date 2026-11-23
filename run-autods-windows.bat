@@ -1,7 +1,7 @@
 @echo off
 rem Run AutoDS from source in its own window.
 rem Double-click this file to start AutoDS.
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 if not exist desktop.py (
@@ -26,8 +26,8 @@ if not exist ".venv\Scripts\python.exe" (
     echo Install it from https://www.python.org/downloads/windows/ and tick "Add python.exe to PATH".
     pause & exit /b 1
   )
-  echo Creating environment with %PYCMD% ...
-  %PYCMD% -m venv .venv
+  echo Creating environment with !PYCMD! ...
+  !PYCMD! -m venv .venv
   if errorlevel 1 ( echo Could not create the environment. & pause & exit /b 1 )
 )
 
