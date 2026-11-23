@@ -12,8 +12,8 @@ if not exist desktop.py (
 if /i "%~1"=="reinstall" del ".venv\.autods_deps_ok" 2>nul
 
 if not exist ".venv\Scripts\python.exe" (
-  set "PYCMD="
-  for %%V in (3.12 3.13 3.11 3.10) do (
+  set "PYCMD="huyo 
+  for %%V in (3.15 3.14 3.13 3.12 3.11 3.10) do (
     if not defined PYCMD (
       py -%%V --version >nul 2>nul && set "PYCMD=py -%%V"
     )
@@ -22,7 +22,7 @@ if not exist ".venv\Scripts\python.exe" (
     python --version >nul 2>nul && set "PYCMD=python"
   )
   if not defined PYCMD (
-    echo AutoDS needs Python 3.10 to 3.13 ^(3.12 is best^).
+    echo AutoDS needs Python 3.10 to 3.15 ^(3.12 is the safest fallback^).
     echo Install it from https://www.python.org/downloads/windows/ and tick "Add python.exe to PATH".
     pause & exit /b 1
   )

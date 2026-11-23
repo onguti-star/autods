@@ -14,8 +14,9 @@ icon on your desktop.
 
 ## B. From the source code
 
-1. Install Python 3.12 from <https://www.python.org/downloads/windows/>. On the first
-   screen of the installer, **tick "Add python.exe to PATH"**.
+1. Install Python 3.15 from <https://www.python.org/downloads/windows/>. If package
+   installation fails on your computer, use Python 3.12 instead. On the first screen
+   of the installer, **tick "Add python.exe to PATH"**.
 2. Unzip the AutoDS project. If the zip came from `make_share_zip.py`, the helper
    files are already inside. Otherwise copy `run-autods-windows.bat` next to
    `desktop.py`.
