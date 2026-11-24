@@ -965,6 +965,30 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
     </div>
   </section>
 
+  <!-- HYPOTHESIS TESTING -->
+  <section class="panel hidden" id="panelHypothesis">
+    <h2><span class="idx">03 /</span> Hypothesis testing</h2>
+    <p class="hint">Turn a question about the current data into a formal statistical test. AutoDS chooses a suitable test from the selected column types.</p>
+    <div class="pred-row">
+      <div class="pred-field"><label>Column A</label><select id="htColumnA"></select></div>
+      <div class="pred-field"><label>Column B</label><select id="htColumnB"></select></div>
+      <div class="pred-field"><label>Test</label><select id="htTest">
+        <option value="auto">Auto-select</option>
+        <option value="correlation">Correlation</option>
+        <option value="two_group">Two-group mean comparison</option>
+        <option value="anova">ANOVA (3+ groups)</option>
+        <option value="chi_square">Chi-square association</option>
+      </select></div>
+      <div class="pred-field"><label>Significance level (α)</label><input type="number" id="htAlpha" value="0.05" min="0.001" max="0.5" step="0.01"></div>
+      <div class="pred-field"><label>Numeric relationship</label><select id="htCorrelationMethod"><option value="pearson">Pearson</option><option value="spearman">Spearman</option></select></div>
+      <div class="pred-field"><button id="htRunBtn" style="margin-top:13px;">Run hypothesis test</button></div>
+    </div>
+    <p class="hint" style="margin-bottom:0;">Examples: compare sales across two regions, test whether income and spending are related, or test whether churn and plan type are associated.</p>
+    <div id="htError" class="error-box hidden" style="margin-top:12px;"></div>
+    <div id="htResult" class="hidden" style="margin-top:16px;"></div>
+    <div class="actions"><button class="sec" id="htGoCleanBtn">Continue to cleaning →</button></div>
+  </section>
+
   <!-- 03 CLEAN -->
   <section class="panel hidden" id="panelClean">
     <h2><span class="idx">03 /</span> Data Cleaning</h2>
@@ -2436,14 +2460,14 @@ function clearAnalysisUI(){
     "savedRunsList","predictFields","predictResult","savedPredictionsList",
     "chatWrap","corrFallback","corrLegend","corrPairSummary","pcaResult",
     "unsupervisedSuggestions","clusterAnalysisResult","clusterResult",
-    "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError",
+    "anomalyResult","reduceResult","assocResult","simStats","simNarrative","simError","htResult","htError",
     "recDetectResult","recFitResult","recRecommendResult","recSimilarResult","recEvalResult",
     "fcDetectResult","fcResult","pvCaption","pvNotes","pvTableWrap"
   ].forEach(id => { if($(id)) $(id).innerHTML = ""; });
 
   if($("vizSuggestions")) $("vizSuggestions").innerHTML = `<p class="loading">Analysing data</p>`;
   ["cleanPreviewSection","edaUpdatedSection","cleanLog","cleanNarrative","dlBarClean","dlBarEDA",
-   "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint",
+   "vizResult","vizError","trainNarrative","leaderboardWrap","importanceHint","panelHypothesis",
    "pcaResult","corrPicker","clusterAnalysisResult","clusterResult","simResult",
    "anomalyResult","reduceResult","assocResult",
    "recDetectResult","recFitResult","recUseSection","recRecommendResult","recSimilarResult","recEvalSection","recEvalResult",
@@ -2467,7 +2491,7 @@ function clearAnalysisUI(){
   ["vizCleanInput","trainCleanInput","cleanChatInput","chatInput","saveRunName","fcCustomValues","pvNewName","extractColPattern","extractColNames"].forEach(id => {
     if($(id)) $(id).value = "";
   });
-  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","splitColSel","pcaColorCol","predictSourceSelect","simOutcome","simDriver","pvRow1","pvRow2","pvCol","pvVal1","pvVal2","extractColSel"].forEach(id => {
+  ["vizColX","vizColY","vizGroup","vizFilterCol","targetSelect","typeCol","splitColSel","pcaColorCol","predictSourceSelect","simOutcome","simDriver","htColumnA","htColumnB","pvRow1","pvRow2","pvCol","pvVal1","pvVal2","extractColSel"].forEach(id => {
     if($(id)) $(id).innerHTML = "";
   });
   if($("vizGroup")) $("vizGroup").innerHTML = `<option value="">None</option>`;
@@ -2486,7 +2510,7 @@ function clearAnalysisUI(){
 }
 
 function resetPanels(){
-  ["panelEDA","panelDataModel","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards","panelForecast"].forEach(hide);
+  ["panelEDA","panelDataModel","panelHypothesis","panelClean","panelViz","panelTrain","panelPredict","panelAssistant","panelUnsupervised","panelModelCards","panelForecast"].forEach(hide);
   $("uploadStatus").innerHTML = "";
   clearAnalysisUI();
   clearTrainingUI();
@@ -2496,7 +2520,7 @@ function resetPanels(){
 
 function restoreDataset(state){
   resetPanels();
-  show("panelEDA"); show("panelAssistant"); setStep(3);
+  show("panelEDA"); show("panelHypothesis"); show("panelAssistant"); setStep(3);
 
   // Always sync the allColumns global to this dataset before doing anything else.
   // If allColumns is stale (from a previous tab), targetSelect will show wrong
@@ -3077,6 +3101,8 @@ function renderEDA(profile, datasetId){
   setDatasetState(targetDs, {allColumns, lastProfile: profile});
   // Only update the DOM if this is still the active tab
   if(targetDs !== activeDs) return;
+  populateHypothesisSelects();
+  show("panelHypothesis");
   showNarrative("edaNarrative", profile.narrative);
   show("dlBarEDA");
   if("can_undo" in profile){
@@ -4400,6 +4426,70 @@ function categoricalColumnNames(){
     .map(c => c.name);
   return categorical.length ? categorical : allColumns;
 }
+
+function populateHypothesisSelects(){
+  if(!$('htColumnA') || !allColumns.length) return;
+  const opts = allColumns.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  $('htColumnA').innerHTML = opts;
+  $('htColumnB').innerHTML = opts;
+  if(allColumns.length > 1) $('htColumnB').selectedIndex = 1;
+}
+
+function _htNumber(value){
+  if(value == null || Number.isNaN(Number(value))) return 'n/a';
+  return Number(value).toLocaleString(undefined, {maximumFractionDigits: 4});
+}
+
+function renderHypothesisResult(data){
+  const ci = data.confidence_interval ? `[${_htNumber(data.confidence_interval[0])}, ${_htNumber(data.confidence_interval[1])}]` : 'Not available for this test';
+  const conclusion = data.significant
+    ? `At α = ${data.alpha}, the result is statistically significant, so we reject the null hypothesis.`
+    : `At α = ${data.alpha}, the result is not statistically significant, so we fail to reject the null hypothesis.`;
+  $('htResult').innerHTML = `
+    <div class="stat-row">
+      <div class="stat"><div class="v">${escapeHtml(data.test)}</div><div class="l">test used</div></div>
+      <div class="stat"><div class="v">${_htNumber(data.statistic)}</div><div class="l">${escapeHtml(data.statistic_name)}</div></div>
+      <div class="stat"><div class="v">${_htNumber(data.p_value)}</div><div class="l">p-value</div></div>
+      <div class="stat"><div class="v">${_htNumber(data.effect_size)}</div><div class="l">${escapeHtml(data.effect_size_name || 'effect size')}</div></div>
+    </div>
+    <div class="narrative">
+      <div class="nlabel">Hypotheses</div>
+      <p><strong>H₀:</strong> ${escapeHtml(data.null_hypothesis)}</p>
+      <p><strong>H₁:</strong> ${escapeHtml(data.alternative_hypothesis)}</p>
+      <div class="nlabel">Conclusion</div>
+      <p><strong>${escapeHtml(conclusion)}</strong></p>
+      <p>Confidence interval: <strong>${escapeHtml(ci)}</strong>. The analysis used ${Number(data.n).toLocaleString()} complete observations.</p>
+      <p class="hint">${escapeHtml(data.method_note || '')}</p>
+    </div>`;
+  show('htResult');
+}
+
+$('htRunBtn')?.addEventListener('click', async () => {
+  hide('htError');
+  const body = {
+    column_a: $('htColumnA').value,
+    column_b: $('htColumnB').value,
+    test: $('htTest').value,
+    alpha: Number($('htAlpha').value || 0.05),
+    correlation_method: $('htCorrelationMethod').value,
+  };
+  $('htRunBtn').disabled = true;
+  $('htRunBtn').textContent = 'Testing...';
+  try{
+    const res = await fetch(`${API}/hypothesis_test/${getSid()}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || 'Hypothesis test failed');
+    renderHypothesisResult(data);
+  }catch(err){
+    $('htError').textContent = err.message;
+    show('htError');
+  }finally{
+    $('htRunBtn').disabled = false;
+    $('htRunBtn').textContent = 'Run hypothesis test';
+  }
+});
+
+$('htGoCleanBtn')?.addEventListener('click', () => { show('panelClean'); scrollPanel('panelClean'); });
 
 function populateDatabaseAnalysisSelects(){
   const cats = categoricalColumnNames();

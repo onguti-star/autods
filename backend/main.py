@@ -43,6 +43,7 @@ from . import nlp
 from . import nb as nb_module
 from . import pca_analysis
 from . import simulation as simulation_module
+from . import hypothesis_testing
 from . import pivot as pivot_module
 from . import unsupervised
 from . import recommender
@@ -1947,6 +1948,15 @@ def simulate_scenario(session_id: str, req: simulation_module.SimulationRequest)
     session = _get_session_or_404(session_id)
     try:
         return simulation_module.run_simulation(session.df, req)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/hypothesis_test/{session_id}")
+def hypothesis_test(session_id: str, req: hypothesis_testing.HypothesisTestRequest):
+    session = _get_session_or_404(session_id)
+    try:
+        return hypothesis_testing.run_hypothesis_test(session.df, req)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
