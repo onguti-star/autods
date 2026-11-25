@@ -2376,7 +2376,7 @@ function _saveActiveDatasetTransientState(){
 function _activateEmptyDatasetTab({workspaceId = null, requireRelatedSource = false} = {}){
   if(requireRelatedSource){
     const current = datasets.find(d => d.id === activeDs);
-    if(!current){
+    if(!current || !current.sessionId){
       alert('Load a dataset first, then use "Add related table" to attach another table to it.');
       return false;
     }
