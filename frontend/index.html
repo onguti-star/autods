@@ -671,7 +671,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
 <main>
   <div class="help-row"><a class="help-link" href="help.html" target="_blank" rel="noopener">? how to use</a></div>
 <div class="ds-tabs" id="dsTabs">
-    <div class="ds-tab add-btn" onclick="addRelatedDataset()" title="Add another table to the same workspace as the current tab, so they can be inspected/joined together (Data model, Merge)">🔗＋ Add related table</div>
+    <div class="ds-tab add-btn" id="addRelatedBtn" onclick="addRelatedDataset()" title="Add another table to the same workspace as the current tab, so they can be inspected/joined together (Data model, Merge)">🔗＋ Add related table</div>
     <div class="ds-tab add-btn" onclick="addDataset()">＋ New dataset</div>
   </div>
 
@@ -969,22 +969,26 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
   <!-- HYPOTHESIS TESTING -->
   <section class="panel hidden" id="panelHypothesis">
     <h2><span class="idx">03 /</span> Hypothesis testing</h2>
-    <p class="hint">Turn a question about the current data into a formal statistical test. AutoDS chooses a suitable test from the selected column types.</p>
+    <p class="hint">Ask a plain question about two columns — AutoDS picks a suitable statistical test and explains the answer in plain English.</p>
     <div class="pred-row">
       <div class="pred-field"><label>Column A</label><select id="htColumnA"></select></div>
       <div class="pred-field"><label>Column B</label><select id="htColumnB"></select></div>
-      <div class="pred-field"><label>Test</label><select id="htTest">
-        <option value="auto">Auto-select</option>
-        <option value="correlation">Correlation</option>
-        <option value="two_group">Two-group mean comparison</option>
-        <option value="anova">ANOVA (3+ groups)</option>
-        <option value="chi_square">Chi-square association</option>
+      <div class="pred-field"><label>What do you want to know?</label><select id="htTest">
+        <option value="auto">Not sure — let AutoDS decide</option>
+        <option value="correlation">Are these two numbers related?</option>
+        <option value="two_group">Does the average differ between two groups?</option>
+        <option value="anova">Does the average differ across 3+ groups?</option>
+        <option value="chi_square">Are these two categories linked?</option>
       </select></div>
-      <div class="pred-field"><label>Significance level (α)</label><input type="number" id="htAlpha" value="0.05" min="0.001" max="0.5" step="0.01"></div>
-      <div class="pred-field"><label>Numeric relationship</label><select id="htCorrelationMethod"><option value="pearson">Pearson</option><option value="spearman">Spearman</option></select></div>
+      <div class="pred-field"><label>How sure do you need to be?</label><select id="htAlpha">
+        <option value="0.10">90% confidence (more sensitive)</option>
+        <option value="0.05" selected>95% confidence (standard)</option>
+        <option value="0.01">99% confidence (strict)</option>
+      </select></div>
+      <div class="pred-field hidden" id="htCorrelationMethodField"><label>Numeric relationship</label><select id="htCorrelationMethod"><option value="pearson">Straight-line (Pearson)</option><option value="spearman">Any consistent trend (Spearman)</option></select></div>
       <div class="pred-field"><button id="htRunBtn" style="margin-top:13px;">Run hypothesis test</button></div>
     </div>
-    <p class="hint" style="margin-bottom:0;">Examples: compare sales across two regions, test whether income and spending are related, or test whether churn and plan type are associated.</p>
+    <p class="hint" id="htColumnHint" style="margin-bottom:0;">Examples: compare sales across two regions, test whether income and spending are related, or test whether churn and plan type are associated.</p>
     <div id="htError" class="error-box hidden" style="margin-top:12px;"></div>
     <div id="htResult" class="hidden" style="margin-top:16px;"></div>
     <div class="actions"><button class="sec" id="htGoCleanBtn">Continue to cleaning →</button></div>
@@ -2376,7 +2380,7 @@ function _saveActiveDatasetTransientState(){
 function _activateEmptyDatasetTab({workspaceId = null, requireRelatedSource = false} = {}){
   if(requireRelatedSource){
     const current = datasets.find(d => d.id === activeDs);
-    if(!current){
+    if(!current || !current.sessionId){
       alert('Load a dataset first, then use "Add related table" to attach another table to it.');
       return false;
     }
@@ -2502,6 +2506,17 @@ function renderDsTabs(){
     t.onclick = () => switchDataset(ds.id);
     tabsEl.insertBefore(t, addBtn);
   });
+  // Name the "Add related table" button after whichever dataset it will
+  // actually attach to, so it's clear which table a new upload joins
+  // instead of a generic label that looks the same no matter which tab
+  // is active.
+  const addRelatedBtn = $("addRelatedBtn");
+  if(addRelatedBtn){
+    const current = datasets.find(d => d.id === activeDs);
+    addRelatedBtn.textContent = (current && current.sessionId)
+      ? `🔗＋ Add data related to ${current.name}`
+      : "🔗＋ Add related table";
+  }
   // Update debug session indicator
   const dbg = $("cleanSessionDebug");
   if(dbg){ const sid = getState().sessionId; dbg.textContent = sid ? "session: " + sid : "no session"; }
@@ -2865,6 +2880,11 @@ function _onUploaded(data){
   ["panelClean","panelViz","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
   const dsEntry = datasets.find(d => d.id === activeDs);
   dsEntry.name = name;
+  // The tab's own sessionId (separate from dsState[id].sessionId below) is
+  // what "Add related table" checks before letting you attach another
+  // table -- without this, a fully loaded tab still looks "empty" to that
+  // check and wrongly refuses with "Load a dataset first".
+  dsEntry.sessionId = data.session_id;
   // The backend always returns a workspace_id -- either the one we sent
   // (when this table was added via "Add related table") or a fresh one
   // defaulting to this table's own session id (a standalone "+ New dataset").
@@ -4514,32 +4534,86 @@ function populateHypothesisSelects(){
   $('htColumnA').innerHTML = opts;
   $('htColumnB').innerHTML = opts;
   if(allColumns.length > 1) $('htColumnB').selectedIndex = 1;
+  updateHypothesisHints();
 }
+
+// Whether a column reads as numeric, using the same profile-derived list the
+// training/target pickers already build -- kept in sync automatically.
+function _htIsNumeric(name){ return numericColumnNames().includes(name); }
+
+// Live, plain-English guidance shown under the pickers: hides the
+// Pearson/Spearman choice unless it's actually relevant, and tells a
+// non-technical user up front whether their column pair fits the question
+// they picked, instead of letting them click Run and hit a backend error.
+function updateHypothesisHints(){
+  const colA = $('htColumnA'), colB = $('htColumnB'), testSel = $('htTest'), hint = $('htColumnHint');
+  if(!colA || !colB || !testSel) return;
+  const a = colA.value, b = colB.value, test = testSel.value;
+  const aNum = _htIsNumeric(a), bNum = _htIsNumeric(b);
+  const corrField = $('htCorrelationMethodField');
+  if(corrField) corrField.classList.toggle('hidden', !(test === 'correlation' || (test === 'auto' && aNum && bNum)));
+  if(!hint) return;
+  if(a && b && a === b){
+    hint.textContent = 'Pick two different columns to compare.';
+  } else if(test === 'correlation' && !(aNum && bNum)){
+    hint.textContent = 'This question needs two numeric columns — pick a number column for both A and B.';
+  } else if(test === 'chi_square' && (aNum || bNum)){
+    hint.textContent = 'This question needs two category columns (like region or plan type), not numbers.';
+  } else if((test === 'two_group' || test === 'anova') && aNum === bNum){
+    hint.textContent = 'This question needs one number column (what you\u2019re measuring) and one category column (the groups).';
+  } else if(aNum && bNum){
+    hint.textContent = 'Both columns are numbers \u2014 AutoDS will check whether they move together.';
+  } else if(aNum !== bNum){
+    hint.textContent = 'One number column and one category column \u2014 AutoDS will compare the average across groups.';
+  } else {
+    hint.textContent = 'Both columns are categories \u2014 AutoDS will check whether they\u2019re linked.';
+  }
+}
+['htColumnA','htColumnB','htTest'].forEach(id => $(id)?.addEventListener('change', updateHypothesisHints));
 
 function _htNumber(value){
   if(value == null || Number.isNaN(Number(value))) return 'n/a';
   return Number(value).toLocaleString(undefined, {maximumFractionDigits: 4});
 }
 
+// Rule-of-thumb size bands (Cohen's conventions) so a non-technical reader
+// gets "small/medium/large" instead of a bare coefficient they have to
+// already know how to interpret.
+function _htEffectSizeLabel(data){
+  const name = data.effect_size_name || '';
+  const v = Math.abs(Number(data.effect_size) || 0);
+  const bands = name === "Cohen's d" ? [0.2, 0.5, 0.8]
+              : name === "Eta squared" ? [0.01, 0.06, 0.14]
+              : [0.1, 0.3, 0.5]; // correlation coefficient, Cramer's V
+  return v < bands[0] ? 'negligible' : v < bands[1] ? 'small' : v < bands[2] ? 'medium' : 'large';
+}
+
 function renderHypothesisResult(data){
   const ci = data.confidence_interval ? `[${_htNumber(data.confidence_interval[0])}, ${_htNumber(data.confidence_interval[1])}]` : 'Not available for this test';
-  const conclusion = data.significant
-    ? `At α = ${data.alpha}, the result is statistically significant, so we reject the null hypothesis.`
-    : `At α = ${data.alpha}, the result is not statistically significant, so we fail to reject the null hypothesis.`;
+  const pct = Math.round((1 - data.alpha) * 100);
+  // Lead with a plain-English answer to the question the user actually
+  // asked; the test name, statistic and p-value move below as supporting
+  // detail for anyone who wants to check the math.
+  const headline = data.significant
+    ? `Yes \u2014 ${escapeHtml(data.alternative_hypothesis).replace(/\.$/, '')}. This is unlikely to be due to chance (${pct}% confidence).`
+    : `No clear evidence \u2014 the data doesn\u2019t rule out that ${escapeHtml(data.null_hypothesis).charAt(0).toLowerCase() + escapeHtml(data.null_hypothesis).slice(1)} (at ${pct}% confidence).`;
+  const effectLabel = _htEffectSizeLabel(data);
   $('htResult').innerHTML = `
-    <div class="stat-row">
+    <div class="narrative">
+      <p style="font-size:15px;"><strong>${headline}</strong></p>
+      <p>Effect size: <strong>${_htNumber(data.effect_size)}</strong> (${escapeHtml(data.effect_size_name || 'effect size')}) \u2014 a <strong>${effectLabel}</strong> effect.</p>
+      <p>Confidence interval: <strong>${escapeHtml(ci)}</strong>. Based on ${Number(data.n).toLocaleString()} complete observations.</p>
+    </div>
+    <div class="stat-row" style="margin-top:12px;">
       <div class="stat"><div class="v">${escapeHtml(data.test)}</div><div class="l">test used</div></div>
       <div class="stat"><div class="v">${_htNumber(data.statistic)}</div><div class="l">${escapeHtml(data.statistic_name)}</div></div>
       <div class="stat"><div class="v">${_htNumber(data.p_value)}</div><div class="l">p-value</div></div>
-      <div class="stat"><div class="v">${_htNumber(data.effect_size)}</div><div class="l">${escapeHtml(data.effect_size_name || 'effect size')}</div></div>
+      <div class="stat"><div class="v">${pct}%</div><div class="l">confidence level</div></div>
     </div>
-    <div class="narrative">
-      <div class="nlabel">Hypotheses</div>
+    <div class="narrative" style="margin-top:12px;">
+      <div class="nlabel">The technical details</div>
       <p><strong>H₀:</strong> ${escapeHtml(data.null_hypothesis)}</p>
       <p><strong>H₁:</strong> ${escapeHtml(data.alternative_hypothesis)}</p>
-      <div class="nlabel">Conclusion</div>
-      <p><strong>${escapeHtml(conclusion)}</strong></p>
-      <p>Confidence interval: <strong>${escapeHtml(ci)}</strong>. The analysis used ${Number(data.n).toLocaleString()} complete observations.</p>
       <p class="hint">${escapeHtml(data.method_note || '')}</p>
     </div>`;
   show('htResult');
