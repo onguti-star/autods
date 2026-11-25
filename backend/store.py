@@ -159,9 +159,18 @@ class Session:
     UNDO_MAX_BYTES = max(0, int(os.getenv("AUTODS_UNDO_MAX_MB", "64"))) * 1024 * 1024
     MAX_AUTO_SAVED_RUNS = max(0, int(os.getenv("AUTODS_MAX_AUTO_SAVED_RUNS", "3")))
 
-    def __init__(self, df: pd.DataFrame, filename: str, session_id: str | None = None):
+    def __init__(self, df: pd.DataFrame, filename: str, session_id: str | None = None,
+                 workspace_id: str | None = None):
         self.id = session_id or str(uuid.uuid4())
         self.filename = filename
+        # Every session belongs to a "workspace" -- a group of related tables
+        # a user chose to load together (e.g. encounters/patients/procedures
+        # from the same source). A session uploaded via "+ New dataset" has
+        # no workspace_id passed in, so it defaults to its own id -- i.e. it
+        # starts as the sole member of its own workspace. A session uploaded
+        # via "+ Add related table" passes the workspace_id of the tab it was
+        # added from, so it joins that group instead. See get_workspace_sessions().
+        self.workspace_id = workspace_id or self.id
         df = _dedupe_columns(df)
         self.df = df
         self.original_df = df.copy()             # kept so chat cleaning commands can be reset
@@ -266,6 +275,7 @@ class Session:
         space for an undo history nobody can see across a restart anyway)."""
         return {
             "filename": self.filename,
+            "workspace_id": self.workspace_id,
             "staged_charts": self._staged_charts,
             "notes": self._notes,
             "cleaning_log": self.cleaning_log,
@@ -471,10 +481,23 @@ class Session:
 SESSIONS: Dict[str, "Session"] = {}
 
 
-def create_session(df: pd.DataFrame, filename: str) -> "Session":
-    s = Session(df, filename)
+def create_session(df: pd.DataFrame, filename: str, workspace_id: str | None = None) -> "Session":
+    s = Session(df, filename, workspace_id=workspace_id)
     SESSIONS[s.id] = s
     return s
+
+
+def get_workspace_sessions(workspace_id: str) -> list["Session"]:
+    """Return every in-memory session sharing this workspace_id.
+
+    Only considers sessions already loaded into memory (SESSIONS) -- a
+    session that was evicted/restarted and not yet re-touched via
+    get_session() won't appear here until something accesses it again. For
+    the "related tables I'm actively adding to" use case this is fine: the
+    tables in a workspace are the ones in open tabs, which are touched on
+    every tab switch anyway.
+    """
+    return [s for s in SESSIONS.values() if getattr(s, "workspace_id", s.id) == workspace_id]
 
 
 def get_session(session_id: str) -> "Session":
@@ -500,6 +523,10 @@ def get_session(session_id: str) -> "Session":
     # Keep the original display/table name across a backend restart.  The
     # data-model endpoint uses this name for conventional *_id -> id matching.
     s.filename = meta.get("filename", "restored.csv")
+    # Pre-dates this feature for sessions saved before it existed -- fall
+    # back to the session's own id (its own one-table workspace), same as a
+    # freshly created "+ New dataset" session would get.
+    s.workspace_id = meta.get("workspace_id") or session_id
     s.df = df
     s.original_df = original_df
     s.target = None

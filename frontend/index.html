@@ -671,6 +671,7 @@ textarea{font-family:'IBM Plex Mono',monospace;background:#05070a;color:var(--in
 <main>
   <div class="help-row"><a class="help-link" href="help.html" target="_blank" rel="noopener">? how to use</a></div>
 <div class="ds-tabs" id="dsTabs">
+    <div class="ds-tab add-btn" onclick="addRelatedDataset()" title="Add another table to the same workspace as the current tab, so they can be inspected/joined together (Data model, Merge)">🔗＋ Add related table</div>
     <div class="ds-tab add-btn" onclick="addDataset()">＋ New dataset</div>
   </div>
 
@@ -2220,7 +2221,7 @@ function _removeDataset(id){
   if(!datasets.length){
     // No datasets left — add a fresh empty one
     const newId = "ds_" + Date.now();
-    datasets.push({id: newId, name: "New dataset", sessionId: null});
+    datasets.push({id: newId, name: "New dataset", sessionId: null, workspaceId: null});
     activeDs = newId;
     dsState[newId] = {};
   } else {
@@ -2364,17 +2365,66 @@ function switchSrc(tab, panelId){
 }
 
 // ---------- DATASET TABS ----------
-function addDataset(){
-  resetPanels();
+function _saveActiveDatasetTransientState(){
+  if(!activeDs || !dsState[activeDs]) return;
+  dsState[activeDs].chatLogHtml = $("cleanChatLog")?.innerHTML || "";
+  dsState[activeDs].customChartSpecs = [...customChartSpecs];
+  const currentTraining = dsState[activeDs].training;
+  if(currentTraining) dsState[activeDs].training = currentTraining;
+}
+
+function _activateEmptyDatasetTab({workspaceId = null, requireRelatedSource = false} = {}){
+  if(requireRelatedSource){
+    const current = datasets.find(d => d.id === activeDs);
+    if(!current){
+      alert('Load a dataset first, then use "Add related table" to attach another table to it.');
+      return false;
+    }
+    // If the active tab hasn't joined a workspace yet (pre-dates this feature,
+    // or is itself the first table in its group), its own session id is its
+    // workspace id -- the backend defaults to that when none is sent at upload.
+    workspaceId = current.workspaceId || current.sessionId;
+  }
+
+  // Preserve the tab we're leaving so "+ New dataset" / "Add related table"
+  // don't discard in-progress UI state from the current dataset.
+  _saveActiveDatasetTransientState();
+
   const id = "ds_" + Date.now();
-  datasets.push({id, name:"New dataset", sessionId:null});
+  datasets.push({id, name:"New dataset", sessionId:null, workspaceId});
   activeDs = id;
   dsState[id] = {};
+
+  // Fresh globals/UI for the new tab so it never inherits the previous
+  // dataset's columns, charts, selections, or upload state.
+  allColumns = [];
+  customChartSpecs.length = 0;
+  lastUploadedFile = null;
+  if($("fileInput")) $("fileInput").value = "";
+  if($("csvSepSelect")) $("csvSepSelect").value = "auto";
+
   renderDsTabs();
+  resetPanels();
+  populateSelects();
   autoSave();
   if(typeof window.refreshPeek === "function") window.refreshPeek();
   // Only scroll if page is already loaded (not during init)
   if(document.readyState === "complete") scrollPanel("panelUpload");
+  return true;
+}
+
+function addDataset(){
+  _activateEmptyDatasetTab({workspaceId: null});
+}
+
+// Add a new empty tab that, once a file is uploaded into it, joins the SAME
+// workspace as whichever tab was active when this was clicked -- so the new
+// table shows up alongside that one in Data model / Merge automatically,
+// instead of starting an unrelated group. This is the "load another related
+// dataset into the same workspace, like loading several dataframes together
+// in Python" option; "+ New dataset" stays for genuinely independent files.
+function addRelatedDataset(){
+  _activateEmptyDatasetTab({requireRelatedSource: true});
 }
 
 function switchDataset(id){
@@ -2414,6 +2464,15 @@ function renderDsTabs(){
   const addBtn = tabsEl.querySelector(".add-btn");
   // Remove old dataset tabs
   tabsEl.querySelectorAll(".ds-tab:not(.add-btn)").forEach(t => t.remove());
+  // Count how many loaded tabs share each workspace, so tables added via
+  // "Add related table" get a visual marker tying them together; a lone
+  // "+ New dataset" table never gets one.
+  const groupCounts = {};
+  datasets.forEach(ds => {
+    if(!ds.sessionId || !ds.workspaceId) return;
+    groupCounts[ds.workspaceId] = (groupCounts[ds.workspaceId] || 0) + 1;
+  });
+
   datasets.forEach(ds => {
     const t = document.createElement("div");
     t.className = "ds-tab" + (ds.id === activeDs ? " active" : "");
@@ -2422,8 +2481,13 @@ function renderDsTabs(){
     const inner = document.createElement("span");
     inner.className = "ds-tab-inner";
 
+    const isGrouped = ds.workspaceId && groupCounts[ds.workspaceId] > 1;
     const label = document.createElement("span");
-    label.textContent = ds.name;
+    label.textContent = (isGrouped ? "🔗 " : "") + ds.name;
+    if(isGrouped){
+      const siblingNames = datasets.filter(d => d.workspaceId === ds.workspaceId && d.id !== ds.id).map(d => d.name);
+      label.title = "Related table" + (siblingNames.length > 1 ? "s" : "") + ": " + siblingNames.join(", ");
+    }
     label.onclick = () => switchDataset(ds.id);
     inner.appendChild(label);
 
@@ -2799,18 +2863,29 @@ function _onUploaded(data){
   const loadedMessage = `<p style="color:var(--good);font-family:'IBM Plex Mono',monospace;font-size:11px;">✓ Loaded ${data.shape.rows.toLocaleString()} rows × ${data.shape.columns} columns</p>`;
   clearAnalysisUI();
   ["panelClean","panelViz","panelTrain","panelPredict","panelUnsupervised"].forEach(hide);
-  datasets.find(d => d.id === activeDs).name = name;
+  const dsEntry = datasets.find(d => d.id === activeDs);
+  dsEntry.name = name;
+  // The backend always returns a workspace_id -- either the one we sent
+  // (when this table was added via "Add related table") or a fresh one
+  // defaulting to this table's own session id (a standalone "+ New dataset").
+  dsEntry.workspaceId = data.workspace_id || dsEntry.workspaceId || data.session_id;
   setState({sessionId: data.session_id, allColumns: data.columns, savedRuns: [], savedPredictions: [], training: null, profile: null, cleanLog: null, simulationResult: null});
   // The session id is the handle needed to recover the dataset after a
   // browser/backend restart. Save it synchronously so a power loss cannot
   // strand the newly uploaded session behind the normal debounce window.
-  autoSave(true); // capture dataset name change (datasets array is not watched by setState)
+  autoSave(true); // capture dataset name/workspace change (datasets array is not watched by setState)
   clearPredictionsUI();
   $("sessionTag").textContent = `${name} · ${data.shape.rows.toLocaleString()}×${data.shape.columns}`;
   $("uploadStatus").innerHTML = loadedMessage;
   renderDsTabs();
   setStep(3); show("panelAssistant");
   loadEDA(activeDs, data.session_id);
+  // If this table just joined a workspace that already has another table in
+  // it, jump straight to Data model so the relationship to its sibling
+  // tables is visible immediately, instead of relying on the user to
+  // remember that panel exists.
+  const siblingCount = datasets.filter(d => d.sessionId && d.workspaceId === dsEntry.workspaceId).length;
+  if(siblingCount > 1) openDataModel();
 }
 
 // ---------- UPLOAD: FILE ----------
@@ -2831,6 +2906,12 @@ async function handleUpload(file){
   if(sep === "custom") sep = $("fileSepCustom").value.trim();
   if(sep) fd.append("separator", sep);
   fd.append("has_header", $("fileNoHeader") && $("fileNoHeader").checked ? "false" : "true");
+  // When this tab was created via "Add related table", it already carries
+  // the workspace_id of the tab it's related to -- send it along so the
+  // backend groups the new table with it instead of starting a fresh,
+  // unrelated workspace (see addRelatedDataset()).
+  const activeEntry = datasets.find(d => d.id === activeDs);
+  if(activeEntry && activeEntry.workspaceId) fd.append("workspace_id", activeEntry.workspaceId);
   try{
     const res = await fetch(`${API}/upload`, {method:"POST", body:fd});
     const data = await _readApiJson(res, "Upload");

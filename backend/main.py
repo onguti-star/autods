@@ -54,6 +54,7 @@ from .store import (
     SESSIONS,
     create_session,
     get_session,
+    get_workspace_sessions,
     delete_session,
     clear_all_sessions,
     purge_stale_session_files,
@@ -590,11 +591,13 @@ def _session_response(session, df):
         "columns":    list(df.columns),
         "shape":      {"rows": df.shape[0], "columns": df.shape[1]},
         "has_geojson": bool(getattr(session, "geojson", None)),
+        "workspace_id": getattr(session, "workspace_id", session.id),
     }
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...), separator: str | None = Form(None), has_header: bool = Form(True)):
+async def upload(file: UploadFile = File(...), separator: str | None = Form(None), has_header: bool = Form(True),
+                  workspace_id: str | None = Form(None)):
     name = file.filename or "data.csv"
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_BYTES:
@@ -609,10 +612,37 @@ async def upload(file: UploadFile = File(...), separator: str | None = Form(None
     if df.empty:
         raise HTTPException(400, "Uploaded file has no rows.")
     _validate_dataframe_size(df)
-    session = create_session(df, name)
+    # workspace_id, when passed, groups this table with the tab it was added
+    # from (see "+ Add related table" in the frontend) instead of starting a
+    # brand-new independent workspace -- this is what lets a set of related
+    # tables (encounters/patients/procedures/...) be worked with together.
+    session = create_session(df, name, workspace_id=workspace_id)
     if raw_geojson:
         session.geojson = raw_geojson
     return _session_response(session, df)
+
+
+@app.get("/api/workspace/{workspace_id}/tables")
+def workspace_tables(workspace_id: str):
+    """List every currently loaded table that belongs to this workspace.
+
+    Powers the grouped-tabs UI and lets the frontend scope a data_model/merge
+    call to just the related tables in one group, instead of making the user
+    hand-pick sessions every time.
+    """
+    sessions = get_workspace_sessions(workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "tables": [
+            {
+                "session_id": s.id,
+                "filename": s.filename,
+                "rows": int(s.df.shape[0]),
+                "columns": int(s.df.shape[1]),
+            }
+            for s in sessions
+        ],
+    }
 
 
 class UrlUploadRequest(BaseModel):
